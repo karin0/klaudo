@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -76,20 +74,9 @@ impl Event {
     }
 }
 
-/// Where the work is happening. Resolving the branch costs a subprocess, so a caller
-/// that sends more than once holds on to the result.
+/// Where the work is happening.
 pub fn project(cwd: &str) -> String {
-    let branch = Command::new("git")
-        .args(["-C", cwd, "branch", "--show-current"])
-        .output()
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        .unwrap_or_default();
-    let name = cwd.rsplit('/').next().unwrap_or(cwd);
-    [format!("**{name}**"), branch]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    format!("**{}**", cwd.rsplit('/').next().unwrap_or(cwd))
 }
 
 /// The line every message opens with: where the work is, which session, and which turn
@@ -122,8 +109,8 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_outside_a_repository_names_no_branch() {
-        assert_eq!(project("/nonexistent/scratch"), "**scratch**");
+    fn a_project_is_the_last_segment_of_its_directory() {
+        assert_eq!(project("/home/user/scratch"), "**scratch**");
     }
 
     #[test]
