@@ -49,7 +49,9 @@ a server of its own.
 
 The `MessageDisplay` hook runs on every flush of streamed text and the terminal draws
 that text only once the hook returns, so nothing that touches the network can happen in
-the hook process. It writes the event to a unix datagram socket and exits.
+the hook process. It writes the event to a unix datagram socket and exits. That budget
+is why the hook is a compiled binary: on the machine klaude was written for, the shell
+scripts it replaced cost 9.4 ms per invocation, against 0.5 ms for the same handoff.
 
 Three constraints then land on the process at the other end. A draft disappears 30
 seconds after its last frame, so a turn that goes quiet inside a long tool call needs
