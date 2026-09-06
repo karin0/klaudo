@@ -7,9 +7,11 @@ left alone and picked up when it is worth returning to.
 
 A turn produces one or more response segments, each an assistant message with text in
 it. A segment streams into a Telegram draft while it is being written, and becomes a
-message once it is complete, which is when the next segment starts. The last segment is
-not posted on its own: the `Stop` event carries its text, so posting it would put the
-same words in the chat twice.
+message once it is complete, which is when the next segment starts. While the draft is
+on screen it carries a status line under the text, a word from Claude Code's own
+vocabulary and the turn's elapsed time, stepping to the next word on every refresh. The
+last segment is not posted on its own: the `Stop` event carries its text, so posting it
+would put the same words in the chat twice.
 
 So a turn that talked twice around a tool call leaves both halves in the chat, in order,
 and the last message is the only one that makes a sound. Each carries the elapsed time
