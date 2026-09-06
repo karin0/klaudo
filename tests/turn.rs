@@ -65,7 +65,9 @@ fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
 
     let made = collect(&calls, "sendRichMessage ring");
     assert_eq!(
-        made,
+        made.iter()
+            .map(|call| call.label.as_str())
+            .collect::<Vec<_>>(),
         [
             // The first segment streams into a draft of its own.
             "sendRichMessageDraft",
@@ -77,6 +79,7 @@ fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
             "sendRichMessage ring",
         ]
     );
+    frame(&made[0].markdown, "first segment text");
     wait_for(
         || !socket.exists(),
         "the daemon outlived the turn it was reporting",
@@ -84,24 +87,60 @@ fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
     std::fs::remove_dir_all(&root).expect("clean up");
 }
 
+/// One call the daemon made, as the server saw it.
+struct Call {
+    label: String,
+    markdown: String,
+}
+
 /// Consecutive repeats collapse, because how many frames a draft takes is a matter of
-/// how fast the deltas arrived.
-fn collect(calls: &Receiver<String>, last: &str) -> Vec<String> {
+/// how fast the deltas arrived. The body kept is the last of them, so a draft reads as
+/// the frame its segment ended on.
+fn collect(calls: &Receiver<Call>, last: &str) -> Vec<Call> {
     let deadline = Instant::now() + PATIENCE;
-    let mut made: Vec<String> = Vec::new();
+    let mut made: Vec<Call> = Vec::new();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        let call = calls
-            .recv_timeout(left)
-            .unwrap_or_else(|_| panic!("the turn stopped after {made:?}"));
-        let done = call == last;
-        if made.last() != Some(&call) {
-            made.push(call);
+        let call = calls.recv_timeout(left).unwrap_or_else(|_| {
+            panic!(
+                "the turn stopped after {:?}",
+                made.iter().map(|call| &call.label).collect::<Vec<_>>()
+            )
+        });
+        let done = call.label == last;
+        match made.last_mut() {
+            Some(kept) if kept.label == call.label => kept.markdown = call.markdown,
+            _ => made.push(call),
         }
         if done {
             return made;
         }
     }
+}
+
+/// A frame opens with the head, carries the text streamed so far, and closes with the
+/// status line: a mark, a word and the turn's elapsed time, inside the tag Telegram
+/// animates.
+fn frame(markdown: &str, text: &str) {
+    let (title, body) = markdown.split_once("\n\n").expect("a head and a body");
+    assert!(title.starts_with("**klaude**"), "head reads {title:?}");
+    let (streamed, status) = body.split_once('\n').expect("text and a status line");
+    assert_eq!(streamed, text);
+    let status = status
+        .strip_prefix("<tg-thinking>")
+        .and_then(|line| line.strip_suffix("</tg-thinking>"))
+        .expect("the animated tag");
+    let status = status.strip_prefix("✻ ").expect("the mark");
+    let (word, took) = status.split_once("… ").expect("a word and an elapsed time");
+    assert!(
+        !word.is_empty() && word.chars().all(char::is_alphabetic),
+        "status word reads {word:?}"
+    );
+    assert!(
+        took.starts_with('(') && took.ends_with("s)"),
+        "elapsed time reads {took:?}"
+    );
+    println!("frame:\n{markdown}");
 }
 
 fn prepare(session: &str) -> PathBuf {
@@ -142,7 +181,7 @@ fn wait_for(ready: impl Fn() -> bool, complaint: &str) {
     panic!("{complaint}");
 }
 
-fn recorder() -> (u16, Receiver<String>) {
+fn recorder() -> (u16, Receiver<Call>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("address").port();
     let (sender, receiver) = channel();
@@ -154,7 +193,7 @@ fn recorder() -> (u16, Receiver<String>) {
     (port, receiver)
 }
 
-fn answer(mut stream: TcpStream, id: usize, calls: &Sender<String>) {
+fn answer(mut stream: TcpStream, id: usize, calls: &Sender<Call>) {
     let mut request = BufReader::new(stream.try_clone().expect("clone"));
     let mut line = String::new();
     request.read_line(&mut line).expect("request line");
@@ -185,7 +224,16 @@ fn answer(mut stream: TcpStream, id: usize, calls: &Sender<String>) {
         "sendRichMessage" => " ring",
         _ => "",
     };
-    calls.send(format!("{method}{sound}")).expect("record");
+    let markdown = body["rich_message"]["markdown"]
+        .as_str()
+        .expect("a markdown body")
+        .to_owned();
+    calls
+        .send(Call {
+            label: format!("{method}{sound}"),
+            markdown,
+        })
+        .expect("record");
 
     let sent = json!({"ok": true, "result": {"message_id": id}}).to_string();
     write!(

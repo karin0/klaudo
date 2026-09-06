@@ -18,6 +18,46 @@ const IDLE_LIMIT: Duration = Duration::from_secs(3600);
 /// Long enough for the previous turn's daemon to finish its last call and let go.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(50);
+/// The status words Claude Code cycles through while a turn is running.
+const WORDS: &[&str] = &[
+    "Baking",
+    "Booping",
+    "Brewing",
+    "Churning",
+    "Cogitating",
+    "Computing",
+    "Conjuring",
+    "Considering",
+    "Cooking",
+    "Crafting",
+    "Deliberating",
+    "Determining",
+    "Forging",
+    "Herding",
+    "Honking",
+    "Hustling",
+    "Ideating",
+    "Inferring",
+    "Marinating",
+    "Moseying",
+    "Mulling",
+    "Musing",
+    "Noodling",
+    "Percolating",
+    "Pondering",
+    "Processing",
+    "Puttering",
+    "Reticulating",
+    "Ruminating",
+    "Schlepping",
+    "Shucking",
+    "Simmering",
+    "Spinning",
+    "Stewing",
+    "Synthesizing",
+    "Thinking",
+    "Vibing",
+];
 /// A send past the socket's own limit fails, and the hook falls back to reporting the
 /// turn itself, so this only has to cover a clamped message with room to spare.
 const DATAGRAM_MAX: usize = 200 * 1024;
@@ -208,12 +248,14 @@ impl Turn {
             return;
         }
         let head = self.head();
+        let elapsed = self.started.elapsed();
         let segment = self.segment.as_mut().expect("checked just above");
         let text = segment.text();
         if text == segment.framed && segment.frame_at.elapsed() < REFRESH {
             return;
         }
-        let frame = format!("{head}\n\n{text}\n<tg-thinking>Generating…</tg-thinking>");
+        let status = status(elapsed, segment.draft_id);
+        let frame = format!("{head}\n\n{text}\n<tg-thinking>{status}</tg-thinking>");
         self.telegram.draft(segment.draft_id, &frame);
         segment.framed = text;
         segment.frame_at = Instant::now();
@@ -237,6 +279,16 @@ fn draft_id(message_id: &str) -> i64 {
     i64::try_from(hasher.finish() & 0x7fff_ffff).expect("31 bits fit") | 1
 }
 
+/// What the draft says under the text it is streaming. The word changes once per
+/// refresh and starts somewhere else in the list per segment, so a turn sitting in a
+/// long tool call keeps showing a frame that differs from the last one.
+fn status(elapsed: Duration, draft_id: i64) -> String {
+    let step = draft_id.unsigned_abs() + elapsed.as_secs() / REFRESH.as_secs();
+    let word =
+        WORDS[usize::try_from(step).expect("a 31-bit id plus a turn's seconds") % WORDS.len()];
+    format!("✻ {word}… ({})", took(elapsed).trim())
+}
+
 fn took(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     match seconds {
@@ -258,6 +310,22 @@ mod tests {
         assert_eq!(took(Duration::from_secs(3599)), " 59m59s");
         assert_eq!(took(Duration::from_secs(3600)), " 1h0m");
         assert_eq!(took(Duration::from_secs(7860)), " 2h11m");
+    }
+
+    #[test]
+    fn a_status_line_names_the_elapsed_time_and_moves_on_every_refresh() {
+        let word = |seconds| {
+            status(Duration::from_secs(seconds), 1)
+                .split('…')
+                .next()
+                .expect("a word")
+                .to_owned()
+        };
+        assert!(status(Duration::from_secs(80), 1).ends_with("… (1m20s)"));
+        assert!(status(Duration::ZERO, 1).starts_with('✻'));
+        assert_eq!(word(0), word(REFRESH.as_secs() - 1));
+        assert_ne!(word(0), word(REFRESH.as_secs()));
+        assert_ne!(status(Duration::ZERO, 1), status(Duration::ZERO, 2));
     }
 
     #[test]
