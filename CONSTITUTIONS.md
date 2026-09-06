@@ -1,0 +1,1 @@
+/home/karin0/.constitutions/CONSTITUTIONS.md

@@ -1,0 +1,54 @@
+#!/bin/bash
+set -euo pipefail
+# Exit code 2 on Stop blocks the turn from ending, so every path reports 0 to Claude
+# Code while set -e still aborts on the first real error, loudly, on stderr.
+trap 'exit 0' EXIT
+
+# shellcheck source=claude-tg.sh
+. "$(dirname "$0")"/claude-tg.sh
+
+json=$(cat)
+event=$(jq -r .hook_event_name <<< "$json")
+cwd=$(jq -r .cwd <<< "$json")
+session=$(jq -r .session_id <<< "$json")
+prompt=$(jq -r '.prompt_id // ""' <<< "$json")
+transcript=$(jq -r '.transcript_path // ""' <<< "$json")
+
+start=''
+if [ -n "$prompt" ] && [ -f "$transcript" ]; then
+  # Every record of the turn carries its promptId, so the first one starts the clock.
+  start=$(jq -rn --arg p "$prompt" 'first(inputs | select(.promptId == $p) | .timestamp)' "$transcript")
+fi
+
+took=''
+if [ -n "$start" ]; then
+  elapsed=$(( $(date +%s) - $(date -d "$start" +%s) ))
+  if [ "$elapsed" -lt 60 ]; then
+    took=" ${elapsed}s"
+  elif [ "$elapsed" -lt 3600 ]; then
+    took=" $((elapsed / 60))m$((elapsed % 60))s"
+  else
+    took=" $((elapsed / 3600))h$((elapsed % 3600 / 60))m"
+  fi
+fi
+
+# StopFailure names its API error under a field we have not observed yet, and a future
+# event carries fields nobody has read here, so whatever survives the common ones is
+# sent verbatim rather than dropped.
+residue='del(.session_id, .transcript_path, .cwd, .hook_event_name, .prompt_id, .permission_mode, .effort, .agent_id, .agent_type) | tojson'
+
+case $event in
+  Stop)         tag='#claude';         body=$(jq -r '.last_assistant_message // ""' <<< "$json") ;;
+  StopFailure)  tag='#claude #failed'; body=$(jq -r ".error // ($residue)" <<< "$json") ;;
+  Notification) tag='#claude #input';  body=$(jq -r ".message // ($residue)" <<< "$json") ;;
+  *)            tag="#claude #$event"; body=$(jq -r "$residue" <<< "$json") ;;
+esac
+
+case $event in
+  Stop|StopFailure) stream_stop "$session" ;;
+esac
+
+title="$(tg_title "$cwd" "$session" "$took")  $tag"
+
+jq -n --arg c "$CHAT_ID" --arg t "$title" --arg b "$body" \
+  '{chat_id: $c, rich_message: {markdown: ($t + "\n\n" + $b)}}' | tg_post sendRichMessage
