@@ -1,6 +1,6 @@
 //! Drives the hook chain end to end against a server that answers like Telegram, so the
-//! calls a turn makes, their order and the notification each carries are checked without
-//! a network or a chat.
+//! calls a turn makes, their order, what each replies to and the notification each
+//! carries are checked without a network or a chat.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,9 +12,11 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 const PATIENCE: Duration = Duration::from_secs(20);
+/// The server numbers messages by the order they were sent in, and the prompt is first.
+const PROMPT_MESSAGE: i64 = 1;
 
 #[test]
-fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
+fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     let session = format!("test-{}", std::process::id());
     let (port, calls) = recorder();
     let root = prepare(&session);
@@ -27,6 +29,7 @@ fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
             "hook_event_name": "UserPromptSubmit",
             "session_id": session,
             "cwd": env!("CARGO_MANIFEST_DIR"),
+            "prompt": "what does it do",
         }),
     );
     wait_for(|| socket.exists(), "the daemon never bound its socket");
@@ -69,6 +72,8 @@ fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
             .map(|call| call.label.as_str())
             .collect::<Vec<_>>(),
         [
+            // The turn opens with what was asked, which the rest of it replies to.
+            "sendRichMessage silent",
             // The first segment streams into a draft of its own.
             "sendRichMessageDraft",
             // The second segment starting is what tells the first one it is complete.
@@ -79,7 +84,20 @@ fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
             "sendRichMessage ring",
         ]
     );
-    frame(&made[0].markdown, "first segment text");
+    let short: String = session.chars().take(8).collect();
+    assert_eq!(
+        made[0].markdown,
+        format!("**klaude** `{short}`\n\nwhat does it do")
+    );
+    assert_eq!(made[0].reply, json!(null), "the prompt opens the thread");
+    frame(&made[1].markdown, "first segment text");
+    // A prompt deleted from the chat leaves the answer to it a message of its own.
+    let reply = json!({
+        "message_id": PROMPT_MESSAGE,
+        "allow_sending_without_reply": true,
+    });
+    assert_eq!(made[2].reply, reply, "the first segment replies");
+    assert_eq!(made[4].reply, reply, "the last message replies");
     wait_for(
         || !socket.exists(),
         "the daemon outlived the turn it was reporting",
@@ -91,6 +109,7 @@ fn a_turn_keeps_a_message_per_segment_and_rings_once_at_the_end() {
 struct Call {
     label: String,
     markdown: String,
+    reply: serde_json::Value,
 }
 
 /// Consecutive repeats collapse, because how many frames a draft takes is a matter of
@@ -109,7 +128,7 @@ fn collect(calls: &Receiver<Call>, last: &str) -> Vec<Call> {
         });
         let done = call.label == last;
         match made.last_mut() {
-            Some(kept) if kept.label == call.label => kept.markdown = call.markdown,
+            Some(kept) if kept.label == call.label => *kept = call,
             _ => made.push(call),
         }
         if done {
@@ -232,6 +251,7 @@ fn answer(mut stream: TcpStream, id: usize, calls: &Sender<Call>) {
         .send(Call {
             label: format!("{method}{sound}"),
             markdown,
+            reply: body["reply_parameters"].clone(),
         })
         .expect("record");
 

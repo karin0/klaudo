@@ -77,7 +77,8 @@ pub fn log_path(session: &str) -> PathBuf {
 
 /// Owns every Telegram call of one turn, so the draft frames and the message that
 /// replaces them are ordered by being issued from the same place.
-pub fn run(session: &str, cwd: &str) {
+pub fn run(prompt: &Event) {
+    let session = &prompt.session_id;
     let directory = runtime_dir();
     fs::create_dir_all(&directory).expect("runtime directory");
     let lock = File::create(directory.join(format!("{session}.lock"))).expect("lock file");
@@ -90,7 +91,7 @@ pub fn run(session: &str, cwd: &str) {
     let socket = UnixDatagram::bind(&path).expect("bind");
     socket.set_read_timeout(Some(POLL)).expect("read timeout");
 
-    let mut turn = Turn::new(hook::project(cwd), session.to_owned());
+    let mut turn = Turn::new(prompt);
     let mut buffer = vec![0u8; DATAGRAM_MAX];
     loop {
         match socket.recv(&mut buffer) {
@@ -161,24 +162,34 @@ struct Turn {
     telegram: Telegram,
     project: String,
     session: String,
-    prompt: Option<String>,
+    prompt_id: Option<String>,
+    /// The message carrying what was asked, which the rest of the turn replies to.
+    reply_to: Option<i64>,
     started: Instant,
     touched: Instant,
     segment: Option<Segment>,
 }
 
 impl Turn {
-    fn new(project: String, session: String) -> Self {
+    fn new(prompt: &Event) -> Self {
         let now = Instant::now();
-        Self {
+        let mut turn = Self {
             telegram: Telegram::from_env(),
-            project,
-            session,
-            prompt: None,
+            project: hook::project(&prompt.cwd),
+            session: prompt.session_id.clone(),
+            prompt_id: prompt.prompt_id.clone(),
+            reply_to: None,
             started: now,
             touched: now,
             segment: None,
-        }
+        };
+        turn.reply_to = turn.telegram.send(
+            &hook::message(prompt, &turn.head(), ""),
+            // The phone's owner typed this, so it arrives without a sound.
+            Sound::Silent,
+            None,
+        );
+        turn
     }
 
     fn idle(&self) -> Duration {
@@ -186,7 +197,7 @@ impl Turn {
     }
 
     fn head(&self) -> String {
-        hook::head(&self.project, &self.session, self.prompt.as_deref())
+        hook::head(&self.project, &self.session, self.prompt_id.as_deref())
     }
 
     /// True once the turn has been reported and nothing is left to send.
@@ -194,8 +205,8 @@ impl Turn {
         self.touched = Instant::now();
         // The base hook schema leaves this optional, so it is taken from whichever event
         // of the turn carries it first.
-        if self.prompt.is_none() {
-            self.prompt.clone_from(&event.prompt_id);
+        if self.prompt_id.is_none() {
+            self.prompt_id.clone_from(&event.prompt_id);
         }
         match event.hook_event_name.as_str() {
             "MessageDisplay" => {
@@ -207,8 +218,11 @@ impl Turn {
                 true
             }
             _ => {
-                self.telegram
-                    .send(&hook::message(event, &self.head(), ""), Sound::Ring);
+                self.telegram.send(
+                    &hook::message(event, &self.head(), ""),
+                    Sound::Ring,
+                    self.reply_to,
+                );
                 false
             }
         }
@@ -240,7 +254,7 @@ impl Turn {
         }
         // The tag marks a finished turn, and this segment is the middle of one.
         let posted = hook::compose(&self.head(), &took(self.started.elapsed()), "", &text);
-        self.telegram.send(&posted, Sound::Silent);
+        self.telegram.send(&posted, Sound::Silent, self.reply_to);
     }
 
     fn tick(&mut self) {
@@ -267,7 +281,7 @@ impl Turn {
         self.segment = None;
         let message = hook::message(event, &self.head(), &took(self.started.elapsed()));
         // The one sound of the turn: the reply is complete and worth coming back to.
-        self.telegram.send(&message, Sound::Ring);
+        self.telegram.send(&message, Sound::Ring, self.reply_to);
     }
 }
 

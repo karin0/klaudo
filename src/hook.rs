@@ -29,6 +29,8 @@ pub struct Event {
     #[serde(default)]
     pub prompt_id: Option<String>,
     #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
     pub message_id: Option<String>,
     #[serde(default)]
     pub index: Option<u32>,
@@ -47,6 +49,8 @@ pub struct Event {
 impl Event {
     fn tag(&self) -> String {
         match self.hook_event_name.as_str() {
+            // The turn opens with what was asked; the tag belongs to what closes it.
+            "UserPromptSubmit" => String::new(),
             "Stop" => TAG.to_owned(),
             "StopFailure" => format!("{TAG} #failed"),
             "Notification" => format!("{TAG} #input"),
@@ -56,6 +60,7 @@ impl Event {
 
     fn body(&self) -> String {
         match self.hook_event_name.as_str() {
+            "UserPromptSubmit" => self.prompt.clone().unwrap_or_default(),
             "Stop" => self.last_assistant_message.clone().unwrap_or_default(),
             "StopFailure" => self.error.clone().unwrap_or_else(|| self.residue()),
             "Notification" => self.message.clone().unwrap_or_else(|| self.residue()),
@@ -138,6 +143,16 @@ mod tests {
             message(&stop, "**p**", " 12s"),
             "**p** 12s  #claude\n\ndone"
         );
+    }
+
+    #[test]
+    fn a_prompt_reports_what_was_asked_and_opens_the_thread() {
+        let submit = event(serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "s",
+            "prompt": "what does it do",
+        }));
+        assert_eq!(message(&submit, "**p**", ""), "**p**\n\nwhat does it do");
     }
 
     #[test]

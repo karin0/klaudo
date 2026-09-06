@@ -47,15 +47,22 @@ impl Telegram {
         }
     }
 
-    pub fn send(&self, markdown: &str, sound: Sound) {
-        self.call(
-            "sendRichMessage",
-            &json!({
-                "chat_id": self.chat_id,
-                "disable_notification": matches!(sound, Sound::Silent),
-                "rich_message": {"markdown": clamp(markdown)},
-            }),
-        );
+    /// The id of the message it left in the chat, which is what a later message replies
+    /// to.
+    pub fn send(&self, markdown: &str, sound: Sound, reply_to: Option<i64>) -> Option<i64> {
+        let mut body = json!({
+            "chat_id": self.chat_id,
+            "disable_notification": matches!(sound, Sound::Silent),
+            "rich_message": {"markdown": clamp(markdown)},
+        });
+        if let Some(message_id) = reply_to {
+            // A prompt the user deleted must not take the answer to it down as well.
+            body["reply_parameters"] = json!({
+                "message_id": message_id,
+                "allow_sending_without_reply": true,
+            });
+        }
+        self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
     }
 
     /// Frames sharing a draft id animate into each other; a new id replaces the draft.
