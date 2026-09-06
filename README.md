@@ -18,7 +18,7 @@ and the last message is the only one that makes a sound. Each carries the elapse
 it was posted at; only the last carries the `#claude` tag, which therefore counts turns
 rather than segments.
 
-Every message opens with the same line: the project directory and its branch, then
+Every message opens with the same line: the project directory, then
 `session/prompt` shortened to eight characters each. The prompt half comes from the
 `prompt_id` that Claude Code keeps constant from one user prompt until the next, so the
 messages of one turn share it and the next turn reads differently.
