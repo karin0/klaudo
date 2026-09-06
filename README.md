@@ -5,6 +5,11 @@ left alone and picked up when it is worth returning to.
 
 ## What lands in the chat
 
+A turn opens with the prompt, posted as it was typed and without a sound. Every message
+the turn sends afterwards is a Telegram reply to that one, so a chat that collects many
+turns reads as a thread per turn. A prompt deleted from the chat leaves the rest of its
+turn arriving as messages of their own.
+
 A turn produces one or more response segments, each an assistant message with text in
 it. A segment streams into a Telegram draft while it is being written, and becomes a
 message once it is complete, which is when the next segment starts. While the draft is
@@ -32,8 +37,8 @@ One command answers every event, so `settings.json` repeats it under `UserPrompt
 {"type": "command", "command": "set -a && . <secrets file> && exec <path to klaude>"}
 ```
 
-`UserPromptSubmit` starts the daemon and sends nothing, which is also where the turn's
-clock starts. Every other event is reported.
+`UserPromptSubmit` starts the daemon and hands it the event on stdin, which is where the
+turn's clock starts and where the prompt is posted from. Every other event is reported.
 
 ## Configuration
 
@@ -55,10 +60,11 @@ scripts it replaced cost 9.4 ms per invocation, against 0.5 ms for the same hand
 
 Three constraints then land on the process at the other end. A draft disappears 30
 seconds after its last frame, so a turn that goes quiet inside a long tool call needs
-frames anyway. The final message must not race a frame still in flight, which is free
-once one process issues every call of the turn in order. And the elapsed time in the
-final message is just the age of the daemon, which is why nothing here reads the
-transcript to find out when the turn began.
+frames anyway. The final message must not race a frame still in flight, and the replies
+all carry the id Telegram gave the prompt message; both are free once one process issues
+every call of the turn in order. And the elapsed time in the final message is just the
+age of the daemon, which is why nothing here reads the transcript to find out when the
+turn began.
 
 The daemon lives for exactly one turn. It starts at `UserPromptSubmit` and exits after
 `Stop`, so its state needs no expiry rules and no cleanup pass.
@@ -67,7 +73,8 @@ The daemon lives for exactly one turn. It starts at `UserPromptSubmit` and exits
 
 A resumed session, or a daemon that died, leaves the socket unanswered. `Stop`,
 `StopFailure` and `Notification` then send from the hook process itself, so the chat
-still gets the turn; the draft is what goes missing.
+still gets the turn, as a message of its own with no draft before it and no prompt above
+it to reply to.
 
 ## Checks
 
