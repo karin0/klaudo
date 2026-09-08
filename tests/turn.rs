@@ -191,7 +191,7 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
 }
 
 /// A turn that talked, worked and talked again leaves three messages in order, and the
-/// run of tool calls is the middle one, fenced and apart from what was said.
+/// run of tool calls is the middle one.
 #[test]
 fn a_run_of_tool_calls_is_a_message_of_its_own() {
     let (port, calls, _chat) = recorder();
@@ -253,7 +253,7 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     );
     assert_eq!(
         body,
-        "```\n✗ Bash cargo test  4s\n  ⎿ Exit code 1\n⏺ [Explore] Read /src/listen.rs  12ms\n```"
+        "× Bash `cargo test` 4s  \n⎿ Exit code 1  \n● [Explore] Read `/src/listen.rs` 12ms"
     );
     assert_eq!(
         made[4].reply,
