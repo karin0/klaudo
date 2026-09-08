@@ -593,11 +593,11 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
 }
 
 /// A message's last flushes race the hook of the tool call that ends it, so a delta can
-/// land after klaude has already posted that message. Reviving the message would post
-/// its words a second time and seal the run of tool calls while a call is still running,
-/// losing what that call went on to report.
+/// land after klaude has already posted that message, carrying a paragraph rather than
+/// a few characters. A tool reports late for the same reason, once the run holding it
+/// is a message. Both belong in the message their segment became.
 #[test]
-fn a_flush_landing_after_its_message_was_posted_posts_nothing_again() {
+fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     let (port, calls, _chat) = recorder();
     let root = prepare("straggling-flush");
     let resident = resident(&root, port);
@@ -610,8 +610,8 @@ fn a_flush_landing_after_its_message_was_posted_posts_nothing_again() {
         json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
                "tool_input": {"command": "cargo test"}}),
         json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 2, "delta": " now"}),
-        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
         json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "done"}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
         json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
     ];
     for mut event in turn {
@@ -622,25 +622,31 @@ fn a_flush_landing_after_its_message_was_posted_posts_nothing_again() {
     }
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
-    let posted: Vec<&str> = made
-        .iter()
-        .filter(|call| call.label.starts_with("sendRichMessage "))
-        .map(|call| {
-            call.markdown
-                .split_once("\n\n")
-                .expect("a head and a body")
-                .1
-        })
-        .collect();
+    let bodies = |label: &str| -> Vec<String> {
+        made.iter()
+            .filter(|call| call.label.starts_with(label))
+            .map(|call| {
+                call.markdown
+                    .split_once("\n\n")
+                    .expect("a head and a body")
+                    .1
+                    .to_owned()
+            })
+            .collect()
+    };
     assert_eq!(
-        posted,
+        bodies("sendRichMessage "),
+        // The run went out while its one call was still running.
+        [">go", "on it", "○ Bash `cargo test`", "done"],
+        "each segment reaches the chat once"
+    );
+    assert_eq!(
+        bodies("editMessageText"),
         [
-            ">go",
-            "on it",
-            // The run is sealed by the message that follows it, not by the straggler,
-            // so the call it holds carries what it reported.
+            // The flush that lost the race is written into the message it belongs to.
+            "on it now",
+            // So is the outcome of a call that reported after its run was posted.
             "● Bash `cargo test` 30ms",
-            "done",
         ]
     );
     drop(resident);

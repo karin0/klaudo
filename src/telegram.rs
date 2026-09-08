@@ -74,6 +74,19 @@ impl Telegram {
         self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
     }
 
+    /// Rewrites a message klaude posted, for a segment that received more after it went
+    /// out.
+    pub fn edit(&self, message_id: i64, markdown: &str) {
+        self.call(
+            "editMessageText",
+            &json!({
+                "chat_id": self.chat_id,
+                "message_id": message_id,
+                "rich_message": {"markdown": clamp(markdown)},
+            }),
+        );
+    }
+
     /// Frames sharing a draft id animate into each other; a new id replaces the draft.
     pub fn draft(&self, draft_id: i64, markdown: &str) {
         self.call(
