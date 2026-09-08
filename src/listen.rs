@@ -888,10 +888,13 @@ impl Machine {
         };
         let id = id.clone();
         let Some(pane) = session.pane.clone() else {
-            self.say(&format!(
-                "`{}` is not running in tmux",
-                &id[..8.min(id.len())]
-            ));
+            // Naming the terminal is what tells a session started as a background job,
+            // which runs on a pty of its own, from one whose pane went away.
+            let short = &id[..8.min(id.len())];
+            self.say(&match tmux::controlling_tty(session.pid) {
+                Some(tty) => format!("`{short}` is on `{tty}`, which no tmux pane holds"),
+                None => format!("`{short}` has no terminal to type into"),
+            });
             return;
         };
         let pid = session.pid;
