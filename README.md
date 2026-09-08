@@ -14,21 +14,23 @@ asked for it, and its turn threads under that message. A prompt deleted from the
 leaves the rest of its turn arriving as messages of their own.
 
 A turn is a sequence of segments. A segment is either an assistant message with text in
-it or the run of tool calls between two of those, and it streams into a Telegram draft
-while it is live, becoming a message once the next segment starts. While the draft is on
-screen it carries a status line under the text, a word from Claude Code's own vocabulary
-and the turn's elapsed time, stepping to the next word on every refresh. A turn opens
-its draft when it starts, with the status line and no text above it, so the minutes it
-spends thinking are on screen as they pass. The last segment is not posted on its own:
-the `Stop` event carries its text, so posting it would put the same words in the chat
-twice.
+it or the run of tool calls between two of those. One message stands at the foot of the
+turn showing the segment that is open, rewritten as that segment grows, and the segment
+takes it once the next one starts. So the message the chat ends up holding is the one it
+was watched in. Under what the open segment has said, that message carries a status
+line, a word from Claude Code's own vocabulary and the turn's elapsed time, stepping to
+the next word on every refresh, so the minutes a turn spends thinking are on screen as
+they pass. It goes up three seconds into the turn, which leaves a turn answered at once
+nothing to take back. The last segment keeps no message of its own: the `Stop` event
+carries its text, so the message that was showing it is taken back once the answer is in
+the chat.
 
 A run of tool calls is posted a line per call: a mark for how it went, the tool, the
 field of its input that says what it is doing, and the time it took. What a failed tool
 reported goes on a line under that, its first sixty characters. A call a subagent made
 carries that agent's type in brackets, and one still running is marked as such and shows
-no time, so the draft reads as the terminal does, and a run posted with a call still
-running is rewritten once that call reports. A run past thirty calls lists the
+no time, so a run reads as the terminal does, and a run whose message went out with a
+call still running is rewritten once that call reports. A run past thirty calls lists the
 newest thirty and counts the rest.
 
 ● Bash `cargo test` 4s
@@ -41,11 +43,12 @@ have asked the reader to scroll sideways for the time at its end. The command it
 travels in a code span, which is what keeps a command carrying markdown from being read
 as markdown.
 
-One draft carries the whole turn: every frame of every segment shares the turn's draft
-id, which is what animates them into each other rather than replacing one with the next.
-Telegram offers no way to retire a draft, and posting a message leaves it standing, so a
-segment that has become a message is framed out of the draft. The turn's last frame is
-the head alone, which is what waits out the half minute after the answer is in the chat.
+Telegram's message drafts do the same job in one call, and klaude was built on them
+first. A draft is ephemeral: it expires thirty seconds after its last frame, no method
+retires it, and sending the message it was previewing leaves it standing. Clients differ
+on what happens when the message arrives beside it, from a clean transition to a
+duplicate to a crash. Rewriting a real message costs one extra call at the end of a turn
+and none of that is possible.
 
 A message's last flushes race the hook of the tool call that ends it, so a flush can
 land after klaude has posted that message, carrying a paragraph rather than a few
@@ -135,8 +138,8 @@ chat knows when to type its first prompt.
 `BOT_TOKEN` and `CHAT_ID` are read from the environment. That is what the first half of
 the hook command is for: `set -a` marks what follows for export, so a file of plain
 shell assignments becomes variables the binary after it can see. `CHAT_ID` is the
-integer id of a private chat, because Telegram accepts a draft only there, and it is the
-sender every incoming message is checked against.
+integer id of a private chat, and it is the sender every incoming message is checked
+against.
 
 `API_BASE` is optional and defaults to `https://api.telegram.org`; the test points it at
 a server of its own.
@@ -158,10 +161,10 @@ klaude was written for, the shell scripts it replaced cost 9.4 ms per invocation
 against 0.5 ms for the same handoff.
 
 The process at the other end runs for as long as the machine does, one per machine.
-Three constraints put it there. A draft disappears 30 seconds after its last frame, so a
-turn that goes quiet inside a long tool call needs frames anyway. The final message must
-not race a frame still in flight, and the replies all carry the id Telegram gave the
-prompt message; both are free once one process issues every call in order.
+Three constraints put it there. The message a turn is watched in has to keep its clock
+moving while nothing else happens. The answer must not race a rewrite still in flight,
+and the replies all carry the id Telegram gave the prompt message; both are free once
+one process issues every call in order.
 
 The third constraint is the chat. Telegram hands updates to one reader per bot, and a
 message from the phone has to be answerable when no turn is running, which is exactly
@@ -205,8 +208,8 @@ the pairing after that is by position and can attach a turn to the wrong prompt.
 
 A machine without the unit installed, or a resident that died, leaves the socket
 unanswered. `Stop`, `StopFailure` and `Notification` then send from the hook process
-itself, so the chat still gets the turn, as a message of its own with no draft before it
-and no prompt above it to reply to. Nothing can be sent back to a session in that state.
+itself, so the chat still gets the turn, as a message of its own with nothing shown
+before it and no prompt above it to reply to. Nothing can be sent back to a session in that state.
 
 `SessionStart` and the three tool events are dropped instead. A tool event posted on its
 own would be one Telegram call per tool call, and `PreToolUse` holds up the call it
@@ -224,10 +227,11 @@ resident forwards events the resident has no arm for, which reach the chat as th
 verbatim report an unrecognised event falls back to.
 
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
-against a server of its own that answers the way Telegram does. It asserts the calls a
-two-segment turn makes, their order and which of them carries a notification; that a
-prompt queued during a turn gets a thread of its own; that a run of tool calls is posted
-as a message between the two halves of what the turn said; that a delta landing after
-its own `Stop` leaves nothing after the answer but an empty frame; that a flush and a
-tool outcome arriving after their segment was posted rewrite that message; and that a
+against a server of its own that answers the way Telegram does. It asserts what the chat is left
+holding after a two-segment turn, in order and with the sound each message carried; that
+a segment watched while it ran finishes in the message it was watched in and the last
+one's message is taken back; that a prompt queued during a turn gets a thread of its
+own; that a run of tool calls is a message between the two halves of what the turn said;
+that a delta landing after its own `Stop` leaves the answer last; that a flush and a
+tool outcome arriving after their segment went out rewrite that message; and that a
 message replying to nothing reaches the session heard from last.

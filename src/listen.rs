@@ -17,9 +17,13 @@ use crate::hook::{self, Event};
 use crate::telegram::{Sound, Telegram};
 use crate::tmux::{self, Pane};
 
-/// A draft disappears 30 seconds after its last frame, so a turn that goes quiet inside
-/// a long tool call still needs frames to keep it on screen.
-const REFRESH: Duration = Duration::from_secs(20);
+/// The longest the message showing an open segment goes without its clock advancing,
+/// so a turn that goes quiet inside a long tool call still reads as running.
+const REFRESH: Duration = Duration::from_secs(30);
+/// The shortest gap between two rewrites of that message. It is also how long a turn
+/// runs before the message exists, so a turn answered at once leaves nothing to take
+/// back.
+const REWRITE: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(200);
 /// Long enough to let a restarting instance take over from one still shutting down.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
@@ -281,16 +285,16 @@ enum Body {
     Tools(Vec<Call>),
 }
 
-/// One stretch of a turn, framed into the turn's draft until the next one starts, and
-/// posted as a message then. A turn opens with an empty text segment, whose frames are
-/// the status line while nothing has been said yet.
+/// One stretch of a turn, written into the turn's open message until the next one
+/// starts and that message is its own. A turn opens with an empty text segment, so what
+/// stands in the chat while nothing has been said is the status line.
 struct Segment {
     id: String,
     body: Body,
-    /// What the last frame showed and when it went out, absent until the first frame.
-    framed: Option<(String, Instant)>,
-    /// The message this segment became and the elapsed time stamped on it, which is
-    /// what a flush or an outcome arriving later rewrites.
+    /// What the open message was last written with and when, absent until it exists.
+    written: Option<(String, Instant)>,
+    /// The message this segment finished in and the elapsed time stamped on it, which
+    /// is what a flush or an outcome arriving later rewrites.
     posted: Option<(i64, Duration)>,
 }
 
@@ -299,7 +303,7 @@ impl Segment {
         Self {
             id: id.to_owned(),
             body,
-            framed: None,
+            written: None,
             posted: None,
         }
     }
@@ -333,12 +337,14 @@ struct Ask {
 /// One turn, from the event that started it to its Stop.
 struct Turn {
     prompt_id: String,
-    /// Every frame of every segment carries this, so one draft animates through the
-    /// whole turn rather than one bubble being left behind per segment.
-    draft_id: i64,
+    /// Where this turn starts in the list of status words.
+    seed: u64,
     started: Instant,
     /// The message carrying what was asked, which the rest of the turn replies to.
     reply_to: Option<i64>,
+    /// The message at the foot of the turn, carrying the open segment and the status
+    /// line. The segment that finishes in it takes it, and the next one opens another.
+    live: Option<i64>,
     segment: Option<Segment>,
     /// The segments the chat already has, kept because what belongs in one goes on
     /// arriving after it was posted.
@@ -498,10 +504,11 @@ impl Machine {
             let prompt_id = event.prompt_id.clone().unwrap_or_default();
             session.turn = Some(Turn {
                 segment: Some(Segment::new(&prompt_id, Body::Text(BTreeMap::new()))),
-                draft_id: draft_id(&prompt_id),
+                seed: seed(&prompt_id),
                 prompt_id,
                 started: Instant::now(),
                 reply_to: posted,
+                live: None,
                 sealed: Vec::new(),
             });
         }
@@ -510,7 +517,7 @@ impl Machine {
     /// Opens the turn an event belongs to when the event names one that has not been
     /// seen, which is how a queued prompt's turn begins. False for an event of a turn
     /// that already finished: the three hook processes run at once, so a delta can land
-    /// after its own `Stop`, and opening a second turn for it would leave a draft
+    /// after its own `Stop`, and opening a second turn for it would leave a message
     /// beside the answer showing something else.
     fn turn(&mut self, id: &str, prompt_id: Option<&str>) -> bool {
         let Some(session) = self.sessions.get(id) else {
@@ -530,9 +537,10 @@ impl Machine {
         };
         session.turn = Some(Turn {
             prompt_id: named.to_owned(),
-            draft_id: draft_id(named),
+            seed: seed(named),
             started: Instant::now(),
             reply_to: session.queued.pop_front().flatten(),
+            live: None,
             segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
             sealed: Vec::new(),
         });
@@ -654,8 +662,9 @@ impl Machine {
         }
     }
 
-    /// A segment that has stopped receiving text is complete, so what its draft was
-    /// showing becomes a message. The turn interrupts once, at its end, so this is quiet.
+    /// A segment that has stopped receiving text is complete, so it takes the open
+    /// message and the elapsed time it finished at, and the next segment opens another.
+    /// A segment that said nothing leaves the open message to the one that follows it.
     fn seal(&mut self, id: &str) {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -667,21 +676,25 @@ impl Machine {
             return;
         };
         let text = segment.text();
-        if !text.is_empty() {
-            let elapsed = turn.started.elapsed();
-            let prompt_id = turn.prompt_id.clone();
-            let reply_to = turn.reply_to;
-            let draft = turn.draft_id;
-            let head = session.head(id, Some(&prompt_id));
-            // The tag marks a finished turn, and this segment is the middle of one.
-            let posted = hook::compose(&head, &took(elapsed), "", &text);
-            segment.posted = self
-                .telegram
-                .send(&posted, Sound::Silent, reply_to)
-                .map(|message| (message, elapsed));
-            let status = status(elapsed, draft);
-            self.telegram.draft(draft, &frame(&head, "", Some(&status)));
+        if text.is_empty() {
+            return;
         }
+        let elapsed = turn.started.elapsed();
+        let prompt_id = turn.prompt_id.clone();
+        let reply_to = turn.reply_to;
+        let live = turn.live.take();
+        let head = session.head(id, Some(&prompt_id));
+        // The tag marks a finished turn, and this segment is the middle of one.
+        let done = hook::compose(&head, &took(elapsed), "", &text);
+        let message = match live {
+            Some(message) => {
+                self.telegram.edit(message, &done);
+                Some(message)
+            }
+            // A segment that ran its course inside one rewrite has no message yet.
+            None => self.telegram.send(&done, Sound::Silent, reply_to),
+        };
+        segment.posted = message.map(|message| (message, elapsed));
         let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
         };
@@ -732,15 +745,15 @@ impl Machine {
             return;
         };
         session.done = Some(turn.prompt_id.clone());
-        // The last segment's text is what this event carries, so its draft is dropped
-        // rather than posted a second time just above the message that repeats it.
         let head = session.head(id, Some(&turn.prompt_id));
         let message = hook::message(event, &head, &took(turn.started.elapsed()));
         // The one sound of the turn: the reply is complete and worth coming back to.
         self.telegram.send(&message, Sound::Ring, turn.reply_to);
-        // Nothing is running any more, so the draft waits out its half minute on the
-        // head alone.
-        self.telegram.draft(turn.draft_id, &frame(&head, "", None));
+        // This event carries the last segment's text, so the message that was showing
+        // it goes rather than standing above the one that repeats it.
+        if let Some(live) = turn.live {
+            self.telegram.delete(live);
+        }
     }
 
     /// Anything else a session reports lands in the thread of the turn it happened in.
@@ -765,42 +778,73 @@ impl Machine {
         for id in gone {
             // A session killed mid-turn never sends Stop, and what it did say still goes.
             self.seal(&id);
+            let live = self
+                .sessions
+                .get_mut(&id)
+                .and_then(|session| session.turn.as_mut())
+                .and_then(|turn| turn.live.take());
+            if let Some(message) = live {
+                self.telegram.delete(message);
+            }
             self.sessions.remove(&id);
         }
 
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         for id in ids {
-            let Some(session) = self.sessions.get(&id) else {
-                continue;
-            };
-            let Some(turn) = session.turn.as_ref() else {
-                continue;
-            };
-            let Some(segment) = turn.segment.as_ref() else {
-                continue;
-            };
-            let text = segment.text();
-            if segment
-                .framed
-                .as_ref()
-                .is_some_and(|(framed, at)| *framed == text && at.elapsed() < REFRESH)
-            {
-                continue;
+            self.show(&id);
+        }
+    }
+
+    /// The open segment as the chat should be showing it: what it has said so far and
+    /// the status line under that. The message holding it is sent once the turn has run
+    /// long enough to be worth watching, and rewritten as the segment grows.
+    fn show(&mut self, id: &str) {
+        let Some(session) = self.sessions.get(id) else {
+            return;
+        };
+        let Some(turn) = session.turn.as_ref() else {
+            return;
+        };
+        let elapsed = turn.started.elapsed();
+        if elapsed < REWRITE {
+            return;
+        }
+        let Some(segment) = turn.segment.as_ref() else {
+            return;
+        };
+        let text = segment.text();
+        let due = match &segment.written {
+            None => true,
+            Some((written, at)) if *written == text => at.elapsed() >= REFRESH,
+            Some((_, at)) => at.elapsed() >= REWRITE,
+        };
+        if !due {
+            return;
+        }
+        let head = session.head(id, Some(&turn.prompt_id));
+        let live = turn.live;
+        let reply_to = turn.reply_to;
+        let shown = hook::compose(
+            &head,
+            &took(elapsed),
+            "",
+            &running(&text, &status(elapsed, turn.seed)),
+        );
+        let message = match live {
+            Some(message) => {
+                self.telegram.edit(message, &shown);
+                Some(message)
             }
-            let head = session.head(&id, Some(&turn.prompt_id));
-            let status = status(turn.started.elapsed(), turn.draft_id);
-            let draft = turn.draft_id;
-            self.telegram
-                .draft(draft, &frame(&head, &text, Some(&status)));
-            let Some(segment) = self
-                .sessions
-                .get_mut(&id)
-                .and_then(|s| s.turn.as_mut())
-                .and_then(|t| t.segment.as_mut())
-            else {
-                continue;
-            };
-            segment.framed = Some((text, Instant::now()));
+            None => self.telegram.send(&shown, Sound::Silent, reply_to),
+        };
+        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+            return;
+        };
+        turn.live = message;
+        if message.is_some()
+            && let Some(segment) = turn.segment.as_mut()
+        {
+            segment.written = Some((text, Instant::now()));
         }
     }
 
@@ -980,31 +1024,29 @@ fn expand(argument: &str) -> Option<PathBuf> {
     path.canonicalize().ok()
 }
 
-/// The same across a turn's frames so they animate into each other, non-zero as Telegram
-/// requires, and different per turn so one turn's draft is not the next one's.
-fn draft_id(message_id: &str) -> i64 {
+/// Where a turn starts in the list of status words, so two turns running at once do not
+/// step through it together.
+fn seed(prompt_id: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
-    message_id.hash(&mut hasher);
-    i64::try_from(hasher.finish() & 0x7fff_ffff).expect("31 bits fit") | 1
+    prompt_id.hash(&mut hasher);
+    hasher.finish() % WORDS.len() as u64
 }
 
-/// One frame of a turn's draft. Telegram offers no way to retire a draft, and sending a
-/// message leaves it standing, so a segment that has become a message is framed out of
-/// the draft to keep the same words from being on screen twice.
-fn frame(head: &str, text: &str, status: Option<&str>) -> String {
-    match status {
-        Some(status) => format!("{head}\n\n{text}\n<tg-thinking>{status}</tg-thinking>"),
-        None => format!("{head}\n\n{text}"),
+/// The body of the message showing an open segment: what it has said, then the status
+/// line, which is what a turn spending minutes in tool calls reads by.
+fn running(text: &str, status: &str) -> String {
+    if text.is_empty() {
+        status.to_owned()
+    } else {
+        format!("{text}{BREAK}{status}")
     }
 }
 
-/// What the draft says under the text it is streaming. The word changes once per
-/// refresh and starts somewhere else in the list per segment, so a turn sitting in a
-/// long tool call keeps showing a frame that differs from the last one.
-fn status(elapsed: Duration, draft_id: i64) -> String {
-    let step = draft_id.unsigned_abs() + elapsed.as_secs() / REFRESH.as_secs();
-    let word =
-        WORDS[usize::try_from(step).expect("a 31-bit id plus a turn's seconds") % WORDS.len()];
+/// The word changes once per refresh, so a turn sitting in a long tool call keeps
+/// showing a line that differs from the last one.
+fn status(elapsed: Duration, seed: u64) -> String {
+    let step = seed + elapsed.as_secs() / REFRESH.as_secs();
+    let word = WORDS[usize::try_from(step).expect("a turn's seconds") % WORDS.len()];
     format!("✻ {word}… ({})", took(elapsed).trim())
 }
 
@@ -1069,10 +1111,10 @@ mod tests {
     }
 
     #[test]
-    fn a_draft_id_is_stable_per_turn_and_never_zero() {
-        assert_eq!(draft_id("turn_1"), draft_id("turn_1"));
-        assert_ne!(draft_id("turn_1"), draft_id("turn_2"));
-        assert!(draft_id("").is_positive());
+    fn a_seed_is_stable_per_turn_and_lands_on_a_word() {
+        assert_eq!(seed("turn_1"), seed("turn_1"));
+        assert_ne!(seed("turn_1"), seed("turn_2"));
+        assert!(seed("") < WORDS.len() as u64);
     }
 
     #[test]
