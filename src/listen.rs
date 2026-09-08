@@ -535,7 +535,8 @@ impl Machine {
 
     /// A message from the chat. What it replies to says where it goes: a message from a
     /// session reaches that session, and the message `/new` left behind opens a
-    /// conversation in the directory it names.
+    /// conversation in the directory it names. A message replying to nothing goes to
+    /// the session heard from last.
     fn chat(&mut self, message: &Value) {
         let owner = self.telegram.chat();
         if message["chat"]["id"].as_i64() != Some(owner)
@@ -565,8 +566,20 @@ impl Machine {
                 None => self.say("that anchor names no directory"),
             },
             Some(address) => self.send(&address, ask),
-            None => self.say("reply to a message from the session you mean, or `/new <directory>`"),
+            None => match self.latest() {
+                Some(address) => self.send(&address, ask),
+                None => self.say("no session is running here; `/new <directory>` opens one"),
+            },
         }
+    }
+
+    /// The session heard from last, which is where a message that replies to nothing
+    /// goes.
+    fn latest(&self) -> Option<String> {
+        self.sessions
+            .iter()
+            .max_by_key(|(_, session)| session.seen)
+            .map(|(id, _)| id.clone())
     }
 
     /// A message to reply to with the first prompt of a new conversation. Nothing is

@@ -7,7 +7,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
@@ -15,7 +16,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 
 #[test]
 fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
-    let (port, calls) = recorder();
+    let (port, calls, _chat) = recorder();
     let root = prepare("segments");
     let resident = resident(&root, port);
     let session = "0123456789abcdef";
@@ -98,7 +99,7 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
 /// first event carrying an id of its own. Each turn must still answer its own prompt.
 #[test]
 fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
-    let (port, calls) = recorder();
+    let (port, calls, _chat) = recorder();
     let root = prepare("queue");
     let resident = resident(&root, port);
     let session = "fedcba9876543210";
@@ -168,7 +169,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
 /// or in tool calls read as the status line's own clock.
 #[test]
 fn a_turn_is_on_screen_before_it_has_said_anything() {
-    let (port, calls) = recorder();
+    let (port, calls, _chat) = recorder();
     let root = prepare("waiting");
     let resident = resident(&root, port);
 
@@ -185,6 +186,40 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
 
     let made = collect(&calls, |call| call.label == "sendRichMessageDraft");
     frame(&made.last().expect("a frame").markdown, "");
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
+/// A message that replies to nothing still names a session: the one heard from last.
+/// These sessions run outside tmux, so what klaude says back is where the message went.
+#[test]
+fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
+    let (port, calls, chat) = recorder();
+    let root = prepare("unaddressed");
+    let resident = resident(&root, port);
+
+    // The later session sorts first, so what answers is the one heard from last
+    // rather than the first one klaude happens to hold.
+    for session in ["fedcba9876543210", "0123456789abcdef"] {
+        hook(
+            &root,
+            port,
+            &json!({
+                "hook_event_name": "SessionStart",
+                "session_id": session,
+                "cwd": env!("CARGO_MANIFEST_DIR"),
+            }),
+        );
+    }
+    chat.says("carry on");
+
+    let made = collect(&calls, |call| {
+        call.markdown.contains("is not running in tmux")
+    });
+    assert_eq!(
+        made.last().expect("an answer").markdown,
+        "`01234567` is not running in tmux"
+    );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
 }
@@ -316,21 +351,52 @@ fn wait_for(ready: impl Fn() -> bool, complaint: &str) {
     panic!("{complaint}");
 }
 
-fn recorder() -> (u16, Receiver<Call>) {
+fn recorder() -> (u16, Receiver<Call>, Chat) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("address").port();
     let (sender, receiver) = channel();
+    let chat = Chat::default();
+    let sending = chat.clone();
     std::thread::spawn(move || {
         let mut id = 0;
         for stream in listener.incoming() {
             id += 1;
-            answer(stream.expect("accept"), id, &sender);
+            answer(stream.expect("accept"), id, &sender, &sending);
         }
     });
-    (port, receiver)
+    (port, receiver, chat)
 }
 
-fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>) {
+/// What the chat has to say, which the poll for updates hands over once.
+#[derive(Clone, Default)]
+struct Chat(Arc<Mutex<Vec<serde_json::Value>>>);
+
+impl Chat {
+    /// A message from the phone, as Telegram delivers it. It carries no
+    /// `reply_to_message`, which is what makes it a message to route by itself.
+    fn says(&self, text: &str) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_secs();
+        self.0.lock().expect("the chat").push(json!({
+            "update_id": 1,
+            "message": {
+                "message_id": 9000,
+                "date": now,
+                "chat": {"id": 1},
+                "from": {"id": 1},
+                "text": text,
+            },
+        }));
+    }
+
+    fn drain(&self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut *self.0.lock().expect("the chat"))
+    }
+}
+
+fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
     let mut request = BufReader::new(stream.try_clone().expect("clone"));
     let mut line = String::new();
     request.read_line(&mut line).expect("request line");
@@ -356,10 +422,9 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>) {
     request.read_exact(&mut body).expect("body");
     let body: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
 
-    // The chat has nothing to say to these tests, and the poll that asks is not a call
-    // the turn made.
+    // The poll that asks what the chat said is not a call the turn made.
     let sent = if method == "getUpdates" {
-        json!({"ok": true, "result": []}).to_string()
+        json!({"ok": true, "result": chat.drain()}).to_string()
     } else {
         let sound = match method.as_str() {
             "sendRichMessage" if body["disable_notification"] == json!(true) => " silent",
