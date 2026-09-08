@@ -79,7 +79,10 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
             "sendRichMessage ring",
         ]
     );
-    assert_eq!(made[0].markdown, "**klaude** `01234567`\n\nwhat does it do");
+    assert_eq!(
+        made[0].markdown,
+        "**klaude** `01234567`\n\n>what does it do"
+    );
     assert_eq!(made[0].reply, json!(null), "the prompt opens the thread");
     frame(&made[1].markdown, "first segment text");
     // A prompt deleted from the chat leaves the answer to it a message of its own.
@@ -139,7 +142,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         ]
     );
     // A queued prompt has no turn yet, so its head addresses the session alone.
-    assert_eq!(made[2].markdown, "**klaude** `fedcba98`\n\nsecond ask");
+    assert_eq!(made[2].markdown, "**klaude** `fedcba98`\n\n>second ask");
     assert_eq!(
         made[3].reply,
         replying_to(made[0].id),
