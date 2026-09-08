@@ -336,6 +336,10 @@ struct Turn {
     /// The message carrying what was asked, which the rest of the turn replies to.
     reply_to: Option<i64>,
     segment: Option<Segment>,
+    /// The segments already posted. A message's last flushes race the hook of the tool
+    /// call that follows them, so a delta of one can land after its segment is gone,
+    /// and reviving that segment would post the same words a second time.
+    posted: Vec<String>,
 }
 
 impl Turn {
@@ -483,6 +487,7 @@ impl Machine {
                 prompt_id,
                 started: Instant::now(),
                 reply_to: posted,
+                posted: Vec::new(),
             });
         }
     }
@@ -514,6 +519,7 @@ impl Machine {
             started: Instant::now(),
             reply_to: session.queued.pop_front().flatten(),
             segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
+            posted: Vec::new(),
         });
         true
     }
@@ -530,6 +536,11 @@ impl Machine {
         let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
         };
+        // A flush of a message klaude has already posted, which lost the race with the
+        // hook of the tool call that ended it.
+        if turn.posted.iter().any(|posted| posted == message_id) {
+            return;
+        }
         if turn
             .segment
             .as_ref()
@@ -629,6 +640,7 @@ impl Machine {
         let Some(segment) = turn.segment.take() else {
             return;
         };
+        turn.posted.push(segment.id.clone());
         let text = segment.text();
         if text.is_empty() {
             return;
@@ -667,11 +679,6 @@ impl Machine {
         // rather than posted a second time just above the message that repeats it.
         let head = session.head(id, Some(&turn.prompt_id));
         let message = hook::message(event, &head, &took(turn.started.elapsed()));
-        // Nothing retires a draft; it lives out the thirty seconds since its last frame.
-        // That frame is whatever the turn was doing when it ended, so a turn ending on a
-        // tool call leaves one that reads as still running, beside the answer. Framing
-        // the answer itself is what the draft is for: a preview of the message to come.
-        self.telegram.draft(turn.draft_id, &message);
         // The one sound of the turn: the reply is complete and worth coming back to.
         self.telegram.send(&message, Sound::Ring, turn.reply_to);
     }

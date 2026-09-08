@@ -9,9 +9,9 @@ from the phone, and answered from there.
 A turn opens with the prompt, quoted and without a sound, so a chat scrolled through
 tells the asks from the answers by their shape alone. Every message the turn sends
 afterwards is a Telegram reply to that one, so a chat that collects many turns reads as
-a thread per turn. A prompt klaude typed is already in the chat as the
-message that asked for it, and its turn threads under that message. A prompt deleted
-from the chat leaves the rest of its turn arriving as messages of their own.
+a thread per turn. A prompt klaude typed is already in the chat as the message that
+asked for it, and its turn threads under that message. A prompt deleted from the chat
+leaves the rest of its turn arriving as messages of their own.
 
 A turn is a sequence of segments. A segment is either an assistant message with text in
 it or the run of tool calls between two of those, and it streams into a Telegram draft
@@ -41,17 +41,18 @@ travels in a code span, which is what keeps a command carrying markdown from bei
 as markdown.
 
 One draft carries the whole turn: every frame of every segment shares the turn's draft
-id, so the live view is one bubble that animates through the turn rather than one left
-behind per segment. Nothing retires a draft; it lives out the thirty seconds since its
-last frame, whatever else arrives in the chat meanwhile. So a turn frames its answer one
-last time before posting it, and the bubble left over for those thirty seconds carries
-the words the message carries.
+id, which is what animates them into each other rather than replacing one with the next.
+
+A message's last flushes race the hook of the tool call that ends it, so a flush can
+land after klaude has posted that message. What it carries is dropped. Reviving the
+message would post its words a second time and seal the run of tool calls while a call
+is still running, which loses what that call went on to report.
 
 So a turn that talked, worked and talked again leaves those three in the chat, in order,
 and the last message is the only one that makes a sound. A `Notification` sounds too,
-because a session stopped at a dialog is the other thing worth coming back to. Each carries the elapsed time
-it was posted at; only the last carries the `#claude` tag, which therefore counts turns
-rather than segments.
+because a session stopped at a dialog is the other thing worth coming back to. Each
+message carries the elapsed time it was posted at; only the last carries the `#claude`
+tag, which therefore counts turns rather than segments.
 
 Every message opens with the same line: the directory Claude Code files the session's
 transcript under, then `session/prompt` shortened to eight characters each. That
