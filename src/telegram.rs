@@ -8,6 +8,12 @@ const POLL_SECONDS: u64 = 50;
 /// Telegram rejects a message body past 4096 characters, and a truncated notification
 /// beats a rejected one.
 const MAX_CHARS: usize = 4000;
+/// A rejection Telegram would answer the same way stands, and the rest are worth asking
+/// about again this many times. A retry can post a message twice when the answer to the
+/// first was lost, which is the smaller harm, because the message a turn's thread hangs
+/// from cannot be recovered once it is gone.
+const ATTEMPTS: u32 = 3;
+const BACKOFF: Duration = Duration::from_secs(1);
 /// What klaude leaves on a message whose text reached a session's input box.
 const SEEN: &str = "👀";
 
@@ -38,8 +44,6 @@ impl Telegram {
         let base =
             std::env::var("API_BASE").unwrap_or_else(|_| "https://api.telegram.org".to_owned());
         let agent = ureq::Agent::config_builder()
-            // Covers the long poll, whose own deadline is the one Telegram honours.
-            .timeout_global(Some(TIMEOUT + Duration::from_secs(POLL_SECONDS)))
             // Telegram explains a rejection in the body of the failing response.
             .http_status_as_error(false)
             .build()
@@ -116,22 +120,35 @@ impl Telegram {
 
     fn call(&self, method: &str, body: &Value) -> Option<Value> {
         let url = format!("{}/bot{}/{method}", self.base, self.token);
-        let outcome = self
-            .agent
-            .post(&url)
-            .send_json(body)
-            .and_then(|mut response| response.body_mut().read_json::<Value>());
-        match outcome {
-            Ok(answer) if answer["ok"] == Value::Bool(true) => Some(answer),
-            Ok(answer) => {
-                self.report(method, &answer.to_string());
-                None
-            }
-            Err(error) => {
-                self.report(method, &error.to_string());
-                None
+        // Telegram holds a poll open for the wait the request itself names, so one
+        // attempt is bounded by that wait plus the patience every call gets.
+        let held = Duration::from_secs(body["timeout"].as_u64().unwrap_or_default());
+        for attempt in 1..=ATTEMPTS {
+            let outcome = self
+                .agent
+                .post(&url)
+                .config()
+                .timeout_global(Some(TIMEOUT + held))
+                .build()
+                .send_json(body)
+                .and_then(|mut response| response.body_mut().read_json::<Value>());
+            let wait = match outcome {
+                Ok(answer) if answer["ok"] == Value::Bool(true) => return Some(answer),
+                Ok(answer) => {
+                    self.report(method, &answer.to_string());
+                    // A rejection of the request itself ends the call.
+                    retry_after(&answer, attempt)?
+                }
+                Err(error) => {
+                    self.report(method, &error.to_string());
+                    backoff(attempt)
+                }
+            };
+            if attempt < ATTEMPTS {
+                std::thread::sleep(wait);
             }
         }
+        None
     }
 
     /// The bot token rides in every request URL, and ureq quotes the URL back in its
@@ -139,6 +156,26 @@ impl Telegram {
     fn report(&self, method: &str, detail: &str) {
         eprintln!("{method}: {}", detail.replace(&self.token, "***"));
     }
+}
+
+/// How long before asking again, for a rejection that asking again can answer
+/// differently: a burst Telegram wants slowed down, which names the wait it wants, or a
+/// failure on its own side.
+fn retry_after(answer: &Value, attempt: u32) -> Option<Duration> {
+    match answer["error_code"].as_u64()? {
+        429 => Some(
+            answer["parameters"]["retry_after"]
+                .as_u64()
+                .map_or_else(|| backoff(attempt), Duration::from_secs),
+        ),
+        500..600 => Some(backoff(attempt)),
+        _ => None,
+    }
+}
+
+/// Doubling, so three attempts span a few seconds rather than a burst of their own.
+fn backoff(attempt: u32) -> Duration {
+    BACKOFF * 2u32.pow(attempt - 1)
 }
 
 fn clamp(markdown: &str) -> String {
@@ -171,5 +208,19 @@ mod tests {
     #[test]
     fn a_body_within_the_limit_is_untouched() {
         assert_eq!(clamp("short"), "short");
+    }
+
+    #[test]
+    fn a_rejection_is_asked_about_again_only_when_the_answer_can_differ() {
+        let rejection = |answer: Value| retry_after(&answer, 1);
+        assert_eq!(
+            rejection(json!({"error_code": 429, "parameters": {"retry_after": 7}})),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(rejection(json!({"error_code": 429})), Some(BACKOFF));
+        assert_eq!(rejection(json!({"error_code": 502})), Some(BACKOFF));
+        assert_eq!(rejection(json!({"error_code": 400})), None);
+        assert_eq!(rejection(json!({})), None);
+        assert_eq!(backoff(3), BACKOFF * 4);
     }
 }
