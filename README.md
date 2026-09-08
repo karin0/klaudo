@@ -50,11 +50,17 @@ on what happens when the message arrives beside it, from a clean transition to a
 duplicate to a crash. Rewriting a real message costs one extra call at the end of a turn
 and none of that is possible.
 
-A message's last flushes race the hook of the tool call that ends it, so a flush can
-land after klaude has posted that message, carrying a paragraph rather than a few
-characters. A tool reports late for the same reason, once the run holding it is a
-message. Both are written into the message their segment became, which is why a turn
-keeps its segments and the message each of them turned into until it ends.
+An assistant message's last flush reaches the resident after the hook of the tool call
+that message ends with, by tens of milliseconds, so a tool call waits a tenth of a
+second before it is filed. That is long enough for the words introducing it to arrive
+and take their place above it, and far shorter than the wait for anything a turn says
+after a call has run. `PreToolUse` names no message, so the order comes from the clock
+until it does.
+
+A flush later than that lands after klaude has posted the message it belongs to, and a
+tool can report once the run holding it is already a message. Both are written into the
+message their segment became, which is why a turn keeps its segments and the message
+each of them turned into until it ends.
 
 So a turn that talked, worked and talked again leaves those three in the chat, in order,
 and the last message is the only one that makes a sound. A `Notification` sounds too,
@@ -232,6 +238,8 @@ holding after a two-segment turn, in order and with the sound each message carri
 a segment watched while it ran finishes in the message it was watched in and the last
 one's message is taken back; that a prompt queued during a turn gets a thread of its
 own; that a run of tool calls is a message between the two halves of what the turn said;
-that a delta landing after its own `Stop` leaves the answer last; that a flush and a
+that a call announced ahead of the words introducing it still
+follows them; that a delta landing after its own `Stop` leaves the answer last; that a
+flush and a
 tool outcome arriving after their segment went out rewrite that message; and that a
 message replying to nothing reaches the session heard from last.
