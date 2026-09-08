@@ -6,7 +6,8 @@ from the phone, and answered from there.
 
 ## What lands in the chat
 
-A turn opens with the prompt, posted as it was typed and without a sound. Every message
+A turn opens with the prompt, quoted and without a sound, so a chat scrolled through
+tells the asks from the answers by their shape alone. Every message
 the turn sends afterwards is a Telegram reply to that one, so a chat that collects many
 turns reads as a thread per turn. A prompt klaude typed is already in the chat as the
 message that asked for it, and its turn threads under that message. A prompt deleted

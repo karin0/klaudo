@@ -72,7 +72,9 @@ impl Event {
 
     fn body(&self) -> String {
         match self.hook_event_name.as_str() {
-            "UserPromptSubmit" => self.prompt.clone().unwrap_or_default(),
+            // What was asked is quoted, so a chat scrolled through tells the asks from
+            // the answers at a glance.
+            "UserPromptSubmit" => quote(self.prompt.as_deref().unwrap_or_default()),
             "Stop" => self.last_assistant_message.clone().unwrap_or_default(),
             "StopFailure" => self.error.clone().unwrap_or_else(|| self.residue()),
             "Notification" => self.message.clone().unwrap_or_else(|| self.residue()),
@@ -104,6 +106,15 @@ fn slug(dir: &Path) -> String {
             }
         })
         .collect()
+}
+
+/// A block quotation, which every line carries its own marker of because a line without
+/// one ends the quote.
+fn quote(text: &str) -> String {
+    text.lines()
+        .map(|line| format!(">{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Where the work is happening.
@@ -216,7 +227,13 @@ mod tests {
             "session_id": "s",
             "prompt": "what does it do",
         }));
-        assert_eq!(message(&submit, "**p**", ""), "**p**\n\nwhat does it do");
+        assert_eq!(message(&submit, "**p**", ""), "**p**\n\n>what does it do");
+    }
+
+    #[test]
+    fn every_line_of_a_quoted_prompt_carries_its_own_marker() {
+        assert_eq!(quote("one\ntwo"), ">one\n>two");
+        assert_eq!(quote(""), "");
     }
 
     #[test]
