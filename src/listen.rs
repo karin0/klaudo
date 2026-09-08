@@ -213,6 +213,13 @@ impl Segment {
     }
 }
 
+/// Text from the chat and the message that carried it, which is the thread the turn it
+/// becomes replies into.
+struct Ask {
+    text: String,
+    message: i64,
+}
+
 /// One turn, from the event that started it to its Stop.
 struct Turn {
     prompt_id: String,
@@ -231,6 +238,8 @@ struct Session {
     /// Code reports such a prompt under the running turn's id and only reveals its own
     /// when that turn begins, so the order they were submitted in is what pairs them.
     queued: VecDeque<Option<i64>>,
+    /// What klaude has typed into this session and not yet seen reported as a prompt.
+    asked: VecDeque<Ask>,
     turn: Option<Turn>,
 }
 
@@ -243,8 +252,8 @@ impl Session {
 struct Machine {
     telegram: Telegram,
     sessions: BTreeMap<String, Session>,
-    /// Text from the chat waiting for the session whose window it opened, by directory.
-    opening: Vec<(PathBuf, String)>,
+    /// What the chat asked, waiting for the session whose window it opened, by directory.
+    opening: Vec<(PathBuf, Ask)>,
 }
 
 impl Machine {
@@ -266,6 +275,7 @@ impl Machine {
             pid,
             pane: pane.clone(),
             queued: VecDeque::new(),
+            asked: VecDeque::new(),
             turn: None,
         });
         session.pid = pid;
@@ -295,8 +305,8 @@ impl Machine {
         let Some(index) = self.opening.iter().position(|(cwd, _)| *cwd == session.cwd) else {
             return;
         };
-        let (_, text) = self.opening.remove(index);
-        self.send(id, &text);
+        let (_, ask) = self.opening.remove(index);
+        self.send(id, ask);
     }
 
     fn submitted(&mut self, id: &str, event: &Event) {
@@ -309,17 +319,29 @@ impl Machine {
         if !running {
             session.queued.clear();
         }
-        // A prompt that starts its turn at once reports that turn's id; a queued one
-        // reports the running turn's, and its own is only revealed when it begins.
-        let prompt = if running {
-            None
+        let typed = pair(
+            &mut session.asked,
+            event.prompt.as_deref().unwrap_or_default(),
+        );
+        // A prompt klaude typed is already in the chat as the message that asked for
+        // it, and that message is what the turn replies to.
+        let posted = if let Some(message) = typed {
+            self.telegram.acknowledge(message);
+            Some(message)
         } else {
-            event.prompt_id.as_deref()
+            // A prompt that starts its turn at once reports that turn's id; a
+            // queued one reports the running turn's, and its own is only revealed
+            // when it begins.
+            let prompt = if running {
+                None
+            } else {
+                event.prompt_id.as_deref()
+            };
+            let head = session.head(id, prompt);
+            let message = hook::message(event, &head, "");
+            // The phone's owner asked this, so it arrives without a sound.
+            self.telegram.send(&message, Sound::Silent, None)
         };
-        let head = session.head(id, prompt);
-        let message = hook::message(event, &head, "");
-        // The phone's owner asked this, so it arrives without a sound.
-        let posted = self.telegram.send(&message, Sound::Silent, None);
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
@@ -507,13 +529,20 @@ impl Machine {
             self.anchor(argument.trim());
             return;
         }
+        let Some(carrier) = message["message_id"].as_i64() else {
+            return;
+        };
+        let ask = Ask {
+            text: text.to_owned(),
+            message: carrier,
+        };
         let replied = &message["reply_to_message"];
         match address(replied) {
             Some(address) if address == NEW => match body(replied) {
-                Some(cwd) => self.open(Path::new(&cwd), text),
+                Some(cwd) => self.open(Path::new(&cwd), ask),
                 None => self.say("that anchor names no directory"),
             },
-            Some(address) => self.send(&address, text),
+            Some(address) => self.send(&address, ask),
             None => self.say("reply to a message from the session you mean, or `/new <directory>`"),
         }
     }
@@ -536,21 +565,22 @@ impl Machine {
 
     /// Opens a window for a conversation and keeps its first prompt until the session
     /// there reports that it is ready.
-    fn open(&mut self, cwd: &Path, text: &str) {
+    fn open(&mut self, cwd: &Path, ask: Ask) {
         if let Err(error) = tmux::open(cwd) {
             self.say(&format!("tmux: {error}"));
             return;
         }
-        self.opening.push((cwd.to_owned(), text.to_owned()));
+        self.opening.push((cwd.to_owned(), ask));
     }
 
     /// Types into the session whose id starts with `address`.
-    fn send(&mut self, address: &str, text: &str) {
+    fn send(&mut self, address: &str, ask: Ask) {
         let Some((id, session)) = self.sessions.iter().find(|(id, _)| id.starts_with(address))
         else {
             self.say(&format!("`{address}` is not a session running here"));
             return;
         };
+        let id = id.clone();
         let Some(pane) = session.pane.clone() else {
             self.say(&format!(
                 "`{}` is not running in tmux",
@@ -571,14 +601,27 @@ impl Machine {
             ));
             return;
         }
-        if let Err(error) = pane.deliver(text) {
+        if let Err(error) = pane.deliver(&ask.text) {
             self.say(&format!("tmux: {error}"));
+            return;
         }
+        self.sessions
+            .get_mut(&id)
+            .expect("the session just found")
+            .asked
+            .push_back(ask);
     }
 
     fn say(&self, text: &str) {
         self.telegram.send(text, Sound::Silent, None);
     }
+}
+
+/// The chat message that carried a prompt, when klaude is the one that typed it.
+/// Anything asked before the match never reached a prompt, so it goes with the match.
+fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<i64> {
+    let at = asked.iter().position(|ask| ask.text == prompt)?;
+    asked.drain(..=at).next_back().map(|ask| ask.message)
 }
 
 /// The address in the head of a message klaude posted, which is the session it belongs
@@ -746,6 +789,21 @@ mod tests {
             Some("/home/u/p_q_r")
         );
         assert_eq!(body(&posted(&[head_of(NEW)])), None);
+    }
+
+    #[test]
+    fn a_prompt_klaude_typed_is_paired_with_the_message_that_asked_for_it() {
+        let ask = |text: &str, message| Ask {
+            text: text.to_owned(),
+            message,
+        };
+        let mut asked = VecDeque::from([ask("first", 1), ask("second", 2)]);
+        assert_eq!(pair(&mut asked, "second"), Some(2));
+        assert!(asked.is_empty());
+
+        let mut asked = VecDeque::from([ask("from the phone", 3)]);
+        assert_eq!(pair(&mut asked, "typed in the terminal"), None);
+        assert_eq!(asked.len(), 1);
     }
 
     #[test]
