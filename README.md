@@ -7,31 +7,38 @@ from the phone, and answered from there.
 ## What lands in the chat
 
 A turn opens with the prompt, quoted and without a sound, so a chat scrolled through
-tells the asks from the answers by their shape alone. Every message
-the turn sends afterwards is a Telegram reply to that one, so a chat that collects many
-turns reads as a thread per turn. A prompt klaude typed is already in the chat as the
+tells the asks from the answers by their shape alone. Every message the turn sends
+afterwards is a Telegram reply to that one, so a chat that collects many turns reads as
+a thread per turn. A prompt klaude typed is already in the chat as the
 message that asked for it, and its turn threads under that message. A prompt deleted
 from the chat leaves the rest of its turn arriving as messages of their own.
 
-A turn produces one or more response segments, each an assistant message with text in
-it. A segment streams into a Telegram draft while it is being written, and becomes a
-message once it is complete, which is when the next segment starts. While the draft is
-on screen it carries a status line under the text, a word from Claude Code's own
-vocabulary and the turn's elapsed time, stepping to the next word on every refresh. A
-turn opens its draft when it starts, with the status line and no text above it, so the
-minutes it spends thinking or in tool calls are on screen as they pass. The
-last segment is not posted on its own: the `Stop` event carries its text, so posting it
-would put the same words in the chat twice.
+A turn is a sequence of segments. A segment is either an assistant message with text in
+it or the run of tool calls between two of those, and it streams into a Telegram draft
+while it is live, becoming a message once the next segment starts. While the draft is on
+screen it carries a status line under the text, a word from Claude Code's own vocabulary
+and the turn's elapsed time, stepping to the next word on every refresh. A turn opens
+its draft when it starts, with the status line and no text above it, so the minutes it
+spends thinking are on screen as they pass. The last segment is not posted on its own:
+the `Stop` event carries its text, so posting it would put the same words in the chat
+twice.
 
-So a turn that talked twice around a tool call leaves both halves in the chat, in order,
+A run of tool calls is posted inside a fence, one line per call: the tool, the field of
+its input that says what it is doing, then how long it took and, for a failure, the
+first line of what the tool reported. A call a subagent made carries that agent's type
+in brackets. A call still running shows its line without an outcome, so the draft reads
+as the terminal does. A run past thirty calls lists the newest thirty and counts the
+rest.
+
+So a turn that talked, worked and talked again leaves those three in the chat, in order,
 and the last message is the only one that makes a sound. Each carries the elapsed time
 it was posted at; only the last carries the `#claude` tag, which therefore counts turns
 rather than segments.
 
-Every message opens with the same line: the directory the session was opened in, then
-`session/prompt` shortened to eight characters each. A turn that runs `cd` reports the
-directory it moved to, and the line still names the one Claude Code files the session's
-transcript under. That line is also the address a reply is routed by.
+Every message opens with the same line: the directory Claude Code files the session's
+transcript under, then `session/prompt` shortened to eight characters each. That
+directory is where the session was opened, so it stays put across a `cd` inside a turn.
+The line is also the address a reply is routed by.
 
 ## What you can send
 
@@ -80,7 +87,8 @@ answered in the chat saying so.
 ## Hooks
 
 One command answers every event, so `settings.json` repeats it under `SessionStart`,
-`UserPromptSubmit`, `MessageDisplay`, `Stop`, `StopFailure` and `Notification`:
+`UserPromptSubmit`, `MessageDisplay`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
+`Stop`, `StopFailure` and `Notification`:
 
 ```json
 {"type": "command", "command": "set -a && . <secrets file> && exec <path to klaude>"}
@@ -174,6 +182,10 @@ unanswered. `Stop`, `StopFailure` and `Notification` then send from the hook pro
 itself, so the chat still gets the turn, as a message of its own with no draft before it
 and no prompt above it to reply to. Nothing can be sent back to a session in that state.
 
+`SessionStart` and the three tool events are dropped instead. A tool event posted on its
+own would be one Telegram call per tool call, and `PreToolUse` holds up the call it
+announces until the hook returns.
+
 ## Checks
 
 `./check.sh` runs shellcheck, formatting, clippy, the tests and a release build. The
@@ -182,5 +194,7 @@ in the background enforce the same set rather than only this script.
 
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
 against a server of its own that answers the way Telegram does. It asserts the calls a
-two-segment turn makes, their order and which of them carries a notification, and that a
-prompt queued during a turn gets a thread of its own.
+two-segment turn makes, their order and which of them carries a notification; that a
+prompt queued during a turn gets a thread of its own; that a run of tool calls is posted
+as a message between the two halves of what the turn said; and that a message replying
+to nothing reaches the session heard from last.

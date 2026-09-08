@@ -190,6 +190,80 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
     std::fs::remove_dir_all(&root).expect("clean up");
 }
 
+/// A turn that talked, worked and talked again leaves three messages in order, and the
+/// run of tool calls is the middle one, fenced and apart from what was said.
+#[test]
+fn a_run_of_tool_calls_is_a_message_of_its_own() {
+    let (port, calls, _chat) = recorder();
+    let root = prepare("tools");
+    let resident = resident(&root, port);
+    let session = "0123456789abcdef";
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "run the tests"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "on it"}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+               "tool_input": {"command": "cargo test"}}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t2", "tool_name": "Read",
+               "tool_input": {"file_path": "/src/listen.rs"}, "agent_type": "Explore"}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t2", "tool_name": "Read",
+               "duration_ms": 12}),
+        json!({"hook_event_name": "PostToolUseFailure", "tool_use_id": "t1", "tool_name": "Bash",
+               "duration_ms": 4187, "error": "Exit code 1\nassertion failed"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "one test fails"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "one test fails"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        let streaming = event["hook_event_name"] == json!("MessageDisplay");
+        hook(&root, port, &event);
+        if streaming {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    assert_eq!(
+        made.iter()
+            .map(|call| call.label.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "sendRichMessage silent", // the prompt
+            "sendRichMessageDraft",   // what the turn said first
+            "sendRichMessage silent", // posted when the first tool call opens the run
+            "sendRichMessageDraft",   // the run, growing as its calls report
+            "sendRichMessage silent", // posted when the turn talks again
+            "sendRichMessageDraft",   // the last segment streaming
+            "sendRichMessage ring",   // the answer
+        ]
+    );
+    assert!(
+        made[2].markdown.ends_with("\n\non it"),
+        "what the turn said first reads {:?}",
+        made[2].markdown
+    );
+    let (head, body) = made[4]
+        .markdown
+        .split_once("\n\n")
+        .expect("a head and a run");
+    assert!(
+        head.starts_with("**klaude** `01234567/"),
+        "head reads {head:?}"
+    );
+    assert_eq!(
+        body,
+        "```\nBash cargo test  4s Exit code 1\n[Explore] Read /src/listen.rs  12ms\n```"
+    );
+    assert_eq!(
+        made[4].reply,
+        replying_to(made[0].id),
+        "the run threads under the prompt"
+    );
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
 /// A message that replies to nothing still names a session: the one heard from last.
 /// These sessions run outside tmux, so what klaude says back is where the message went.
 #[test]

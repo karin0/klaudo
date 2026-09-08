@@ -5,7 +5,22 @@ use serde_json::{Map, Value};
 
 /// Fields that identify the invocation rather than describe it, dropped from the
 /// verbatim report an unrecognised event falls back to.
-const BOILERPLATE: [&str; 4] = ["prompt_id", "permission_mode", "effort", "agent_type"];
+const BOILERPLATE: [&str; 2] = ["permission_mode", "effort"];
+
+/// The field of a tool's input that says what the call is doing, tried in this order
+/// because nothing in the event marks which field that is.
+const SUBJECT: [&str; 8] = [
+    "command",
+    "file_path",
+    "pattern",
+    "url",
+    "query",
+    "path",
+    "description",
+    "prompt",
+];
+/// One line of a tool call, past which the rest says nothing at a glance.
+const SUBJECT_MAX: usize = 90;
 
 /// Marks the end of a turn, so a chat holding several projects can be filtered down to
 /// the replies that finished a piece of work.
@@ -24,6 +39,16 @@ pub struct Event {
     pub transcript_path: Option<String>,
     #[serde(default)]
     pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    #[serde(default)]
+    pub tool_input: Map<String, Value>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
     #[serde(default)]
     pub prompt_id: Option<String>,
     #[serde(default)]
@@ -57,6 +82,24 @@ impl Event {
             .ancestors()
             .find(|dir| slug(dir) == filed)
             .map(Path::to_path_buf)
+    }
+
+    /// What a tool call is doing, in one line.
+    pub fn subject(&self) -> String {
+        let Some(subject) = SUBJECT
+            .iter()
+            .find_map(|key| self.tool_input.get(*key)?.as_str())
+        else {
+            return String::new();
+        };
+        let flat = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.chars().count() <= SUBJECT_MAX {
+            return flat;
+        }
+        flat.chars()
+            .take(SUBJECT_MAX)
+            .chain("\u{2026}".chars())
+            .collect()
     }
 
     fn tag(&self) -> String {
@@ -191,6 +234,40 @@ mod tests {
             "cwd": "/home/u/dev/my-tree",
         }));
         assert_eq!(bare.directory(), None);
+    }
+
+    #[test]
+    fn a_call_reads_by_the_field_of_its_input_that_says_what_it_does() {
+        let call = |input: serde_json::Value| {
+            event(serde_json::json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": "s",
+                "tool_input": input,
+            }))
+            .subject()
+        };
+        assert_eq!(
+            call(serde_json::json!({"command": "cargo test", "description": "run the tests"})),
+            "cargo test"
+        );
+        assert_eq!(
+            call(serde_json::json!({"file_path": "/src/hook.rs"})),
+            "/src/hook.rs"
+        );
+        // An agent carries both, and the short one is what reads at a glance.
+        assert_eq!(
+            call(serde_json::json!({"description": "find the seal", "prompt": "a paragraph"})),
+            "find the seal"
+        );
+        // A prompt is one line by the time it is a call's subject.
+        assert_eq!(
+            call(serde_json::json!({"prompt": "first\n  second"})),
+            "first second"
+        );
+        assert_eq!(call(serde_json::json!({"todos": []})), "");
+        let long = call(serde_json::json!({"command": "x".repeat(SUBJECT_MAX + 5)}));
+        assert_eq!(long.chars().count(), SUBJECT_MAX + 1);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

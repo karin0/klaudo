@@ -72,6 +72,11 @@ const DATAGRAM_MAX: usize = 200 * 1024;
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
 const NEW: &str = "new";
+/// How many calls a run lists before the oldest are counted instead.
+const RUN_MAX: usize = 30;
+/// The first line of what a failed tool reported, past which it stops reading at a
+/// glance.
+const WHY_MAX: usize = 60;
 
 pub fn runtime_dir() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".into());
@@ -199,30 +204,100 @@ fn poll(target: &Path) {
     }
 }
 
-/// One assistant message, streamed into a draft of its own until it is complete. A turn
-/// opens with a segment carrying no text, whose draft is the turn's status line while
-/// nothing has been said yet.
+/// How a tool call went, and how long it took getting there.
+enum Outcome {
+    Running,
+    Done(Duration),
+    Failed(Duration, String),
+}
+
+/// One tool call, from the event that announced it to the one that said how it went.
+struct Call {
+    id: String,
+    /// The subagent that made it, absent on the main thread.
+    agent: Option<String>,
+    name: String,
+    subject: String,
+    outcome: Outcome,
+}
+
+impl Call {
+    fn line(&self) -> String {
+        let agent = match &self.agent {
+            Some(agent) => format!("[{agent}] "),
+            None => String::new(),
+        };
+        let subject = match self.subject.as_str() {
+            "" => String::new(),
+            subject => format!(" {subject}"),
+        };
+        let outcome = match &self.outcome {
+            Outcome::Running => String::new(),
+            Outcome::Done(took) => format!("  {}", spent(*took)),
+            Outcome::Failed(took, why) => format!("  {} {why}", spent(*took)),
+        };
+        format!("{agent}{}{subject}{outcome}", self.name)
+    }
+}
+
+/// What a stretch of a turn holds: an assistant message being streamed, or the run of
+/// tool calls between two of them.
+enum Body {
+    /// Deltas by index, because three hook processes run at once and one can arrive
+    /// ahead of its predecessor.
+    Text(BTreeMap<u32, String>),
+    Tools(Vec<Call>),
+}
+
+/// One stretch of a turn, streamed into a draft of its own until the next one starts,
+/// and posted as a message then. A turn opens with an empty text segment, whose draft
+/// is the turn's status line while nothing has been said yet.
 struct Segment {
     id: String,
     draft_id: i64,
-    chunks: BTreeMap<u32, String>,
+    body: Body,
     /// What the last frame showed and when it went out, absent until the first frame.
     framed: Option<(String, Instant)>,
 }
 
 impl Segment {
-    fn new(id: &str) -> Self {
+    fn new(id: &str, body: Body) -> Self {
         Self {
             draft_id: draft_id(id),
             id: id.to_owned(),
-            chunks: BTreeMap::new(),
+            body,
             framed: None,
         }
     }
 
     fn text(&self) -> String {
-        self.chunks.values().map(String::as_str).collect()
+        match &self.body {
+            Body::Text(chunks) => chunks.values().map(String::as_str).collect(),
+            Body::Tools(calls) => fenced(calls),
+        }
     }
+}
+
+/// A run of tool calls as a terminal would show it. The oldest are counted rather than
+/// listed past the cap, so what is running now stays in a message Telegram will take.
+fn fenced(calls: &[Call]) -> String {
+    let elided = calls.len().saturating_sub(RUN_MAX);
+    let head = (elided > 0).then(|| format!("… {elided} earlier"));
+    let listed = head
+        .into_iter()
+        .chain(calls[elided..].iter().map(Call::line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // A command carrying markdown of its own reads as markdown outside a fence, and the
+    // fence has to outlast any run of backticks the command contains.
+    let mut longest = 0;
+    let mut ticks = 0;
+    for character in listed.chars() {
+        ticks = if character == '`' { ticks + 1 } else { 0 };
+        longest = longest.max(ticks);
+    }
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{fence}\n{listed}\n{fence}")
 }
 
 /// Text from the chat and the message that carried it, which is the thread the turn it
@@ -239,6 +314,14 @@ struct Turn {
     /// The message carrying what was asked, which the rest of the turn replies to.
     reply_to: Option<i64>,
     segment: Option<Segment>,
+}
+
+impl Turn {
+    /// True while the open segment is a run of tool calls rather than an assistant
+    /// message.
+    fn running_tools(&self) -> bool {
+        matches!(&self.segment, Some(segment) if matches!(segment.body, Body::Tools(_)))
+    }
 }
 
 struct Session {
@@ -306,6 +389,8 @@ impl Machine {
             "SessionStart" => self.started(&id),
             "UserPromptSubmit" => self.submitted(&id, event),
             "MessageDisplay" => self.delta(&id, event),
+            "PreToolUse" => self.calling(&id, event),
+            "PostToolUse" | "PostToolUseFailure" => self.called(&id, event),
             "Stop" | "StopFailure" => self.finish(&id, event),
             _ => self.aside(&id, event),
         }
@@ -366,7 +451,7 @@ impl Machine {
         } else {
             let prompt_id = event.prompt_id.clone().unwrap_or_default();
             session.turn = Some(Turn {
-                segment: Some(Segment::new(&prompt_id)),
+                segment: Some(Segment::new(&prompt_id, Body::Text(BTreeMap::new()))),
                 prompt_id,
                 started: Instant::now(),
                 reply_to: posted,
@@ -394,7 +479,7 @@ impl Machine {
             prompt_id: named.to_owned(),
             started: Instant::now(),
             reply_to: session.queued.pop_front().flatten(),
-            segment: Some(Segment::new(named)),
+            segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
         });
     }
 
@@ -417,18 +502,80 @@ impl Machine {
             let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
                 return;
             };
-            turn.segment = Some(Segment::new(message_id));
+            turn.segment = Some(Segment::new(message_id, Body::Text(BTreeMap::new())));
         }
-        let Some(segment) = self
+        let Some(Body::Text(chunks)) = self
             .sessions
             .get_mut(id)
             .and_then(|s| s.turn.as_mut())
             .and_then(|t| t.segment.as_mut())
+            .map(|segment| &mut segment.body)
         else {
             return;
         };
-        // Three hook processes run at once, so a delta can arrive ahead of its predecessor.
-        segment.chunks.insert(index, delta.clone());
+        chunks.insert(index, delta.clone());
+    }
+
+    /// A tool call joins the run that is open, opening one when the turn was saying
+    /// something instead. A run reads as one message, so a turn that talked, worked and
+    /// talked again leaves those three in the chat in order.
+    fn calling(&mut self, id: &str, event: &Event) {
+        let (Some(tool_use_id), Some(name)) = (&event.tool_use_id, &event.tool_name) else {
+            return;
+        };
+        self.turn(id, event.prompt_id.as_deref());
+        let Some(turn) = self.sessions.get(id).and_then(|s| s.turn.as_ref()) else {
+            return;
+        };
+        if !turn.running_tools() {
+            self.seal(id);
+            let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+                return;
+            };
+            turn.segment = Some(Segment::new(tool_use_id, Body::Tools(Vec::new())));
+        }
+        let Some(Body::Tools(calls)) = self
+            .sessions
+            .get_mut(id)
+            .and_then(|s| s.turn.as_mut())
+            .and_then(|t| t.segment.as_mut())
+            .map(|segment| &mut segment.body)
+        else {
+            return;
+        };
+        calls.push(Call {
+            id: tool_use_id.clone(),
+            agent: event.agent_type.clone(),
+            name: name.clone(),
+            subject: event.subject(),
+            outcome: Outcome::Running,
+        });
+    }
+
+    /// How a call went, which reaches the run it belongs to. A run already posted takes
+    /// no more outcomes, so a call it holds stays as it was when the turn moved on.
+    fn called(&mut self, id: &str, event: &Event) {
+        let Some(tool_use_id) = event.tool_use_id.as_deref() else {
+            return;
+        };
+        let Some(Body::Tools(calls)) = self
+            .sessions
+            .get_mut(id)
+            .and_then(|s| s.turn.as_mut())
+            .and_then(|t| t.segment.as_mut())
+            .map(|segment| &mut segment.body)
+        else {
+            return;
+        };
+        let Some(call) = calls.iter_mut().find(|call| call.id == tool_use_id) else {
+            return;
+        };
+        let took = Duration::from_millis(event.duration_ms.unwrap_or_default());
+        call.outcome = if event.hook_event_name == "PostToolUseFailure" {
+            Outcome::Failed(took, why(event.error.as_deref().unwrap_or("failed")))
+        } else {
+            Outcome::Done(took)
+        };
     }
 
     /// A segment that has stopped receiving text is complete, so what its draft was
@@ -458,6 +605,16 @@ impl Machine {
 
     fn finish(&mut self, id: &str, event: &Event) {
         self.turn(id, event.prompt_id.as_deref());
+        // A run of tool calls is a message of its own, and only an assistant message is
+        // what this event repeats.
+        if self
+            .sessions
+            .get(id)
+            .and_then(|s| s.turn.as_ref())
+            .is_some_and(Turn::running_tools)
+        {
+            self.seal(id);
+        }
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
@@ -724,6 +881,27 @@ fn status(elapsed: Duration, draft_id: i64) -> String {
     format!("✻ {word}… ({})", took(elapsed).trim())
 }
 
+/// How long a tool call took, in the units a tool call runs in.
+fn spent(elapsed: Duration) -> String {
+    match elapsed.as_millis() {
+        millis @ ..1000 => format!("{millis}ms"),
+        _ => took(elapsed).trim().to_owned(),
+    }
+}
+
+/// What a failed tool reported, in one line.
+fn why(error: &str) -> String {
+    let first = error.lines().next().unwrap_or_default().trim();
+    if first.chars().count() <= WHY_MAX {
+        return first.to_owned();
+    }
+    first
+        .chars()
+        .take(WHY_MAX)
+        .chain("\u{2026}".chars())
+        .collect()
+}
+
 fn took(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     match seconds {
@@ -772,11 +950,103 @@ mod tests {
 
     #[test]
     fn deltas_arriving_out_of_order_still_read_in_order() {
-        let mut segment = Segment::new("msg_1");
-        segment.chunks.insert(2, "third".to_owned());
-        segment.chunks.insert(0, "first ".to_owned());
-        segment.chunks.insert(1, "second ".to_owned());
+        let mut segment = Segment::new("msg_1", Body::Text(BTreeMap::new()));
+        let Body::Text(chunks) = &mut segment.body else {
+            panic!("a text segment")
+        };
+        chunks.insert(2, "third".to_owned());
+        chunks.insert(0, "first ".to_owned());
+        chunks.insert(1, "second ".to_owned());
         assert_eq!(segment.text(), "first second third");
+    }
+
+    fn call(name: &str, subject: &str, outcome: Outcome) -> Call {
+        Call {
+            id: name.to_owned(),
+            agent: None,
+            name: name.to_owned(),
+            subject: subject.to_owned(),
+            outcome,
+        }
+    }
+
+    #[test]
+    fn a_call_reads_as_its_tool_its_subject_and_how_it_went() {
+        assert_eq!(
+            call("Read", "src/listen.rs", Outcome::Running).line(),
+            "Read src/listen.rs"
+        );
+        assert_eq!(
+            call(
+                "Bash",
+                "cargo test",
+                Outcome::Done(Duration::from_millis(1400))
+            )
+            .line(),
+            "Bash cargo test  1s"
+        );
+        assert_eq!(
+            call(
+                "Bash",
+                "cargo test",
+                Outcome::Done(Duration::from_millis(12))
+            )
+            .line(),
+            "Bash cargo test  12ms"
+        );
+        assert_eq!(
+            call(
+                "Bash",
+                "cargo test",
+                Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
+            )
+            .line(),
+            "Bash cargo test  4s Exit code 1"
+        );
+        let subagent = Call {
+            agent: Some("Explore".to_owned()),
+            ..call("Grep", "fn seal", Outcome::Running)
+        };
+        assert_eq!(subagent.line(), "[Explore] Grep fn seal");
+    }
+
+    #[test]
+    fn a_run_is_fenced_past_any_backticks_a_command_carries() {
+        let plain = fenced(&[call("Read", "src/listen.rs", Outcome::Running)]);
+        assert_eq!(plain, "```\nRead src/listen.rs\n```");
+        let ticks = fenced(&[call("Bash", "echo ```x```", Outcome::Running)]);
+        assert!(
+            ticks.starts_with("````\n") && ticks.ends_with("\n````"),
+            "the fence reads {ticks:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_run_counts_the_calls_it_stops_listing() {
+        let calls: Vec<Call> = (0..RUN_MAX + 3)
+            .map(|index| call("Read", &format!("file{index}"), Outcome::Running))
+            .collect();
+        let listed = fenced(&calls);
+        assert!(listed.contains("… 3 earlier"), "the run reads {listed}");
+        assert!(
+            !listed.contains("Read file2\n"),
+            "the third call is still listed"
+        );
+        assert!(
+            listed.contains("Read file3\n"),
+            "the fourth call is dropped"
+        );
+        assert!(
+            listed.contains(&format!("file{}", RUN_MAX + 2)),
+            "the last call is listed"
+        );
+        assert_eq!(listed.lines().count(), RUN_MAX + 3);
+    }
+
+    #[test]
+    fn a_failure_reports_its_first_line_alone() {
+        assert_eq!(why("Exit code 1\nError: nope"), "Exit code 1");
+        assert_eq!(why(&"x".repeat(WHY_MAX + 5)).chars().count(), WHY_MAX + 1);
     }
 
     /// A message klaude posted, as Telegram hands it back in the reply to it.
