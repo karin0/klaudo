@@ -87,14 +87,14 @@ impl Telegram {
         );
     }
 
-    /// Frames sharing a draft id animate into each other; a new id replaces the draft.
-    pub fn draft(&self, draft_id: i64, markdown: &str) {
+    /// Takes back a message klaude posted, which is how the one showing a turn's last
+    /// segment goes once the answer repeating it is in the chat.
+    pub fn delete(&self, message_id: i64) {
         self.call(
-            "sendRichMessageDraft",
+            "deleteMessage",
             &json!({
                 "chat_id": self.chat_id,
-                "draft_id": draft_id,
-                "rich_message": {"markdown": clamp(markdown)},
+                "message_id": message_id,
             }),
         );
     }

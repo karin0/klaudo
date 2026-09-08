@@ -2,6 +2,7 @@
 //! calls a turn makes, their order, what each replies to and the notification each
 //! carries are checked without a network or a chat.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::json;
 
 const PATIENCE: Duration = Duration::from_secs(20);
+/// How long a test waits for what follows the call it was watching for, so a rewrite or
+/// a deletion issued right after the answer is part of what it reads.
+const GRACE: Duration = Duration::from_millis(600);
 
 #[test]
 fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
@@ -64,46 +68,31 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     assert_eq!(
-        made.iter()
-            .map(|call| call.label.as_str())
-            .collect::<Vec<_>>(),
+        holding(&made),
         [
             // The turn opens with what was asked, which the rest of it replies to.
-            "sendRichMessage silent",
-            // The first segment streams into a draft of its own.
-            "sendRichMessageDraft",
+            ("silent", ">what does it do".to_owned()),
             // The second segment starting is what tells the first one it is complete.
-            "sendRichMessage silent",
-            "sendRichMessageDraft",
-            // The last segment is not posted on its own; Stop carries its text, with the
-            // elapsed time, and makes the one sound of the turn.
-            "sendRichMessage ring",
+            ("silent", "first segment text".to_owned()),
+            // Stop carries the last segment's text and makes the one sound of the turn.
+            ("ring", "second segment".to_owned()),
         ]
     );
+    let sent: Vec<&Call> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage "))
+        .collect();
     assert_eq!(
-        made[0].markdown,
+        sent[0].markdown,
         "**klaude** `01234567`\n\n>what does it do"
     );
-    assert_eq!(made[0].reply, json!(null), "the prompt opens the thread");
-    frame(&made[1].markdown, "first segment text");
+    assert_eq!(sent[0].reply, json!(null), "the prompt opens the thread");
     // A prompt deleted from the chat leaves the answer to it a message of its own.
-    let reply = replying_to(made[0].id);
-    assert_eq!(made[2].reply, reply, "the first segment replies");
-    assert_eq!(made[4].reply, reply, "the last message replies");
-    // The answer is in the chat, so the draft that was showing it holds nothing until
-    // it expires.
-    let closing = collect(&calls, |call| call.label == "sendRichMessageDraft");
-    let (title, body) = closing
-        .last()
-        .expect("a closing frame")
-        .markdown
-        .split_once("\n\n")
-        .expect("a head and a body");
+    let reply = replying_to(sent[0].id);
     assert!(
-        title.starts_with("**klaude** `01234567/"),
-        "head reads {title:?}"
+        sent[1..].iter().all(|call| call.reply == reply),
+        "every message of the turn replies to the prompt"
     );
-    assert_eq!(body, "", "the draft outlives the answer holding no text");
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
 }
@@ -137,7 +126,6 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         let streaming = event["hook_event_name"] == json!("MessageDisplay");
         hook(&root, port, &event);
         if streaming {
-            // Long enough for the frame a segment's first delta puts on screen.
             std::thread::sleep(Duration::from_millis(400));
         }
     }
@@ -146,36 +134,36 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         call.label == "sendRichMessage ring" && call.markdown.ends_with("\n\ntwo")
     });
     assert_eq!(
-        made.iter()
-            .map(|call| call.label.as_str())
-            .collect::<Vec<_>>(),
+        holding(&made),
         [
-            "sendRichMessage silent", // first ask
-            "sendRichMessageDraft",   // the first turn streaming
-            "sendRichMessage silent", // second ask, queued
-            "sendRichMessage ring",   // the first turn's answer
-            "sendRichMessageDraft",   // the queued turn streaming
-            "sendRichMessage ring",   // the queued turn's answer
+            ("silent", ">first ask".to_owned()),
+            ("silent", ">second ask".to_owned()),
+            ("ring", "one".to_owned()),
+            ("ring", "two".to_owned()),
         ]
     );
+    let sent: Vec<&Call> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage "))
+        .collect();
     // A queued prompt has no turn yet, so its head addresses the session alone.
-    assert_eq!(made[2].markdown, "**klaude** `fedcba98`\n\n>second ask");
+    assert_eq!(sent[1].markdown, "**klaude** `fedcba98`\n\n>second ask");
     assert_eq!(
-        made[3].reply,
-        replying_to(made[0].id),
+        sent[2].reply,
+        replying_to(sent[0].id),
         "the first answer replies to the first ask"
     );
     assert_eq!(
-        made[5].reply,
-        replying_to(made[2].id),
+        sent[3].reply,
+        replying_to(sent[1].id),
         "the queued turn replies to the prompt that was queued"
     );
     assert!(
-        made[5]
+        sent[3]
             .markdown
             .starts_with("**klaude** `fedcba98/bbbbbbbb`"),
         "the queued turn's head reads {:?}",
-        made[5].markdown
+        sent[3].markdown
     );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
@@ -200,8 +188,64 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
         }),
     );
 
-    let made = collect(&calls, |call| call.label == "sendRichMessageDraft");
-    frame(&made.last().expect("a frame").markdown, "");
+    let made = collect(&calls, |call| call.markdown.contains('✻'));
+    showing(&made.last().expect("a live message").markdown, "");
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
+/// A turn long enough to be watched puts a message up and rewrites it as it goes. The
+/// segment that finishes there keeps that message, and the one the answer repeats is
+/// taken back, so nothing the chat holds is said twice.
+#[test]
+fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
+    let (port, calls, _chat) = recorder();
+    let root = prepare("watched");
+    let resident = resident(&root, port);
+    let session = "0123456789abcdef";
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "think"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "half "}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 1, "delta": "a thought"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "done"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+    ];
+    let last = turn.len() - 1;
+    for (step, mut event) in turn.into_iter().enumerate() {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        hook(&root, port, &event);
+        if step < last {
+            // Longer than the gap the resident leaves between two rewrites, so every
+            // step of the turn is one the chat was shown.
+            std::thread::sleep(Duration::from_millis(3200));
+        }
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    assert_eq!(
+        holding(&made),
+        [
+            ("silent", ">think".to_owned()),
+            ("silent", "half a thought".to_owned()),
+            ("ring", "done".to_owned()),
+        ]
+    );
+    let counted = |label: &str| made.iter().filter(|call| call.label == label).count();
+    assert_eq!(
+        counted("sendRichMessage silent"),
+        // The prompt, then one message per segment, each of them watched before it was
+        // finished rather than sent again once it was.
+        3,
+        "the chat took {:?}",
+        made.iter().map(|call| &call.label).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        counted("deleteMessage"),
+        1,
+        "the last segment's message goes"
+    );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
 }
@@ -241,39 +285,30 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     assert_eq!(
-        made.iter()
-            .map(|call| call.label.as_str())
-            .collect::<Vec<_>>(),
+        holding(&made),
         [
-            "sendRichMessage silent", // the prompt
-            "sendRichMessageDraft",   // what the turn said first
-            "sendRichMessage silent", // posted when the first tool call opens the run
-            "sendRichMessageDraft",   // the run, growing as its calls report
-            "sendRichMessage silent", // posted when the turn talks again
-            "sendRichMessageDraft",   // the last segment streaming
-            "sendRichMessage ring",   // the answer
+            ("silent", ">run the tests".to_owned()),
+            ("silent", "on it".to_owned()),
+            (
+                "silent",
+                "× Bash `cargo test` 4s  \n⎿ Exit code 1  \n● [Explore] Read `/src/listen.rs` 12ms"
+                    .to_owned()
+            ),
+            ("ring", "one test fails".to_owned()),
         ]
     );
+    let sent: Vec<&Call> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage "))
+        .collect();
     assert!(
-        made[2].markdown.ends_with("\n\non it"),
-        "what the turn said first reads {:?}",
-        made[2].markdown
-    );
-    let (head, body) = made[4]
-        .markdown
-        .split_once("\n\n")
-        .expect("a head and a run");
-    assert!(
-        head.starts_with("**klaude** `01234567/"),
-        "head reads {head:?}"
+        sent[2].markdown.starts_with("**klaude** `01234567/"),
+        "the run's head reads {:?}",
+        sent[2].markdown
     );
     assert_eq!(
-        body,
-        "× Bash `cargo test` 4s  \n⎿ Exit code 1  \n● [Explore] Read `/src/listen.rs` 12ms"
-    );
-    assert_eq!(
-        made[4].reply,
-        replying_to(made[0].id),
+        sent[2].reply,
+        replying_to(sent[0].id),
         "the run threads under the prompt"
     );
     drop(resident);
@@ -304,21 +339,16 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
         std::thread::sleep(Duration::from_millis(400));
     }
 
-    // Long enough for a frame of the turn the straggler would have opened.
+    // Long enough for the message the turn the straggler would have opened puts up.
     std::thread::sleep(Duration::from_millis(600));
-    let made = drained(&calls);
-    let mut after = made
-        .iter()
-        .skip_while(|call| call.label != "sendRichMessage ring");
-    assert!(after.next().is_some(), "the turn answered");
-    for call in after {
-        let (_, body) = call.markdown.split_once("\n\n").expect("a head and a body");
-        assert_eq!(
-            (call.label.as_str(), body),
-            ("sendRichMessageDraft", ""),
-            "the answer is the last thing the turn says"
-        );
-    }
+    assert_eq!(
+        holding(&drained(&calls)),
+        [
+            ("silent", ">say it".to_owned()),
+            ("ring", "said it".to_owned()),
+        ],
+        "the answer is the last thing the turn says"
+    );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
 }
@@ -363,6 +393,47 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
     std::fs::remove_dir_all(&root).expect("clean up");
 }
 
+/// What the chat is left holding: every message klaude sent, in the order it sent them,
+/// carrying its last rewrite, without the ones it took back. Each is the sound it
+/// arrived with and its body under the head.
+fn holding(made: &[Call]) -> Vec<(&'static str, String)> {
+    let mut order: Vec<i64> = Vec::new();
+    let mut held: HashMap<i64, (&'static str, String)> = HashMap::new();
+    let body = |call: &Call| {
+        call.markdown
+            .split_once("\n\n")
+            .expect("a head and a body")
+            .1
+            .to_owned()
+    };
+    for call in made {
+        match call.label.as_str() {
+            "sendRichMessage silent" | "sendRichMessage ring" => {
+                let sound = if call.label.ends_with("ring") {
+                    "ring"
+                } else {
+                    "silent"
+                };
+                order.push(call.id);
+                held.insert(call.id, (sound, body(call)));
+            }
+            "editMessageText" => {
+                let target = call.target.expect("a message to rewrite");
+                held.get_mut(&target).expect("a message klaude sent").1 = body(call);
+            }
+            "deleteMessage" => {
+                let target = call.target.expect("a message to take back");
+                order.retain(|held| *held != target);
+            }
+            _ => {}
+        }
+    }
+    order
+        .iter()
+        .map(|id| held.remove(id).expect("a message"))
+        .collect()
+}
+
 fn replying_to(message_id: i64) -> serde_json::Value {
     json!({"message_id": message_id, "allow_sending_without_reply": true})
 }
@@ -372,6 +443,8 @@ struct Call {
     label: String,
     markdown: String,
     reply: serde_json::Value,
+    /// The message the call acts on, for a rewrite or a deletion.
+    target: Option<i64>,
     /// What the server answered with, which is what a later message replies to.
     id: i64,
 }
@@ -382,43 +455,53 @@ fn drained(calls: &Receiver<Call>) -> Vec<Call> {
     calls.try_iter().collect()
 }
 
-/// Consecutive repeats collapse, because how many frames a draft takes is a matter of
-/// how fast the deltas arrived. The body kept is the last of them, so a draft reads as
-/// the frame its segment ended on.
+/// Consecutive rewrites of one message collapse, because how many a segment takes is a
+/// matter of how fast the deltas arrived.
 fn collect(calls: &Receiver<Call>, done: impl Fn(&Call) -> bool) -> Vec<Call> {
     let deadline = Instant::now() + PATIENCE;
     let mut made: Vec<Call> = Vec::new();
+    let mut finished = false;
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let call = calls.recv_timeout(left).unwrap_or_else(|_| {
-            panic!(
+        let left = if finished {
+            GRACE
+        } else {
+            deadline.saturating_duration_since(Instant::now())
+        };
+        let Ok(call) = calls.recv_timeout(left) else {
+            assert!(
+                finished,
                 "the turn stopped after {:?}",
                 made.iter().map(|call| &call.label).collect::<Vec<_>>()
-            )
-        });
-        let last = done(&call);
-        match made.last_mut() {
-            Some(kept) if kept.label == call.label => *kept = call,
-            _ => made.push(call),
-        }
-        if last {
+            );
             return made;
+        };
+        finished |= done(&call);
+        match made.last_mut() {
+            Some(kept)
+                if kept.label == "editMessageText"
+                    && call.label == "editMessageText"
+                    && kept.target == call.target =>
+            {
+                *kept = call;
+            }
+            _ => made.push(call),
         }
     }
 }
 
-/// A frame opens with the head, carries the text streamed so far, and closes with the
-/// status line: a mark, a word and the turn's elapsed time, inside the tag Telegram
-/// animates.
-fn frame(markdown: &str, text: &str) {
+/// The message showing an open segment opens with the head, carries what the segment
+/// has said so far, and closes with the status line: a mark, a word and the turn's
+/// elapsed time.
+fn showing(markdown: &str, text: &str) {
     let (title, body) = markdown.split_once("\n\n").expect("a head and a body");
     assert!(title.starts_with("**klaude**"), "head reads {title:?}");
-    let (streamed, status) = body.split_once('\n').expect("text and a status line");
-    assert_eq!(streamed, text);
-    let status = status
-        .strip_prefix("<tg-thinking>")
-        .and_then(|line| line.strip_suffix("</tg-thinking>"))
-        .expect("the animated tag");
+    let status = if text.is_empty() {
+        body
+    } else {
+        body.strip_prefix(text)
+            .and_then(|rest| rest.strip_prefix("  \n"))
+            .expect("what was said and a status line")
+    };
     let status = status.strip_prefix("✻ ").expect("the mark");
     let (word, took) = status.split_once("… ").expect("a word and an elapsed time");
     assert!(
@@ -576,15 +659,15 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
             "sendRichMessage" => " ring",
             _ => "",
         };
-        let markdown = body["rich_message"]["markdown"]
-            .as_str()
-            .expect("a markdown body")
-            .to_owned();
         calls
             .send(Call {
                 label: format!("{method}{sound}"),
-                markdown,
+                markdown: body["rich_message"]["markdown"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
                 reply: body["reply_parameters"].clone(),
+                target: body["message_id"].as_i64(),
                 id,
             })
             .expect("record");
@@ -628,32 +711,17 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     }
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
-    let bodies = |label: &str| -> Vec<String> {
-        made.iter()
-            .filter(|call| call.label.starts_with(label))
-            .map(|call| {
-                call.markdown
-                    .split_once("\n\n")
-                    .expect("a head and a body")
-                    .1
-                    .to_owned()
-            })
-            .collect()
-    };
     assert_eq!(
-        bodies("sendRichMessage "),
-        // The run went out while its one call was still running.
-        [">go", "on it", "○ Bash `cargo test`", "done"],
-        "each segment reaches the chat once"
-    );
-    assert_eq!(
-        bodies("editMessageText"),
+        holding(&made),
         [
+            ("silent", ">go"),
             // The flush that lost the race is written into the message it belongs to.
-            "on it now",
-            // So is the outcome of a call that reported after its run was posted.
-            "● Bash `cargo test` 30ms",
+            ("silent", "on it now"),
+            // So is the outcome of a call that reported after its run went out.
+            ("silent", "● Bash `cargo test` 30ms"),
+            ("ring", "done"),
         ]
+        .map(|(sound, body)| (sound, body.to_owned()))
     );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
