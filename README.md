@@ -16,7 +16,9 @@ A turn produces one or more response segments, each an assistant message with te
 it. A segment streams into a Telegram draft while it is being written, and becomes a
 message once it is complete, which is when the next segment starts. While the draft is
 on screen it carries a status line under the text, a word from Claude Code's own
-vocabulary and the turn's elapsed time, stepping to the next word on every refresh. The
+vocabulary and the turn's elapsed time, stepping to the next word on every refresh. A
+turn opens its draft when it starts, with the status line and no text above it, so the
+minutes it spends thinking or in tool calls are on screen as they pass. The
 last segment is not posted on its own: the `Stop` event carries its text, so posting it
 would put the same words in the chat twice.
 
@@ -39,8 +41,7 @@ buffer rather than a shell argument. Sending while a turn is running leaves the 
 queued, which is what the terminal does with anything typed then.
 
 A message whose text reached an input box gets a 👀 reaction once Claude Code reports
-the prompt. That is what says the prompt was accepted, for a turn that spends its first
-minutes thinking or in tool calls and has nothing to stream yet.
+the prompt, so a chat scrolled back shows which asks were accepted.
 
 `/new <directory>` posts an anchor naming that directory and starts nothing. Replying to
 the anchor opens a window running `claude` there and types the reply as its first
