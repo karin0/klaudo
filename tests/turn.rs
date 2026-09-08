@@ -324,7 +324,8 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
 }
 
 /// A message that replies to nothing still names a session: the one heard from last.
-/// These sessions run outside tmux, so what klaude says back is where the message went.
+/// These sessions run outside tmux, so what klaude says back names where the message
+/// went and the terminal that session is on.
 #[test]
 fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
     let (port, calls, chat) = recorder();
@@ -346,12 +347,17 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
     }
     chat.says("carry on");
 
-    let made = collect(&calls, |call| {
-        call.markdown.contains("is not running in tmux")
-    });
-    assert_eq!(
-        made.last().expect("an answer").markdown,
-        "`01234567` is not running in tmux"
+    let made = collect(&calls, |call| call.markdown.starts_with("`01234567` "));
+    // The session reports the terminal the test itself was started from, and a build
+    // machine may have given it none.
+    let answer = made.last().expect("an answer").markdown.clone();
+    let (address, why) = answer.split_once(' ').expect("an address and a reason");
+    assert_eq!(address, "`01234567`");
+    assert!(
+        why == "has no terminal to type into"
+            || (why.starts_with("is on `/dev/pts/")
+                && why.ends_with("`, which no tmux pane holds")),
+        "the answer reads {answer:?}"
     );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");

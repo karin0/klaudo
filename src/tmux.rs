@@ -143,7 +143,7 @@ fn run(command: &mut Command) -> Result<(), String> {
 /// Field 7 of `/proc/<pid>/stat` is the controlling terminal, encoded as a device
 /// number. The fields before it are skipped past the command name, which may itself
 /// contain spaces and parentheses.
-fn controlling_tty(pid: u32) -> Option<String> {
+pub fn controlling_tty(pid: u32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let fields: Vec<&str> = stat.rsplit_once(") ")?.1.split(' ').collect();
     let device: u32 = fields.get(4)?.parse().ok()?;

@@ -106,7 +106,9 @@ pane. A session that exited leaves its pane to a shell, where the same text woul
 a command.
 
 A session running outside tmux has no pane to type into, and a reply aimed at one is
-answered in the chat saying so.
+answered in the chat with the terminal it is on instead. A session started as a
+background job is one of those: Claude Code gives it a pty of its own, so the tmux
+window its output appears in belongs to the session that launched it.
 
 ## Hooks
 
