@@ -8,8 +8,9 @@ from the phone, and answered from there.
 
 A turn opens with the prompt, posted as it was typed and without a sound. Every message
 the turn sends afterwards is a Telegram reply to that one, so a chat that collects many
-turns reads as a thread per turn. A prompt deleted from the chat leaves the rest of its
-turn arriving as messages of their own.
+turns reads as a thread per turn. A prompt klaude typed is already in the chat as the
+message that asked for it, and its turn threads under that message. A prompt deleted
+from the chat leaves the rest of its turn arriving as messages of their own.
 
 A turn produces one or more response segments, each an assistant message with text in
 it. A segment streams into a Telegram draft while it is being written, and becomes a
@@ -36,6 +37,10 @@ prompt in its input box. Multiple lines arrive as multiple lines, and quotes, ba
 and non-ASCII text need no escaping, because the text travels through a tmux paste
 buffer rather than a shell argument. Sending while a turn is running leaves the prompt
 queued, which is what the terminal does with anything typed then.
+
+A message whose text reached an input box gets a 👀 reaction once Claude Code reports
+the prompt. That is what says the prompt was accepted, for a turn that spends its first
+minutes thinking or in tool calls and has nothing to stream yet.
 
 `/new <directory>` posts an anchor naming that directory and starts nothing. Replying to
 the anchor opens a window running `claude` there and types the reply as its first

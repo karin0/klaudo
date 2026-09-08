@@ -8,6 +8,8 @@ const POLL_SECONDS: u64 = 50;
 /// Telegram rejects a message body past 4096 characters, and a truncated notification
 /// beats a rejected one.
 const MAX_CHARS: usize = 4000;
+/// What klaude leaves on a message whose text reached a session's input box.
+const SEEN: &str = "👀";
 
 /// Whether a message reaches the phone with a sound.
 #[derive(Clone, Copy)]
@@ -76,6 +78,19 @@ impl Telegram {
                 "chat_id": self.chat_id,
                 "draft_id": draft_id,
                 "rich_message": {"markdown": clamp(markdown)},
+            }),
+        );
+    }
+
+    /// Marks a message klaude typed into a terminal, which is what tells its sender the
+    /// prompt was accepted while the turn is still working.
+    pub fn acknowledge(&self, message_id: i64) {
+        self.call(
+            "setMessageReaction",
+            &json!({
+                "chat_id": self.chat_id,
+                "message_id": message_id,
+                "reaction": [{"type": "emoji", "emoji": SEEN}],
             }),
         );
     }
