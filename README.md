@@ -42,6 +42,9 @@ as markdown.
 
 One draft carries the whole turn: every frame of every segment shares the turn's draft
 id, which is what animates them into each other rather than replacing one with the next.
+Telegram offers no way to retire a draft, and posting a message leaves it standing, so a
+segment that has become a message is framed out of the draft. The turn's last frame is
+the head alone, which is what waits out the half minute after the answer is in the chat.
 
 A message's last flushes race the hook of the tool call that ends it, so a flush can
 land after klaude has posted that message. What it carries is dropped. Reviving the
@@ -221,5 +224,5 @@ against a server of its own that answers the way Telegram does. It asserts the c
 two-segment turn makes, their order and which of them carries a notification; that a
 prompt queued during a turn gets a thread of its own; that a run of tool calls is posted
 as a message between the two halves of what the turn said; that a delta landing after
-its own `Stop` opens no second turn; and that a message replying to nothing reaches the
-session heard from last.
+its own `Stop` leaves nothing after the answer but an empty frame; and that a message
+replying to nothing reaches the session heard from last.

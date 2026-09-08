@@ -645,13 +645,16 @@ impl Machine {
         if text.is_empty() {
             return;
         }
-        let took = took(turn.started.elapsed());
+        let elapsed = turn.started.elapsed();
         let prompt_id = turn.prompt_id.clone();
         let reply_to = turn.reply_to;
+        let draft = turn.draft_id;
         let head = session.head(id, Some(&prompt_id));
         // The tag marks a finished turn, and this segment is the middle of one.
-        let posted = hook::compose(&head, &took, "", &text);
+        let posted = hook::compose(&head, &took(elapsed), "", &text);
         self.telegram.send(&posted, Sound::Silent, reply_to);
+        let status = status(elapsed, draft);
+        self.telegram.draft(draft, &frame(&head, "", Some(&status)));
     }
 
     fn finish(&mut self, id: &str, event: &Event) {
@@ -681,6 +684,9 @@ impl Machine {
         let message = hook::message(event, &head, &took(turn.started.elapsed()));
         // The one sound of the turn: the reply is complete and worth coming back to.
         self.telegram.send(&message, Sound::Ring, turn.reply_to);
+        // Nothing is running any more, so the draft waits out its half minute on the
+        // head alone.
+        self.telegram.draft(turn.draft_id, &frame(&head, "", None));
     }
 
     /// Anything else a session reports lands in the thread of the turn it happened in.
@@ -729,9 +735,9 @@ impl Machine {
             }
             let head = session.head(&id, Some(&turn.prompt_id));
             let status = status(turn.started.elapsed(), turn.draft_id);
-            let frame = format!("{head}\n\n{text}\n<tg-thinking>{status}</tg-thinking>");
             let draft = turn.draft_id;
-            self.telegram.draft(draft, &frame);
+            self.telegram
+                .draft(draft, &frame(&head, &text, Some(&status)));
             let Some(segment) = self
                 .sessions
                 .get_mut(&id)
@@ -923,6 +929,16 @@ fn draft_id(message_id: &str) -> i64 {
     let mut hasher = DefaultHasher::new();
     message_id.hash(&mut hasher);
     i64::try_from(hasher.finish() & 0x7fff_ffff).expect("31 bits fit") | 1
+}
+
+/// One frame of a turn's draft. Telegram offers no way to retire a draft, and sending a
+/// message leaves it standing, so a segment that has become a message is framed out of
+/// the draft to keep the same words from being on screen twice.
+fn frame(head: &str, text: &str, status: Option<&str>) -> String {
+    match status {
+        Some(status) => format!("{head}\n\n{text}\n<tg-thinking>{status}</tg-thinking>"),
+        None => format!("{head}\n\n{text}"),
+    }
 }
 
 /// What the draft says under the text it is streaming. The word changes once per
