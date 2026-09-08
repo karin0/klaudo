@@ -136,6 +136,10 @@ reply carries that message as Telegram rendered it, a list of paragraphs made of
 so the address is the code span of its first paragraph. A restarted resident therefore
 still routes replies to messages it never posted.
 
+A call Telegram rejects with a rate limit or a failure of its own is asked again up to
+three times, waiting the time Telegram names or a doubling one, so a message can arrive
+late or, when the answer to an attempt was lost, twice.
+
 The socket has a thread of its own, which moves each datagram into memory as it lands.
 A Telegram call holds the machine for as long as the call takes, and the socket's buffer
 is a few hundred deltas deep, past which the hooks fall back to posting for themselves.
