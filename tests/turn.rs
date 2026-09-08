@@ -253,12 +253,48 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     );
     assert_eq!(
         body,
-        "```\nBash cargo test  4s Exit code 1\n[Explore] Read /src/listen.rs  12ms\n```"
+        "```\n✗ Bash cargo test  4s\n  ⎿ Exit code 1\n⏺ [Explore] Read /src/listen.rs  12ms\n```"
     );
     assert_eq!(
         made[4].reply,
         replying_to(made[0].id),
         "the run threads under the prompt"
+    );
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
+/// The three hook processes run at once, so a delta can land after the `Stop` of its own
+/// turn. Opening a second turn for it would leave a draft beside the answer showing
+/// something else, and carrying the status line under it.
+#[test]
+fn a_delta_landing_after_its_stop_opens_no_second_turn() {
+    let (port, calls, _chat) = recorder();
+    let root = prepare("straggler");
+    let resident = resident(&root, port);
+    let session = "0123456789abcdef";
+    let prompt = "aaaaaaaa-1111";
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "say it", "prompt_id": prompt}),
+        json!({"hook_event_name": "MessageDisplay", "prompt_id": prompt, "message_id": "m1", "index": 0, "delta": "said"}),
+        json!({"hook_event_name": "Stop", "prompt_id": prompt, "last_assistant_message": "said it"}),
+        json!({"hook_event_name": "MessageDisplay", "prompt_id": prompt, "message_id": "m1", "index": 1, "delta": " it"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        hook(&root, port, &event);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    // Long enough for a frame of the turn the straggler would have opened.
+    std::thread::sleep(Duration::from_millis(600));
+    let made = drained(&calls);
+    assert_eq!(
+        made.last().map(|call| call.label.as_str()),
+        Some("sendRichMessage ring"),
+        "the answer is the last thing the turn does, not a draft after it"
     );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
@@ -309,6 +345,12 @@ struct Call {
     reply: serde_json::Value,
     /// What the server answered with, which is what a later message replies to.
     id: i64,
+}
+
+/// Every call the server has taken so far, in order, for a test that asserts what did
+/// not happen and so cannot wait for a call to arrive.
+fn drained(calls: &Receiver<Call>) -> Vec<Call> {
+    calls.try_iter().collect()
 }
 
 /// Consecutive repeats collapse, because how many frames a draft takes is a matter of
