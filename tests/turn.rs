@@ -86,6 +86,12 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     );
     assert_eq!(made[0].reply, json!(null), "the prompt opens the thread");
     frame(&made[1].markdown, "first segment text");
+    // Nothing retires a draft, so the last frame is the answer rather than whatever the
+    // turn happened to be doing when it ended.
+    assert_eq!(
+        made[3].markdown, made[4].markdown,
+        "the last frame leaves the answer on screen"
+    );
     // A prompt deleted from the chat leaves the answer to it a message of its own.
     let reply = replying_to(made[0].id);
     assert_eq!(made[2].reply, reply, "the first segment replies");
@@ -128,7 +134,9 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         }
     }
 
-    let made = collect(&calls, |call| call.markdown.ends_with("\n\ntwo"));
+    let made = collect(&calls, |call| {
+        call.label == "sendRichMessage ring" && call.markdown.ends_with("\n\ntwo")
+    });
     assert_eq!(
         made.iter()
             .map(|call| call.label.as_str())
@@ -137,29 +145,30 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
             "sendRichMessage silent", // first ask
             "sendRichMessageDraft",   // the first turn streaming
             "sendRichMessage silent", // second ask, queued
+            "sendRichMessageDraft",   // the first turn's answer, framed before it is sent
             "sendRichMessage ring",   // the first turn's answer
-            "sendRichMessageDraft",   // the queued turn streaming
+            "sendRichMessageDraft",   // the queued turn streaming, then its answer framed
             "sendRichMessage ring",   // the queued turn's answer
         ]
     );
     // A queued prompt has no turn yet, so its head addresses the session alone.
     assert_eq!(made[2].markdown, "**klaude** `fedcba98`\n\n>second ask");
     assert_eq!(
-        made[3].reply,
+        made[4].reply,
         replying_to(made[0].id),
         "the first answer replies to the first ask"
     );
     assert_eq!(
-        made[5].reply,
+        made[6].reply,
         replying_to(made[2].id),
         "the queued turn replies to the prompt that was queued"
     );
     assert!(
-        made[5]
+        made[6]
             .markdown
             .starts_with("**klaude** `fedcba98/bbbbbbbb`"),
         "the queued turn's head reads {:?}",
-        made[5].markdown
+        made[6].markdown
     );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
