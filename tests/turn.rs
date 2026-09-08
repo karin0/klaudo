@@ -276,11 +276,10 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     for mut event in turn {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        let streaming = event["hook_event_name"] == json!("MessageDisplay");
         hook(&root, port, &event);
-        if streaming {
-            std::thread::sleep(Duration::from_millis(400));
-        }
+        // What a turn says after a run of tool calls arrives once those calls have run,
+        // which is far longer than the wait a call is filed after.
+        std::thread::sleep(Duration::from_millis(400));
     }
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
@@ -310,6 +309,51 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
         sent[2].reply,
         replying_to(sent[0].id),
         "the run threads under the prompt"
+    );
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
+/// An assistant message's last flush reaches the resident after the hook of the tool
+/// call that message ends with, so the words introducing a call are announced after it.
+/// They belong above it in the chat all the same.
+#[test]
+fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
+    let (port, calls, _chat) = recorder();
+    let root = prepare("settling");
+    let resident = resident(&root, port);
+    let session = "0123456789abcdef";
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+               "tool_input": {"command": "cargo test"}}),
+        // The flush of the message that ends with that call, a few milliseconds behind.
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0,
+               "final": true, "delta": "let me check"}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "checked"}),
+    ];
+    let last = turn.len() - 1;
+    for (step, mut event) in turn.into_iter().enumerate() {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        hook(&root, port, &event);
+        // The call, its words and its outcome arrive together; the turn ends later.
+        if step == last - 1 {
+            std::thread::sleep(Duration::from_millis(600));
+        }
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    assert_eq!(
+        holding(&made),
+        [
+            ("silent", ">go".to_owned()),
+            ("silent", "let me check".to_owned()),
+            ("silent", "● Bash `cargo test` 30ms".to_owned()),
+            ("ring", "checked".to_owned()),
+        ]
     );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");

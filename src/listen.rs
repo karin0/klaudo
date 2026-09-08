@@ -24,6 +24,11 @@ const REFRESH: Duration = Duration::from_secs(30);
 /// runs before the message exists, so a turn answered at once leaves nothing to take
 /// back.
 const REWRITE: Duration = Duration::from_secs(3);
+/// How long a tool call waits before it is filed. An assistant message's last flush
+/// reaches the resident tens of milliseconds after the hook of the tool call that
+/// message ends with, so a call filed as it is announced stands above the words that
+/// introduce it.
+const SETTLE: Duration = Duration::from_millis(100);
 const POLL: Duration = Duration::from_millis(200);
 /// Long enough to let a restarting instance take over from one still shutting down.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
@@ -349,6 +354,9 @@ struct Turn {
     /// The segments the chat already has, kept because what belongs in one goes on
     /// arriving after it was posted.
     sealed: Vec<Segment>,
+    /// Tool calls announced but not filed yet, oldest first. A call the turn ended on
+    /// is dropped with the turn: the answer is what that message is for.
+    pending: Vec<(Instant, Call)>,
 }
 
 impl Turn {
@@ -510,6 +518,7 @@ impl Machine {
                 reply_to: posted,
                 live: None,
                 sealed: Vec::new(),
+                pending: Vec::new(),
             });
         }
     }
@@ -543,6 +552,7 @@ impl Machine {
             live: None,
             segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
             sealed: Vec::new(),
+            pending: Vec::new(),
         });
         true
     }
@@ -593,9 +603,8 @@ impl Machine {
         chunks.insert(index, delta.clone());
     }
 
-    /// A tool call joins the run that is open, opening one when the turn was saying
-    /// something instead. A run reads as one message, so a turn that talked, worked and
-    /// talked again leaves those three in the chat in order.
+    /// A tool call waits out `SETTLE` before it is filed, so the words its own message
+    /// ends with reach the chat first.
     fn calling(&mut self, id: &str, event: &Event) {
         let (Some(tool_use_id), Some(name)) = (&event.tool_use_id, &event.tool_name) else {
             return;
@@ -603,15 +612,45 @@ impl Machine {
         if !self.turn(id, event.prompt_id.as_deref()) {
             return;
         }
-        let Some(turn) = self.sessions.get(id).and_then(|s| s.turn.as_ref()) else {
+        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
         };
+        turn.pending.push((
+            Instant::now(),
+            Call {
+                id: tool_use_id.clone(),
+                agent: event.agent_type.clone(),
+                name: name.clone(),
+                subject: event.subject(),
+                outcome: Outcome::Running,
+            },
+        ));
+    }
+
+    /// Files the calls that have waited long enough. They join the run that is open,
+    /// opening one when the turn was saying something instead. A run reads as one
+    /// message, so a turn that talked, worked and talked again leaves those three in
+    /// the chat in order.
+    fn place(&mut self, id: &str) {
+        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+            return;
+        };
+        let ready = turn
+            .pending
+            .iter()
+            .take_while(|(at, _)| at.elapsed() >= SETTLE)
+            .count();
+        if ready == 0 {
+            return;
+        }
+        let filed: Vec<Call> = turn.pending.drain(..ready).map(|(_, call)| call).collect();
         if !turn.running_tools() {
+            let opening = filed[0].id.clone();
             self.seal(id);
             let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
                 return;
             };
-            turn.segment = Some(Segment::new(tool_use_id, Body::Tools(Vec::new())));
+            turn.segment = Some(Segment::new(&opening, Body::Tools(Vec::new())));
         }
         let Some(Body::Tools(calls)) = self
             .sessions
@@ -622,13 +661,7 @@ impl Machine {
         else {
             return;
         };
-        calls.push(Call {
-            id: tool_use_id.clone(),
-            agent: event.agent_type.clone(),
-            name: name.clone(),
-            subject: event.subject(),
-            outcome: Outcome::Running,
-        });
+        calls.extend(filed);
     }
 
     /// How a call went, which reaches the run it belongs to. A run already posted takes
@@ -646,6 +679,15 @@ impl Machine {
         let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
         };
+        // A tool this quick reports before its call has been filed.
+        if let Some((_, call)) = turn
+            .pending
+            .iter_mut()
+            .find(|(_, call)| call.id == tool_use_id)
+        {
+            call.outcome = outcome;
+            return;
+        }
         let Some(segment) = turn.holding(tool_use_id) else {
             return;
         };
@@ -791,6 +833,7 @@ impl Machine {
 
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         for id in ids {
+            self.place(&id);
             self.show(&id);
         }
     }
