@@ -667,6 +667,11 @@ impl Machine {
         // rather than posted a second time just above the message that repeats it.
         let head = session.head(id, Some(&turn.prompt_id));
         let message = hook::message(event, &head, &took(turn.started.elapsed()));
+        // Nothing retires a draft; it lives out the thirty seconds since its last frame.
+        // That frame is whatever the turn was doing when it ended, so a turn ending on a
+        // tool call leaves one that reads as still running, beside the answer. Framing
+        // the answer itself is what the draft is for: a preview of the message to come.
+        self.telegram.draft(turn.draft_id, &message);
         // The one sound of the turn: the reply is complete and worth coming back to.
         self.telegram.send(&message, Sound::Ring, turn.reply_to);
     }

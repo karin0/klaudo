@@ -42,8 +42,10 @@ as markdown.
 
 One draft carries the whole turn: every frame of every segment shares the turn's draft
 id, so the live view is one bubble that animates through the turn rather than one left
-behind per segment. A draft cannot be retired, only outlived, so posting a segment is
-what takes the bubble off screen until the next segment frames it again.
+behind per segment. Nothing retires a draft; it lives out the thirty seconds since its
+last frame, whatever else arrives in the chat meanwhile. So a turn frames its answer one
+last time before posting it, and the bubble left over for those thirty seconds carries
+the words the message carries.
 
 So a turn that talked, worked and talked again leaves those three in the chat, in order,
 and the last message is the only one that makes a sound. A `Notification` sounds too,
