@@ -35,7 +35,9 @@ transcript under. That line is also the address a reply is routed by.
 
 ## What you can send
 
-Every message from the chat is a reply, and what it replies to is where it goes.
+What a message replies to is where it goes. A message replying to nothing goes to the
+session klaude heard from last, and the turn it starts threads under it, whose head
+names the session that took it.
 
 Replying to any message from a turn types the text into that session's terminal, as a
 prompt in its input box. Multiple lines arrive as multiple lines, and quotes, backticks
