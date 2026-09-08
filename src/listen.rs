@@ -74,10 +74,15 @@ const DATAGRAM_MAX: usize = 200 * 1024;
 const NEW: &str = "new";
 /// How many calls a run lists before the oldest are counted instead.
 const RUN_MAX: usize = 30;
-/// The mark a call opens its line with, for how it went.
+/// The mark a call opens its line with, for how it went. Geometric shapes, which every
+/// font draws as themselves; the circle Claude Code's own terminal uses is drawn as an
+/// emoji here.
 const RUNNING: char = '○';
-const DONE: char = '⏺';
-const FAILED: char = '✗';
+const DONE: char = '●';
+const FAILED: char = '×';
+/// A line ends where the next call begins. Two spaces before the newline is what keeps
+/// them apart, because a lone newline joins the lines into one paragraph.
+const BREAK: &str = "  \n";
 /// The first line of what a failed tool reported, past which it stops reading at a
 /// glance.
 const WHY_MAX: usize = 60;
@@ -231,8 +236,8 @@ impl Call {
     fn line(&self) -> String {
         let (mark, took, why) = match &self.outcome {
             Outcome::Running => (RUNNING, String::new(), None),
-            Outcome::Done(took) => (DONE, format!("  {}", spent(*took)), None),
-            Outcome::Failed(took, why) => (FAILED, format!("  {}", spent(*took)), Some(why)),
+            Outcome::Done(took) => (DONE, format!(" {}", spent(*took)), None),
+            Outcome::Failed(took, why) => (FAILED, format!(" {}", spent(*took)), Some(why)),
         };
         let agent = match &self.agent {
             Some(agent) => format!("[{agent}] "),
@@ -240,13 +245,30 @@ impl Call {
         };
         let subject = match self.subject.as_str() {
             "" => String::new(),
-            subject => format!(" {subject}"),
+            subject => format!(" {}", code(subject)),
         };
         let line = format!("{mark} {agent}{}{subject}{took}", self.name);
         match why {
-            Some(why) => format!("{line}\n  ⎿ {why}"),
+            Some(why) => format!("{line}{BREAK}⎿ {why}"),
             None => line,
         }
+    }
+}
+
+/// A command reads as markdown where the message is markdown, so it travels as a code
+/// span, whose backticks have to outlast any run of them the command carries.
+fn code(subject: &str) -> String {
+    let mut longest = 0;
+    let mut ticks = 0;
+    for character in subject.chars() {
+        ticks = if character == '`' { ticks + 1 } else { 0 };
+        longest = longest.max(ticks);
+    }
+    let fence = "`".repeat(longest + 1);
+    // A span whose text opens or closes with a backtick needs the padding to keep it.
+    match longest {
+        0 => format!("{fence}{subject}{fence}"),
+        _ => format!("{fence} {subject} {fence}"),
     }
 }
 
@@ -281,31 +303,20 @@ impl Segment {
     fn text(&self) -> String {
         match &self.body {
             Body::Text(chunks) => chunks.values().map(String::as_str).collect(),
-            Body::Tools(calls) => fenced(calls),
+            Body::Tools(calls) => listing(calls),
         }
     }
 }
 
-/// A run of tool calls as a terminal would show it. The oldest are counted rather than
-/// listed past the cap, so what is running now stays in a message Telegram will take.
-fn fenced(calls: &[Call]) -> String {
+/// A run of tool calls, a line per call. The oldest are counted rather than listed past
+/// the cap, so what is running now stays in a message Telegram will take.
+fn listing(calls: &[Call]) -> String {
     let elided = calls.len().saturating_sub(RUN_MAX);
     let head = (elided > 0).then(|| format!("… {elided} earlier"));
-    let listed = head
-        .into_iter()
+    head.into_iter()
         .chain(calls[elided..].iter().map(Call::line))
         .collect::<Vec<_>>()
-        .join("\n");
-    // A command carrying markdown of its own reads as markdown outside a fence, and the
-    // fence has to outlast any run of backticks the command contains.
-    let mut longest = 0;
-    let mut ticks = 0;
-    for character in listed.chars() {
-        ticks = if character == '`' { ticks + 1 } else { 0 };
-        longest = longest.max(ticks);
-    }
-    let fence = "`".repeat(longest.max(2) + 1);
-    format!("{fence}\n{listed}\n{fence}")
+        .join(BREAK)
 }
 
 /// Text from the chat and the message that carried it, which is the thread the turn it
@@ -1005,7 +1016,7 @@ mod tests {
     fn a_call_reads_as_its_tool_its_subject_and_how_it_went() {
         assert_eq!(
             call("Read", "src/listen.rs", Outcome::Running).line(),
-            "○ Read src/listen.rs"
+            "○ Read `src/listen.rs`"
         );
         assert_eq!(
             call(
@@ -1014,7 +1025,7 @@ mod tests {
                 Outcome::Done(Duration::from_millis(1400))
             )
             .line(),
-            "⏺ Bash cargo test  1s"
+            "● Bash `cargo test` 1s"
         );
         assert_eq!(
             call(
@@ -1023,7 +1034,7 @@ mod tests {
                 Outcome::Done(Duration::from_millis(12))
             )
             .line(),
-            "⏺ Bash cargo test  12ms"
+            "● Bash `cargo test` 12ms"
         );
         // What a failure reported reads on a line of its own.
         assert_eq!(
@@ -1033,24 +1044,28 @@ mod tests {
                 Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
             )
             .line(),
-            "✗ Bash cargo test  4s\n  ⎿ Exit code 1"
+            "× Bash `cargo test` 4s  \n⎿ Exit code 1"
         );
         let subagent = Call {
             agent: Some("Explore".to_owned()),
             ..call("Grep", "fn seal", Outcome::Running)
         };
-        assert_eq!(subagent.line(), "○ [Explore] Grep fn seal");
+        assert_eq!(subagent.line(), "○ [Explore] Grep `fn seal`");
     }
 
     #[test]
-    fn a_run_is_fenced_past_any_backticks_a_command_carries() {
-        let plain = fenced(&[call("Read", "src/listen.rs", Outcome::Running)]);
-        assert_eq!(plain, "```\n○ Read src/listen.rs\n```");
-        let ticks = fenced(&[call("Bash", "echo ```x```", Outcome::Running)]);
-        assert!(
-            ticks.starts_with("````\n") && ticks.ends_with("\n````"),
-            "the fence reads {ticks:?}"
-        );
+    fn a_command_travels_in_a_span_past_any_backticks_it_carries() {
+        assert_eq!(code("cargo test"), "`cargo test`");
+        assert_eq!(code("echo ```x```"), "```` echo ```x``` ````");
+    }
+
+    #[test]
+    fn a_run_keeps_its_calls_on_lines_of_their_own() {
+        let listed = listing(&[
+            call("Read", "src/listen.rs", Outcome::Running),
+            call("Bash", "cargo test", Outcome::Done(Duration::from_secs(1))),
+        ]);
+        assert_eq!(listed, "○ Read `src/listen.rs`  \n● Bash `cargo test` 1s");
     }
 
     #[test]
@@ -1058,21 +1073,22 @@ mod tests {
         let calls: Vec<Call> = (0..RUN_MAX + 3)
             .map(|index| call("Read", &format!("file{index}"), Outcome::Running))
             .collect();
-        let listed = fenced(&calls);
+        let listed = listing(&calls);
         assert!(listed.contains("… 3 earlier"), "the run reads {listed}");
         assert!(
-            !listed.contains("Read file2\n"),
+            !listed.contains("Read `file2`"),
             "the third call is still listed"
         );
         assert!(
-            listed.contains("Read file3\n"),
+            listed.contains("Read `file3`"),
             "the fourth call is dropped"
         );
         assert!(
-            listed.contains(&format!("file{}", RUN_MAX + 2)),
+            listed.contains(&format!("`file{}`", RUN_MAX + 2)),
             "the last call is listed"
         );
-        assert_eq!(listed.lines().count(), RUN_MAX + 3);
+        // The calls it lists, and the line that counts the ones it does not.
+        assert_eq!(listed.lines().count(), RUN_MAX + 1);
     }
 
     #[test]

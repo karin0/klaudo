@@ -23,18 +23,22 @@ spends thinking are on screen as they pass. The last segment is not posted on it
 the `Stop` event carries its text, so posting it would put the same words in the chat
 twice.
 
-A run of tool calls is posted inside a fence, one line per call: a mark for how it went,
-the tool, the field of its input that says what it is doing, and the time it took. What
-a failed tool reported goes on a line under that, its first sixty characters. A call a
-subagent made carries that agent's type in brackets, and one still running is marked as
-such and shows no time, so the draft reads as the terminal does. A run past thirty calls
-lists the newest thirty and counts the rest.
+A run of tool calls is posted a line per call: a mark for how it went, the tool, the
+field of its input that says what it is doing, and the time it took. What a failed tool
+reported goes on a line under that, its first sixty characters. A call a subagent made
+carries that agent's type in brackets, and one still running is marked as such and shows
+no time, so the draft reads as the terminal does. A run past thirty calls lists the
+newest thirty and counts the rest.
 
-```
-⏺ Bash cargo test  4s
-  ⎿ Exit code 1
-○ [Explore] Grep fn seal
-```
+● Bash `cargo test` 4s
+× Bash `cargo clippy` 2s
+⎿ Exit code 1
+○ [Explore] Grep `fn seal`
+
+The lines are ordinary text, so a long command wraps where a preformatted block would
+have asked the reader to scroll sideways for the time at its end. The command itself
+travels in a code span, which is what keeps a command carrying markdown from being read
+as markdown.
 
 One draft carries the whole turn: every frame of every segment shares the turn's draft
 id, so the live view is one bubble that animates through the turn rather than one left
