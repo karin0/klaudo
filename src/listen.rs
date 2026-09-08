@@ -289,6 +289,9 @@ struct Segment {
     body: Body,
     /// What the last frame showed and when it went out, absent until the first frame.
     framed: Option<(String, Instant)>,
+    /// The message this segment became and the elapsed time stamped on it, which is
+    /// what a flush or an outcome arriving later rewrites.
+    posted: Option<(i64, Duration)>,
 }
 
 impl Segment {
@@ -297,6 +300,7 @@ impl Segment {
             id: id.to_owned(),
             body,
             framed: None,
+            posted: None,
         }
     }
 
@@ -336,10 +340,9 @@ struct Turn {
     /// The message carrying what was asked, which the rest of the turn replies to.
     reply_to: Option<i64>,
     segment: Option<Segment>,
-    /// The segments already posted. A message's last flushes race the hook of the tool
-    /// call that follows them, so a delta of one can land after its segment is gone,
-    /// and reviving that segment would post the same words a second time.
-    posted: Vec<String>,
+    /// The segments the chat already has, kept because what belongs in one goes on
+    /// arriving after it was posted.
+    sealed: Vec<Segment>,
 }
 
 impl Turn {
@@ -347,6 +350,18 @@ impl Turn {
     /// message.
     fn running_tools(&self) -> bool {
         matches!(&self.segment, Some(segment) if matches!(segment.body, Body::Tools(_)))
+    }
+
+    /// The run a tool call belongs to, which is the open one until the turn moves past
+    /// it and the call reports from the chat.
+    fn holding(&mut self, tool_use_id: &str) -> Option<&mut Segment> {
+        self.segment
+            .iter_mut()
+            .chain(self.sealed.iter_mut())
+            .find(|segment| match &segment.body {
+                Body::Tools(calls) => calls.iter().any(|call| call.id == tool_use_id),
+                Body::Text(_) => false,
+            })
     }
 }
 
@@ -487,7 +502,7 @@ impl Machine {
                 prompt_id,
                 started: Instant::now(),
                 reply_to: posted,
-                posted: Vec::new(),
+                sealed: Vec::new(),
             });
         }
     }
@@ -519,7 +534,7 @@ impl Machine {
             started: Instant::now(),
             reply_to: session.queued.pop_front().flatten(),
             segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
-            posted: Vec::new(),
+            sealed: Vec::new(),
         });
         true
     }
@@ -536,9 +551,15 @@ impl Machine {
         let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
         };
-        // A flush of a message klaude has already posted, which lost the race with the
-        // hook of the tool call that ended it.
-        if turn.posted.iter().any(|posted| posted == message_id) {
+        if let Some(segment) = turn
+            .sealed
+            .iter_mut()
+            .find(|sealed| sealed.id == *message_id)
+        {
+            if let Body::Text(chunks) = &mut segment.body {
+                chunks.insert(index, delta.clone());
+            }
+            self.amend(id, message_id);
             return;
         }
         if turn
@@ -608,24 +629,29 @@ impl Machine {
         let Some(tool_use_id) = event.tool_use_id.as_deref() else {
             return;
         };
-        let Some(Body::Tools(calls)) = self
-            .sessions
-            .get_mut(id)
-            .and_then(|s| s.turn.as_mut())
-            .and_then(|t| t.segment.as_mut())
-            .map(|segment| &mut segment.body)
-        else {
+        let took = Duration::from_millis(event.duration_ms.unwrap_or_default());
+        let outcome = if event.hook_event_name == "PostToolUseFailure" {
+            Outcome::Failed(took, why(event.error.as_deref().unwrap_or("failed")))
+        } else {
+            Outcome::Done(took)
+        };
+        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+            return;
+        };
+        let Some(segment) = turn.holding(tool_use_id) else {
+            return;
+        };
+        let Body::Tools(calls) = &mut segment.body else {
             return;
         };
         let Some(call) = calls.iter_mut().find(|call| call.id == tool_use_id) else {
             return;
         };
-        let took = Duration::from_millis(event.duration_ms.unwrap_or_default());
-        call.outcome = if event.hook_event_name == "PostToolUseFailure" {
-            Outcome::Failed(took, why(event.error.as_deref().unwrap_or("failed")))
-        } else {
-            Outcome::Done(took)
-        };
+        call.outcome = outcome;
+        let sealed = segment.posted.is_some().then(|| segment.id.clone());
+        if let Some(segment_id) = sealed {
+            self.amend(id, &segment_id);
+        }
     }
 
     /// A segment that has stopped receiving text is complete, so what its draft was
@@ -637,24 +663,52 @@ impl Machine {
         let Some(turn) = session.turn.as_mut() else {
             return;
         };
-        let Some(segment) = turn.segment.take() else {
+        let Some(mut segment) = turn.segment.take() else {
             return;
         };
-        turn.posted.push(segment.id.clone());
         let text = segment.text();
-        if text.is_empty() {
-            return;
+        if !text.is_empty() {
+            let elapsed = turn.started.elapsed();
+            let prompt_id = turn.prompt_id.clone();
+            let reply_to = turn.reply_to;
+            let draft = turn.draft_id;
+            let head = session.head(id, Some(&prompt_id));
+            // The tag marks a finished turn, and this segment is the middle of one.
+            let posted = hook::compose(&head, &took(elapsed), "", &text);
+            segment.posted = self
+                .telegram
+                .send(&posted, Sound::Silent, reply_to)
+                .map(|message| (message, elapsed));
+            let status = status(elapsed, draft);
+            self.telegram.draft(draft, &frame(&head, "", Some(&status)));
         }
-        let elapsed = turn.started.elapsed();
-        let prompt_id = turn.prompt_id.clone();
-        let reply_to = turn.reply_to;
-        let draft = turn.draft_id;
-        let head = session.head(id, Some(&prompt_id));
-        // The tag marks a finished turn, and this segment is the middle of one.
-        let posted = hook::compose(&head, &took(elapsed), "", &text);
-        self.telegram.send(&posted, Sound::Silent, reply_to);
-        let status = status(elapsed, draft);
-        self.telegram.draft(draft, &frame(&head, "", Some(&status)));
+        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+            return;
+        };
+        turn.sealed.push(segment);
+    }
+
+    /// A message klaude has posted, rewritten with what reached its segment afterwards.
+    /// A message's last flushes race the hook of the tool call that ends it, and a tool
+    /// reports after the run it belongs to has been left behind, so both land on a
+    /// segment the chat already has.
+    fn amend(&mut self, id: &str, segment_id: &str) {
+        let Some(session) = self.sessions.get(id) else {
+            return;
+        };
+        let Some(turn) = session.turn.as_ref() else {
+            return;
+        };
+        let Some(segment) = turn.sealed.iter().find(|sealed| sealed.id == segment_id) else {
+            return;
+        };
+        let Some((message, elapsed)) = segment.posted else {
+            return;
+        };
+        let text = segment.text();
+        let head = session.head(id, Some(&turn.prompt_id));
+        self.telegram
+            .edit(message, &hook::compose(&head, &took(elapsed), "", &text));
     }
 
     fn finish(&mut self, id: &str, event: &Event) {

@@ -27,7 +27,8 @@ A run of tool calls is posted a line per call: a mark for how it went, the tool,
 field of its input that says what it is doing, and the time it took. What a failed tool
 reported goes on a line under that, its first sixty characters. A call a subagent made
 carries that agent's type in brackets, and one still running is marked as such and shows
-no time, so the draft reads as the terminal does. A run past thirty calls lists the
+no time, so the draft reads as the terminal does, and a run posted with a call still
+running is rewritten once that call reports. A run past thirty calls lists the
 newest thirty and counts the rest.
 
 ● Bash `cargo test` 4s
@@ -47,9 +48,10 @@ segment that has become a message is framed out of the draft. The turn's last fr
 the head alone, which is what waits out the half minute after the answer is in the chat.
 
 A message's last flushes race the hook of the tool call that ends it, so a flush can
-land after klaude has posted that message. What it carries is dropped. Reviving the
-message would post its words a second time and seal the run of tool calls while a call
-is still running, which loses what that call went on to report.
+land after klaude has posted that message, carrying a paragraph rather than a few
+characters. A tool reports late for the same reason, once the run holding it is a
+message. Both are written into the message their segment became, which is why a turn
+keeps its segments and the message each of them turned into until it ends.
 
 So a turn that talked, worked and talked again leaves those three in the chat, in order,
 and the last message is the only one that makes a sound. A `Notification` sounds too,
@@ -224,5 +226,6 @@ against a server of its own that answers the way Telegram does. It asserts the c
 two-segment turn makes, their order and which of them carries a notification; that a
 prompt queued during a turn gets a thread of its own; that a run of tool calls is posted
 as a message between the two halves of what the turn said; that a delta landing after
-its own `Stop` leaves nothing after the answer but an empty frame; and that a message
-replying to nothing reaches the session heard from last.
+its own `Stop` leaves nothing after the answer but an empty frame; that a flush and a
+tool outcome arriving after their segment was posted rewrite that message; and that a
+message replying to nothing reaches the session heard from last.
