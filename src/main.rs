@@ -31,9 +31,11 @@ fn hook(event: &Event, raw: &[u8]) {
     match event.hook_event_name.as_str() {
         // A subagent's text stays out of the chat.
         "MessageDisplay" if event.agent_id.is_some() => {}
-        // Nothing to post: this says the session is ready for input, which is what a
-        // conversation opened from the chat waits for.
-        "SessionStart" => {
+        // Nothing here is a message on its own. `SessionStart` says the session is
+        // ready for input, which is what a conversation opened from the chat waits for,
+        // and a tool call is a line of the run the resident is drafting. `PreToolUse`
+        // also holds up the call it announces, so it must never reach the network.
+        "SessionStart" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
             forward(raw);
         }
         // Every other event ends up in the chat either way: through the resident, which
