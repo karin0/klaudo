@@ -90,6 +90,20 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     let reply = replying_to(made[0].id);
     assert_eq!(made[2].reply, reply, "the first segment replies");
     assert_eq!(made[4].reply, reply, "the last message replies");
+    // The answer is in the chat, so the draft that was showing it holds nothing until
+    // it expires.
+    let closing = collect(&calls, |call| call.label == "sendRichMessageDraft");
+    let (title, body) = closing
+        .last()
+        .expect("a closing frame")
+        .markdown
+        .split_once("\n\n")
+        .expect("a head and a body");
+    assert!(
+        title.starts_with("**klaude** `01234567/"),
+        "head reads {title:?}"
+    );
+    assert_eq!(body, "", "the draft outlives the answer holding no text");
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
 }
@@ -293,11 +307,18 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     // Long enough for a frame of the turn the straggler would have opened.
     std::thread::sleep(Duration::from_millis(600));
     let made = drained(&calls);
-    assert_eq!(
-        made.last().map(|call| call.label.as_str()),
-        Some("sendRichMessage ring"),
-        "the answer is the last thing the turn does, not a draft after it"
-    );
+    let mut after = made
+        .iter()
+        .skip_while(|call| call.label != "sendRichMessage ring");
+    assert!(after.next().is_some(), "the turn answered");
+    for call in after {
+        let (_, body) = call.markdown.split_once("\n\n").expect("a head and a body");
+        assert_eq!(
+            (call.label.as_str(), body),
+            ("sendRichMessageDraft", ""),
+            "the answer is the last thing the turn says"
+        );
+    }
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
 }
