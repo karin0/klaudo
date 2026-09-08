@@ -242,8 +242,9 @@ struct Turn {
 }
 
 struct Session {
-    project: String,
-    cwd: PathBuf,
+    /// Where the session belongs, which is where it was opened rather than wherever a
+    /// turn has since moved.
+    dir: PathBuf,
     pid: u32,
     pane: Option<Pane>,
     /// The messages of prompts that were submitted while a turn was running. Claude
@@ -253,11 +254,14 @@ struct Session {
     /// What klaude has typed into this session and not yet seen reported as a prompt.
     asked: VecDeque<Ask>,
     turn: Option<Turn>,
+    /// When this session was last heard from, which is what an unaddressed message from
+    /// the chat is delivered by.
+    seen: Instant,
 }
 
 impl Session {
     fn head(&self, id: &str, prompt: Option<&str>) -> String {
-        hook::head(&self.project, id, prompt)
+        hook::head(&hook::project(&self.dir), id, prompt)
     }
 }
 
@@ -281,21 +285,21 @@ impl Machine {
     fn hook(&mut self, pid: u32, tmux: Option<(String, String)>, event: &Event) {
         let id = event.session_id.clone();
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
+        let directory = event.directory();
         let session = self.sessions.entry(id.clone()).or_insert_with(|| Session {
-            project: hook::project(&event.cwd),
-            cwd: PathBuf::from(&event.cwd),
+            dir: PathBuf::from(&event.cwd),
             pid,
             pane: pane.clone(),
             queued: VecDeque::new(),
             asked: VecDeque::new(),
             turn: None,
+            seen: Instant::now(),
         });
         session.pid = pid;
         session.pane = pane;
-        // Only the events that open a session carry where it is running.
-        if !event.cwd.is_empty() {
-            session.project = hook::project(&event.cwd);
-            session.cwd = PathBuf::from(&event.cwd);
+        session.seen = Instant::now();
+        if let Some(directory) = directory {
+            session.dir = directory;
         }
 
         match event.hook_event_name.as_str() {
@@ -314,7 +318,7 @@ impl Machine {
         let Some(session) = self.sessions.get(id) else {
             return;
         };
-        let Some(index) = self.opening.iter().position(|(cwd, _)| *cwd == session.cwd) else {
+        let Some(index) = self.opening.iter().position(|(cwd, _)| *cwd == session.dir) else {
             return;
         };
         let (_, ask) = self.opening.remove(index);
@@ -443,10 +447,12 @@ impl Machine {
         if text.is_empty() {
             return;
         }
-        let head = hook::head(&session.project, id, Some(&turn.prompt_id));
-        // The tag marks a finished turn, and this segment is the middle of one.
-        let posted = hook::compose(&head, &took(turn.started.elapsed()), "", &text);
+        let took = took(turn.started.elapsed());
+        let prompt_id = turn.prompt_id.clone();
         let reply_to = turn.reply_to;
+        let head = session.head(id, Some(&prompt_id));
+        // The tag marks a finished turn, and this segment is the middle of one.
+        let posted = hook::compose(&head, &took, "", &text);
         self.telegram.send(&posted, Sound::Silent, reply_to);
     }
 
@@ -460,7 +466,7 @@ impl Machine {
         };
         // The last segment's text is what this event carries, so its draft is dropped
         // rather than posted a second time just above the message that repeats it.
-        let head = hook::head(&session.project, id, Some(&turn.prompt_id));
+        let head = session.head(id, Some(&turn.prompt_id));
         let message = hook::message(event, &head, &took(turn.started.elapsed()));
         // The one sound of the turn: the reply is complete and worth coming back to.
         self.telegram.send(&message, Sound::Ring, turn.reply_to);
@@ -510,7 +516,7 @@ impl Machine {
             {
                 continue;
             }
-            let head = hook::head(&session.project, &id, Some(&turn.prompt_id));
+            let head = session.head(&id, Some(&turn.prompt_id));
             let status = status(turn.started.elapsed(), segment.draft_id);
             let frame = format!("{head}\n\n{text}\n<tg-thinking>{status}</tg-thinking>");
             let draft = segment.draft_id;
@@ -574,7 +580,7 @@ impl Machine {
             self.say(&format!("`{}` is not a directory", cwd.display()));
             return;
         }
-        let head = hook::head(&hook::project(&cwd.to_string_lossy()), NEW, None);
+        let head = hook::head(&hook::project(&cwd), NEW, None);
         let message = hook::compose(&head, "", "", &cwd.to_string_lossy());
         self.telegram.send(&message, Sound::Silent, None);
     }

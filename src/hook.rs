@@ -1,15 +1,11 @@
+use std::path::{Path, PathBuf};
+
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// Fields that identify the invocation rather than describe it, dropped from the
 /// verbatim report an unrecognised event falls back to.
-const BOILERPLATE: [&str; 5] = [
-    "transcript_path",
-    "prompt_id",
-    "permission_mode",
-    "effort",
-    "agent_type",
-];
+const BOILERPLATE: [&str; 4] = ["prompt_id", "permission_mode", "effort", "agent_type"];
 
 /// Marks the end of a turn, so a chat holding several projects can be filtered down to
 /// the replies that finished a piece of work.
@@ -24,6 +20,8 @@ pub struct Event {
     pub session_id: String,
     #[serde(default)]
     pub cwd: String,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
     #[serde(default)]
     pub agent_id: Option<String>,
     #[serde(default)]
@@ -47,6 +45,20 @@ pub struct Event {
 }
 
 impl Event {
+    /// The directory the session belongs to. A `cd` in a turn moves `cwd` for every
+    /// event after it, while Claude Code keeps filing the transcript under the
+    /// directory the session was opened in, so that is the ancestor to report.
+    pub fn directory(&self) -> Option<PathBuf> {
+        let filed = Path::new(self.transcript_path.as_deref()?)
+            .parent()?
+            .file_name()?
+            .to_str()?;
+        Path::new(&self.cwd)
+            .ancestors()
+            .find(|dir| slug(dir) == filed)
+            .map(Path::to_path_buf)
+    }
+
     fn tag(&self) -> String {
         match self.hook_event_name.as_str() {
             // The turn opens with what was asked; the tag belongs to what closes it.
@@ -79,9 +91,27 @@ impl Event {
     }
 }
 
+/// The name Claude Code files a project's transcripts under: every character outside
+/// `[a-zA-Z0-9]` written as a dash.
+fn slug(dir: &Path) -> String {
+    dir.to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// Where the work is happening.
-pub fn project(cwd: &str) -> String {
-    format!("**{}**", cwd.rsplit('/').next().unwrap_or(cwd))
+pub fn project(dir: &Path) -> String {
+    format!(
+        "**{}**",
+        dir.file_name().unwrap_or(dir.as_os_str()).display()
+    )
 }
 
 /// The line every message opens with: where the work is, which session, and which turn
@@ -115,7 +145,41 @@ mod tests {
 
     #[test]
     fn a_project_is_the_last_segment_of_its_directory() {
-        assert_eq!(project("/home/user/scratch"), "**scratch**");
+        assert_eq!(project(Path::new("/home/user/scratch")), "**scratch**");
+        assert_eq!(project(Path::new("/")), "**/**");
+    }
+
+    #[test]
+    fn a_session_belongs_where_its_transcript_is_filed_rather_than_where_it_cd_ed() {
+        let filed = |cwd: &str| {
+            event(serde_json::json!({
+                "hook_event_name": "Stop",
+                "session_id": "s",
+                "cwd": cwd,
+                "transcript_path": "/home/u/.claude/projects/-home-u-dev-my-tree/s.jsonl",
+            }))
+            .directory()
+        };
+        assert_eq!(
+            filed("/home/u/dev/my-tree"),
+            Some("/home/u/dev/my-tree".into())
+        );
+        assert_eq!(
+            filed("/home/u/dev/my-tree/vendor/lib"),
+            Some("/home/u/dev/my-tree".into())
+        );
+        // A turn that walked out of the tree names no ancestor that was filed.
+        assert_eq!(filed("/tmp"), None);
+    }
+
+    #[test]
+    fn a_transcript_without_a_project_directory_places_nothing() {
+        let bare = event(serde_json::json!({
+            "hook_event_name": "Stop",
+            "session_id": "s",
+            "cwd": "/home/u/dev/my-tree",
+        }));
+        assert_eq!(bare.directory(), None);
     }
 
     #[test]
