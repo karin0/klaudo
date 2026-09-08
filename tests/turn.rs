@@ -86,12 +86,6 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     );
     assert_eq!(made[0].reply, json!(null), "the prompt opens the thread");
     frame(&made[1].markdown, "first segment text");
-    // Nothing retires a draft, so the last frame is the answer rather than whatever the
-    // turn happened to be doing when it ended.
-    assert_eq!(
-        made[3].markdown, made[4].markdown,
-        "the last frame leaves the answer on screen"
-    );
     // A prompt deleted from the chat leaves the answer to it a message of its own.
     let reply = replying_to(made[0].id);
     assert_eq!(made[2].reply, reply, "the first segment replies");
@@ -145,30 +139,29 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
             "sendRichMessage silent", // first ask
             "sendRichMessageDraft",   // the first turn streaming
             "sendRichMessage silent", // second ask, queued
-            "sendRichMessageDraft",   // the first turn's answer, framed before it is sent
             "sendRichMessage ring",   // the first turn's answer
-            "sendRichMessageDraft",   // the queued turn streaming, then its answer framed
+            "sendRichMessageDraft",   // the queued turn streaming
             "sendRichMessage ring",   // the queued turn's answer
         ]
     );
     // A queued prompt has no turn yet, so its head addresses the session alone.
     assert_eq!(made[2].markdown, "**klaude** `fedcba98`\n\n>second ask");
     assert_eq!(
-        made[4].reply,
+        made[3].reply,
         replying_to(made[0].id),
         "the first answer replies to the first ask"
     );
     assert_eq!(
-        made[6].reply,
+        made[5].reply,
         replying_to(made[2].id),
         "the queued turn replies to the prompt that was queued"
     );
     assert!(
-        made[6]
+        made[5]
             .markdown
             .starts_with("**klaude** `fedcba98/bbbbbbbb`"),
         "the queued turn's head reads {:?}",
-        made[6].markdown
+        made[5].markdown
     );
     drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
@@ -576,4 +569,59 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         sent.len()
     )
     .expect("answer");
+}
+
+/// A message's last flushes race the hook of the tool call that ends it, so a delta can
+/// land after klaude has already posted that message. Reviving the message would post
+/// its words a second time and seal the run of tool calls while a call is still running,
+/// losing what that call went on to report.
+#[test]
+fn a_flush_landing_after_its_message_was_posted_posts_nothing_again() {
+    let (port, calls, _chat) = recorder();
+    let root = prepare("straggling-flush");
+    let resident = resident(&root, port);
+    let session = "0123456789abcdef";
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "on "}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 1, "delta": "it"}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+               "tool_input": {"command": "cargo test"}}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 2, "delta": " now"}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "done"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        hook(&root, port, &event);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let posted: Vec<&str> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage "))
+        .map(|call| {
+            call.markdown
+                .split_once("\n\n")
+                .expect("a head and a body")
+                .1
+        })
+        .collect();
+    assert_eq!(
+        posted,
+        [
+            ">go",
+            "on it",
+            // The run is sealed by the message that follows it, not by the straggler,
+            // so the call it holds carries what it reported.
+            "● Bash `cargo test` 30ms",
+            "done",
+        ]
+    );
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
 }
