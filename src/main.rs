@@ -40,8 +40,11 @@ fn hook(event: &Event, raw: &[u8]) {
         // orders it against the draft, or from here when nothing is listening.
         _ => {
             if !forward(raw) {
+                let directory = event
+                    .directory()
+                    .unwrap_or_else(|| std::path::PathBuf::from(&event.cwd));
                 let head = hook::head(
-                    &hook::project(&event.cwd),
+                    &hook::project(&directory),
                     &event.session_id,
                     event.prompt_id.as_deref(),
                 );

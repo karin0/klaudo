@@ -27,8 +27,10 @@ and the last message is the only one that makes a sound. Each carries the elapse
 it was posted at; only the last carries the `#claude` tag, which therefore counts turns
 rather than segments.
 
-Every message opens with the same line: the project directory, then `session/prompt`
-shortened to eight characters each. That line is also the address a reply is routed by.
+Every message opens with the same line: the directory the session was opened in, then
+`session/prompt` shortened to eight characters each. A turn that runs `cd` reports the
+directory it moved to, and the line still names the one Claude Code files the session's
+transcript under. That line is also the address a reply is routed by.
 
 ## What you can send
 
