@@ -74,6 +74,10 @@ const DATAGRAM_MAX: usize = 200 * 1024;
 const NEW: &str = "new";
 /// How many calls a run lists before the oldest are counted instead.
 const RUN_MAX: usize = 30;
+/// The mark a call opens its line with, for how it went.
+const RUNNING: char = '○';
+const DONE: char = '⏺';
+const FAILED: char = '✗';
 /// The first line of what a failed tool reported, past which it stops reading at a
 /// glance.
 const WHY_MAX: usize = 60;
@@ -222,7 +226,14 @@ struct Call {
 }
 
 impl Call {
+    /// A mark for how it went, the tool and what it is doing, and the time it took. What
+    /// a failure reported goes on a line under that, where the eye finds it.
     fn line(&self) -> String {
+        let (mark, took, why) = match &self.outcome {
+            Outcome::Running => (RUNNING, String::new(), None),
+            Outcome::Done(took) => (DONE, format!("  {}", spent(*took)), None),
+            Outcome::Failed(took, why) => (FAILED, format!("  {}", spent(*took)), Some(why)),
+        };
         let agent = match &self.agent {
             Some(agent) => format!("[{agent}] "),
             None => String::new(),
@@ -231,12 +242,11 @@ impl Call {
             "" => String::new(),
             subject => format!(" {subject}"),
         };
-        let outcome = match &self.outcome {
-            Outcome::Running => String::new(),
-            Outcome::Done(took) => format!("  {}", spent(*took)),
-            Outcome::Failed(took, why) => format!("  {} {why}", spent(*took)),
-        };
-        format!("{agent}{}{subject}{outcome}", self.name)
+        let line = format!("{mark} {agent}{}{subject}{took}", self.name);
+        match why {
+            Some(why) => format!("{line}\n  ⎿ {why}"),
+            None => line,
+        }
     }
 }
 
@@ -249,12 +259,11 @@ enum Body {
     Tools(Vec<Call>),
 }
 
-/// One stretch of a turn, streamed into a draft of its own until the next one starts,
-/// and posted as a message then. A turn opens with an empty text segment, whose draft
-/// is the turn's status line while nothing has been said yet.
+/// One stretch of a turn, framed into the turn's draft until the next one starts, and
+/// posted as a message then. A turn opens with an empty text segment, whose frames are
+/// the status line while nothing has been said yet.
 struct Segment {
     id: String,
-    draft_id: i64,
     body: Body,
     /// What the last frame showed and when it went out, absent until the first frame.
     framed: Option<(String, Instant)>,
@@ -263,7 +272,6 @@ struct Segment {
 impl Segment {
     fn new(id: &str, body: Body) -> Self {
         Self {
-            draft_id: draft_id(id),
             id: id.to_owned(),
             body,
             framed: None,
@@ -310,6 +318,9 @@ struct Ask {
 /// One turn, from the event that started it to its Stop.
 struct Turn {
     prompt_id: String,
+    /// Every frame of every segment carries this, so one draft animates through the
+    /// whole turn rather than one bubble being left behind per segment.
+    draft_id: i64,
     started: Instant,
     /// The message carrying what was asked, which the rest of the turn replies to.
     reply_to: Option<i64>,
@@ -337,6 +348,8 @@ struct Session {
     /// What klaude has typed into this session and not yet seen reported as a prompt.
     asked: VecDeque<Ask>,
     turn: Option<Turn>,
+    /// The turn that finished most recently, so its stragglers do not open it again.
+    done: Option<String>,
     /// When this session was last heard from, which is what an unaddressed message from
     /// the chat is delivered by.
     seen: Instant,
@@ -376,6 +389,7 @@ impl Machine {
             queued: VecDeque::new(),
             asked: VecDeque::new(),
             turn: None,
+            done: None,
             seen: Instant::now(),
         });
         session.pid = pid;
@@ -392,7 +406,9 @@ impl Machine {
             "PreToolUse" => self.calling(&id, event),
             "PostToolUse" | "PostToolUseFailure" => self.called(&id, event),
             "Stop" | "StopFailure" => self.finish(&id, event),
-            _ => self.aside(&id, event),
+            // A session waiting on a dialog is the other thing worth coming back to.
+            "Notification" => self.aside(&id, event, Sound::Ring),
+            _ => self.aside(&id, event, Sound::Silent),
         }
     }
 
@@ -452,6 +468,7 @@ impl Machine {
             let prompt_id = event.prompt_id.clone().unwrap_or_default();
             session.turn = Some(Turn {
                 segment: Some(Segment::new(&prompt_id, Body::Text(BTreeMap::new()))),
+                draft_id: draft_id(&prompt_id),
                 prompt_id,
                 started: Instant::now(),
                 reply_to: posted,
@@ -459,28 +476,35 @@ impl Machine {
         }
     }
 
-    /// The turn an event belongs to, opening one when the event names a turn that has
-    /// not been seen. That is how a queued prompt's turn begins: it is announced by the
-    /// first event carrying its own id.
-    fn turn(&mut self, id: &str, prompt_id: Option<&str>) {
+    /// Opens the turn an event belongs to when the event names one that has not been
+    /// seen, which is how a queued prompt's turn begins. False for an event of a turn
+    /// that already finished: the three hook processes run at once, so a delta can land
+    /// after its own `Stop`, and opening a second turn for it would leave a draft
+    /// beside the answer showing something else.
+    fn turn(&mut self, id: &str, prompt_id: Option<&str>) -> bool {
         let Some(session) = self.sessions.get(id) else {
-            return;
+            return false;
         };
         let named = prompt_id.unwrap_or_default();
+        if session.done.as_deref() == Some(named) {
+            return false;
+        }
         match &session.turn {
-            Some(open) if open.prompt_id == named => return,
+            Some(open) if open.prompt_id == named => return true,
             Some(_) => self.seal(id),
             None => {}
         }
         let Some(session) = self.sessions.get_mut(id) else {
-            return;
+            return false;
         };
         session.turn = Some(Turn {
             prompt_id: named.to_owned(),
+            draft_id: draft_id(named),
             started: Instant::now(),
             reply_to: session.queued.pop_front().flatten(),
             segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
         });
+        true
     }
 
     fn delta(&mut self, id: &str, event: &Event) {
@@ -489,7 +513,9 @@ impl Machine {
         else {
             return;
         };
-        self.turn(id, event.prompt_id.as_deref());
+        if !self.turn(id, event.prompt_id.as_deref()) {
+            return;
+        }
         let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
         };
@@ -523,7 +549,9 @@ impl Machine {
         let (Some(tool_use_id), Some(name)) = (&event.tool_use_id, &event.tool_name) else {
             return;
         };
-        self.turn(id, event.prompt_id.as_deref());
+        if !self.turn(id, event.prompt_id.as_deref()) {
+            return;
+        }
         let Some(turn) = self.sessions.get(id).and_then(|s| s.turn.as_ref()) else {
             return;
         };
@@ -604,7 +632,9 @@ impl Machine {
     }
 
     fn finish(&mut self, id: &str, event: &Event) {
-        self.turn(id, event.prompt_id.as_deref());
+        if !self.turn(id, event.prompt_id.as_deref()) {
+            return;
+        }
         // A run of tool calls is a message of its own, and only an assistant message is
         // what this event repeats.
         if self
@@ -621,6 +651,7 @@ impl Machine {
         let Some(turn) = session.turn.take() else {
             return;
         };
+        session.done = Some(turn.prompt_id.clone());
         // The last segment's text is what this event carries, so its draft is dropped
         // rather than posted a second time just above the message that repeats it.
         let head = session.head(id, Some(&turn.prompt_id));
@@ -630,7 +661,7 @@ impl Machine {
     }
 
     /// Anything else a session reports lands in the thread of the turn it happened in.
-    fn aside(&mut self, id: &str, event: &Event) {
+    fn aside(&mut self, id: &str, event: &Event, sound: Sound) {
         let Some(session) = self.sessions.get(id) else {
             return;
         };
@@ -638,7 +669,7 @@ impl Machine {
         let head = session.head(id, prompt.as_deref());
         let reply_to = session.turn.as_ref().and_then(|turn| turn.reply_to);
         let message = hook::message(event, &head, "");
-        self.telegram.send(&message, Sound::Ring, reply_to);
+        self.telegram.send(&message, sound, reply_to);
     }
 
     fn tick(&mut self) {
@@ -674,9 +705,9 @@ impl Machine {
                 continue;
             }
             let head = session.head(&id, Some(&turn.prompt_id));
-            let status = status(turn.started.elapsed(), segment.draft_id);
+            let status = status(turn.started.elapsed(), turn.draft_id);
             let frame = format!("{head}\n\n{text}\n<tg-thinking>{status}</tg-thinking>");
-            let draft = segment.draft_id;
+            let draft = turn.draft_id;
             self.telegram.draft(draft, &frame);
             let Some(segment) = self
                 .sessions
@@ -863,8 +894,8 @@ fn expand(argument: &str) -> Option<PathBuf> {
     path.canonicalize().ok()
 }
 
-/// The same across a segment's frames so they animate into each other, non-zero as
-/// Telegram requires, and different per segment so the next draft replaces this one.
+/// The same across a turn's frames so they animate into each other, non-zero as Telegram
+/// requires, and different per turn so one turn's draft is not the next one's.
 fn draft_id(message_id: &str) -> i64 {
     let mut hasher = DefaultHasher::new();
     message_id.hash(&mut hasher);
@@ -942,9 +973,9 @@ mod tests {
     }
 
     #[test]
-    fn a_draft_id_is_stable_per_message_and_never_zero() {
-        assert_eq!(draft_id("msg_1"), draft_id("msg_1"));
-        assert_ne!(draft_id("msg_1"), draft_id("msg_2"));
+    fn a_draft_id_is_stable_per_turn_and_never_zero() {
+        assert_eq!(draft_id("turn_1"), draft_id("turn_1"));
+        assert_ne!(draft_id("turn_1"), draft_id("turn_2"));
         assert!(draft_id("").is_positive());
     }
 
@@ -974,7 +1005,7 @@ mod tests {
     fn a_call_reads_as_its_tool_its_subject_and_how_it_went() {
         assert_eq!(
             call("Read", "src/listen.rs", Outcome::Running).line(),
-            "Read src/listen.rs"
+            "○ Read src/listen.rs"
         );
         assert_eq!(
             call(
@@ -983,7 +1014,7 @@ mod tests {
                 Outcome::Done(Duration::from_millis(1400))
             )
             .line(),
-            "Bash cargo test  1s"
+            "⏺ Bash cargo test  1s"
         );
         assert_eq!(
             call(
@@ -992,8 +1023,9 @@ mod tests {
                 Outcome::Done(Duration::from_millis(12))
             )
             .line(),
-            "Bash cargo test  12ms"
+            "⏺ Bash cargo test  12ms"
         );
+        // What a failure reported reads on a line of its own.
         assert_eq!(
             call(
                 "Bash",
@@ -1001,19 +1033,19 @@ mod tests {
                 Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
             )
             .line(),
-            "Bash cargo test  4s Exit code 1"
+            "✗ Bash cargo test  4s\n  ⎿ Exit code 1"
         );
         let subagent = Call {
             agent: Some("Explore".to_owned()),
             ..call("Grep", "fn seal", Outcome::Running)
         };
-        assert_eq!(subagent.line(), "[Explore] Grep fn seal");
+        assert_eq!(subagent.line(), "○ [Explore] Grep fn seal");
     }
 
     #[test]
     fn a_run_is_fenced_past_any_backticks_a_command_carries() {
         let plain = fenced(&[call("Read", "src/listen.rs", Outcome::Running)]);
-        assert_eq!(plain, "```\nRead src/listen.rs\n```");
+        assert_eq!(plain, "```\n○ Read src/listen.rs\n```");
         let ticks = fenced(&[call("Bash", "echo ```x```", Outcome::Running)]);
         assert!(
             ticks.starts_with("````\n") && ticks.ends_with("\n````"),

@@ -23,15 +23,27 @@ spends thinking are on screen as they pass. The last segment is not posted on it
 the `Stop` event carries its text, so posting it would put the same words in the chat
 twice.
 
-A run of tool calls is posted inside a fence, one line per call: the tool, the field of
-its input that says what it is doing, then how long it took and, for a failure, the
-first line of what the tool reported. A call a subagent made carries that agent's type
-in brackets. A call still running shows its line without an outcome, so the draft reads
-as the terminal does. A run past thirty calls lists the newest thirty and counts the
-rest.
+A run of tool calls is posted inside a fence, one line per call: a mark for how it went,
+the tool, the field of its input that says what it is doing, and the time it took. What
+a failed tool reported goes on a line under that, its first sixty characters. A call a
+subagent made carries that agent's type in brackets, and one still running is marked as
+such and shows no time, so the draft reads as the terminal does. A run past thirty calls
+lists the newest thirty and counts the rest.
+
+```
+⏺ Bash cargo test  4s
+  ⎿ Exit code 1
+○ [Explore] Grep fn seal
+```
+
+One draft carries the whole turn: every frame of every segment shares the turn's draft
+id, so the live view is one bubble that animates through the turn rather than one left
+behind per segment. A draft cannot be retired, only outlived, so posting a segment is
+what takes the bubble off screen until the next segment frames it again.
 
 So a turn that talked, worked and talked again leaves those three in the chat, in order,
-and the last message is the only one that makes a sound. Each carries the elapsed time
+and the last message is the only one that makes a sound. A `Notification` sounds too,
+because a session stopped at a dialog is the other thing worth coming back to. Each carries the elapsed time
 it was posted at; only the last carries the `#claude` tag, which therefore counts turns
 rather than segments.
 
@@ -192,9 +204,15 @@ announces until the hook returns.
 lint levels live in `Cargo.toml`, so a bare `cargo clippy` and whatever an editor runs
 in the background enforce the same set rather than only this script.
 
+The release build is what the hook runs, so `systemctl --user restart klaude` belongs
+after it: the resident keeps the image it started with, and a hook newer than the
+resident forwards events the resident has no arm for, which reach the chat as the
+verbatim report an unrecognised event falls back to.
+
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
 against a server of its own that answers the way Telegram does. It asserts the calls a
 two-segment turn makes, their order and which of them carries a notification; that a
 prompt queued during a turn gets a thread of its own; that a run of tool calls is posted
-as a message between the two halves of what the turn said; and that a message replying
-to nothing reaches the session heard from last.
+as a message between the two halves of what the turn said; that a delta landing after
+its own `Stop` opens no second turn; and that a message replying to nothing reaches the
+session heard from last.

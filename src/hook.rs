@@ -20,7 +20,7 @@ const SUBJECT: [&str; 8] = [
     "prompt",
 ];
 /// One line of a tool call, past which the rest says nothing at a glance.
-const SUBJECT_MAX: usize = 90;
+const SUBJECT_MAX: usize = 60;
 
 /// Marks the end of a turn, so a chat holding several projects can be filtered down to
 /// the replies that finished a piece of work.
