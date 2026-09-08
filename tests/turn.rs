@@ -5,22 +5,20 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
 
 const PATIENCE: Duration = Duration::from_secs(20);
-/// The server numbers messages by the order they were sent in, and the prompt is first.
-const PROMPT_MESSAGE: i64 = 1;
 
 #[test]
 fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
-    let session = format!("test-{}", std::process::id());
     let (port, calls) = recorder();
-    let root = prepare(&session);
-    let socket = root.join("run/klaude").join(format!("{session}.sock"));
+    let root = prepare("segments");
+    let resident = resident(&root, port);
+    let session = "0123456789abcdef";
 
     hook(
         &root,
@@ -32,7 +30,6 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
             "prompt": "what does it do",
         }),
     );
-    wait_for(|| socket.exists(), "the daemon never bound its socket");
 
     for (message, index, delta) in [
         ("m1", 0, "first "),
@@ -46,7 +43,6 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
             &json!({
                 "hook_event_name": "MessageDisplay",
                 "session_id": session,
-                "cwd": env!("CARGO_MANIFEST_DIR"),
                 "message_id": message,
                 "index": index,
                 "delta": delta,
@@ -61,12 +57,11 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
         &json!({
             "hook_event_name": "Stop",
             "session_id": session,
-            "cwd": env!("CARGO_MANIFEST_DIR"),
             "last_assistant_message": "second segment",
         }),
     );
 
-    let made = collect(&calls, "sendRichMessage ring");
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     assert_eq!(
         made.iter()
             .map(|call| call.label.as_str())
@@ -84,38 +79,105 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
             "sendRichMessage ring",
         ]
     );
-    let short: String = session.chars().take(8).collect();
-    assert_eq!(
-        made[0].markdown,
-        format!("**klaude** `{short}`\n\nwhat does it do")
-    );
+    assert_eq!(made[0].markdown, "**klaude** `01234567`\n\nwhat does it do");
     assert_eq!(made[0].reply, json!(null), "the prompt opens the thread");
     frame(&made[1].markdown, "first segment text");
     // A prompt deleted from the chat leaves the answer to it a message of its own.
-    let reply = json!({
-        "message_id": PROMPT_MESSAGE,
-        "allow_sending_without_reply": true,
-    });
+    let reply = replying_to(made[0].id);
     assert_eq!(made[2].reply, reply, "the first segment replies");
     assert_eq!(made[4].reply, reply, "the last message replies");
-    wait_for(
-        || !socket.exists(),
-        "the daemon outlived the turn it was reporting",
-    );
+    drop(resident);
     std::fs::remove_dir_all(&root).expect("clean up");
 }
 
-/// One call the daemon made, as the server saw it.
+/// A prompt submitted while a turn is running is queued by Claude Code and reported
+/// under the running turn's id, so the turn it eventually gets is announced by the
+/// first event carrying an id of its own. Each turn must still answer its own prompt.
+#[test]
+fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
+    let (port, calls) = recorder();
+    let root = prepare("queue");
+    let resident = resident(&root, port);
+    let session = "fedcba9876543210";
+    let first = "aaaaaaaa-1111";
+    let second = "bbbbbbbb-2222";
+
+    // "second ask" is submitted while the first turn is running, which is why Claude
+    // Code reports it under that turn's id. The queued turn's own id appears with its
+    // first delta, and that is what has to open a thread of its own.
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "first ask", "prompt_id": first}),
+        json!({"hook_event_name": "MessageDisplay", "prompt_id": first, "message_id": "m1", "index": 0, "delta": "one"}),
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "second ask", "prompt_id": first}),
+        json!({"hook_event_name": "Stop", "prompt_id": first, "last_assistant_message": "one"}),
+        json!({"hook_event_name": "MessageDisplay", "prompt_id": second, "message_id": "m2", "index": 0, "delta": "two"}),
+        json!({"hook_event_name": "Stop", "prompt_id": second, "last_assistant_message": "two"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        let streaming = event["hook_event_name"] == json!("MessageDisplay");
+        hook(&root, port, &event);
+        if streaming {
+            // Long enough for the frame a segment's first delta puts on screen.
+            std::thread::sleep(Duration::from_millis(400));
+        }
+    }
+
+    let made = collect(&calls, |call| call.markdown.ends_with("\n\ntwo"));
+    assert_eq!(
+        made.iter()
+            .map(|call| call.label.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "sendRichMessage silent", // first ask
+            "sendRichMessageDraft",   // the first turn streaming
+            "sendRichMessage silent", // second ask, queued
+            "sendRichMessage ring",   // the first turn's answer
+            "sendRichMessageDraft",   // the queued turn streaming
+            "sendRichMessage ring",   // the queued turn's answer
+        ]
+    );
+    // A queued prompt has no turn yet, so its head addresses the session alone.
+    assert_eq!(made[2].markdown, "**klaude** `fedcba98`\n\nsecond ask");
+    assert_eq!(
+        made[3].reply,
+        replying_to(made[0].id),
+        "the first answer replies to the first ask"
+    );
+    assert_eq!(
+        made[5].reply,
+        replying_to(made[2].id),
+        "the queued turn replies to the prompt that was queued"
+    );
+    assert!(
+        made[5]
+            .markdown
+            .starts_with("**klaude** `fedcba98/bbbbbbbb`"),
+        "the queued turn's head reads {:?}",
+        made[5].markdown
+    );
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
+fn replying_to(message_id: i64) -> serde_json::Value {
+    json!({"message_id": message_id, "allow_sending_without_reply": true})
+}
+
+/// One call the resident made, as the server saw it.
 struct Call {
     label: String,
     markdown: String,
     reply: serde_json::Value,
+    /// What the server answered with, which is what a later message replies to.
+    id: i64,
 }
 
 /// Consecutive repeats collapse, because how many frames a draft takes is a matter of
 /// how fast the deltas arrived. The body kept is the last of them, so a draft reads as
 /// the frame its segment ended on.
-fn collect(calls: &Receiver<Call>, last: &str) -> Vec<Call> {
+fn collect(calls: &Receiver<Call>, done: impl Fn(&Call) -> bool) -> Vec<Call> {
     let deadline = Instant::now() + PATIENCE;
     let mut made: Vec<Call> = Vec::new();
     loop {
@@ -126,12 +188,12 @@ fn collect(calls: &Receiver<Call>, last: &str) -> Vec<Call> {
                 made.iter().map(|call| &call.label).collect::<Vec<_>>()
             )
         });
-        let done = call.label == last;
+        let last = done(&call);
         match made.last_mut() {
             Some(kept) if kept.label == call.label => *kept = call,
             _ => made.push(call),
         }
-        if done {
+        if last {
             return made;
         }
     }
@@ -162,24 +224,50 @@ fn frame(markdown: &str, text: &str) {
     println!("frame:\n{markdown}");
 }
 
-fn prepare(session: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("klaude-{session}"));
+fn prepare(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("klaude-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
     root
 }
 
-/// The credentials reach the daemon the way they reach it in a hook: through the
+/// The resident, killed when the test drops it.
+struct Resident(Child);
+
+impl Drop for Resident {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn resident(root: &Path, port: u16) -> Resident {
+    let child = klaude(root, port)
+        .arg("listen")
+        .spawn()
+        .expect("run the resident");
+    let socket = root.join("run/klaude/listen.sock");
+    wait_for(|| socket.exists(), "the resident never bound its socket");
+    Resident(child)
+}
+
+/// The credentials reach the resident the way they reach it in a hook: through the
 /// environment the command was started with.
-fn hook(root: &Path, port: u16, event: &serde_json::Value) {
-    let mut client = Command::new(env!("CARGO_BIN_EXE_klaude"))
+fn klaude(root: &Path, port: u16) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_klaude"));
+    command
         .env("XDG_RUNTIME_DIR", root.join("run"))
         .env("BOT_TOKEN", "111111:secret")
         .env("CHAT_ID", "1")
         .env("API_BASE", format!("http://127.0.0.1:{port}"))
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("run the hook");
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .stdin(Stdio::piped());
+    command
+}
+
+fn hook(root: &Path, port: u16, event: &serde_json::Value) {
+    let mut client = klaude(root, port).spawn().expect("run the hook");
     client
         .stdin
         .take()
@@ -205,14 +293,16 @@ fn recorder() -> (u16, Receiver<Call>) {
     let port = listener.local_addr().expect("address").port();
     let (sender, receiver) = channel();
     std::thread::spawn(move || {
-        for (id, stream) in listener.incoming().enumerate() {
-            answer(stream.expect("accept"), id + 1, &sender);
+        let mut id = 0;
+        for stream in listener.incoming() {
+            id += 1;
+            answer(stream.expect("accept"), id, &sender);
         }
     });
     (port, receiver)
 }
 
-fn answer(mut stream: TcpStream, id: usize, calls: &Sender<Call>) {
+fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>) {
     let mut request = BufReader::new(stream.try_clone().expect("clone"));
     let mut line = String::new();
     request.read_line(&mut line).expect("request line");
@@ -238,24 +328,30 @@ fn answer(mut stream: TcpStream, id: usize, calls: &Sender<Call>) {
     request.read_exact(&mut body).expect("body");
     let body: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
 
-    let sound = match method.as_str() {
-        "sendRichMessage" if body["disable_notification"] == json!(true) => " silent",
-        "sendRichMessage" => " ring",
-        _ => "",
+    // The chat has nothing to say to these tests, and the poll that asks is not a call
+    // the turn made.
+    let sent = if method == "getUpdates" {
+        json!({"ok": true, "result": []}).to_string()
+    } else {
+        let sound = match method.as_str() {
+            "sendRichMessage" if body["disable_notification"] == json!(true) => " silent",
+            "sendRichMessage" => " ring",
+            _ => "",
+        };
+        let markdown = body["rich_message"]["markdown"]
+            .as_str()
+            .expect("a markdown body")
+            .to_owned();
+        calls
+            .send(Call {
+                label: format!("{method}{sound}"),
+                markdown,
+                reply: body["reply_parameters"].clone(),
+                id,
+            })
+            .expect("record");
+        json!({"ok": true, "result": {"message_id": id}}).to_string()
     };
-    let markdown = body["rich_message"]["markdown"]
-        .as_str()
-        .expect("a markdown body")
-        .to_owned();
-    calls
-        .send(Call {
-            label: format!("{method}{sound}"),
-            markdown,
-            reply: body["reply_parameters"].clone(),
-        })
-        .expect("record");
-
-    let sent = json!({"ok": true, "result": {"message_id": id}}).to_string();
     write!(
         stream,
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{sent}",

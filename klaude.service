@@ -1,0 +1,13 @@
+[Unit]
+Description=klaude
+After=default.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/klaude/env
+ExecStart=%h/bin/klaude listen
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

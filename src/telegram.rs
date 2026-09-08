@@ -3,6 +3,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long Telegram holds a poll open with nothing to report.
+const POLL_SECONDS: u64 = 50;
 /// Telegram rejects a message body past 4096 characters, and a truncated notification
 /// beats a rejected one.
 const MAX_CHARS: usize = 4000;
@@ -34,7 +36,8 @@ impl Telegram {
         let base =
             std::env::var("API_BASE").unwrap_or_else(|_| "https://api.telegram.org".to_owned());
         let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(TIMEOUT))
+            // Covers the long poll, whose own deadline is the one Telegram honours.
+            .timeout_global(Some(TIMEOUT + Duration::from_secs(POLL_SECONDS)))
             // Telegram explains a rejection in the body of the failing response.
             .http_status_as_error(false)
             .build()
@@ -75,6 +78,25 @@ impl Telegram {
                 "rich_message": {"markdown": clamp(markdown)},
             }),
         );
+    }
+
+    /// Whose chat this is, which is the only sender a message is accepted from.
+    pub fn chat(&self) -> i64 {
+        self.chat_id
+    }
+
+    /// One long poll for what the chat has sent since `offset`. Telegram holds the
+    /// request open until something arrives, so the timeout has to outlast that.
+    pub fn updates(&self, offset: i64) -> Option<Vec<Value>> {
+        let answer = self.call(
+            "getUpdates",
+            &json!({
+                "offset": offset,
+                "timeout": POLL_SECONDS,
+                "allowed_updates": ["message"],
+            }),
+        )?;
+        Some(answer["result"].as_array()?.clone())
     }
 
     fn call(&self, method: &str, body: &Value) -> Option<Value> {
