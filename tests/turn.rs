@@ -161,6 +161,31 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
     std::fs::remove_dir_all(&root).expect("clean up");
 }
 
+/// A turn that has said nothing is already on screen, so the minutes it spends thinking
+/// or in tool calls read as the status line's own clock.
+#[test]
+fn a_turn_is_on_screen_before_it_has_said_anything() {
+    let (port, calls) = recorder();
+    let root = prepare("waiting");
+    let resident = resident(&root, port);
+
+    hook(
+        &root,
+        port,
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "0123456789abcdef",
+            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "prompt": "what does it do",
+        }),
+    );
+
+    let made = collect(&calls, |call| call.label == "sendRichMessageDraft");
+    frame(&made.last().expect("a frame").markdown, "");
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
 fn replying_to(message_id: i64) -> serde_json::Value {
     json!({"message_id": message_id, "allow_sending_without_reply": true})
 }

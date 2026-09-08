@@ -188,13 +188,15 @@ fn poll(target: &Path) {
     }
 }
 
-/// One assistant message, streamed into a draft of its own until it is complete.
+/// One assistant message, streamed into a draft of its own until it is complete. A turn
+/// opens with a segment carrying no text, whose draft is the turn's status line while
+/// nothing has been said yet.
 struct Segment {
     id: String,
     draft_id: i64,
     chunks: BTreeMap<u32, String>,
-    framed: String,
-    frame_at: Instant,
+    /// What the last frame showed and when it went out, absent until the first frame.
+    framed: Option<(String, Instant)>,
 }
 
 impl Segment {
@@ -203,8 +205,7 @@ impl Segment {
             draft_id: draft_id(id),
             id: id.to_owned(),
             chunks: BTreeMap::new(),
-            framed: String::new(),
-            frame_at: Instant::now(),
+            framed: None,
         }
     }
 
@@ -348,11 +349,12 @@ impl Machine {
         if running {
             session.queued.push_back(posted);
         } else {
+            let prompt_id = event.prompt_id.clone().unwrap_or_default();
             session.turn = Some(Turn {
-                prompt_id: event.prompt_id.clone().unwrap_or_default(),
+                segment: Some(Segment::new(&prompt_id)),
+                prompt_id,
                 started: Instant::now(),
                 reply_to: posted,
-                segment: None,
             });
         }
     }
@@ -377,7 +379,7 @@ impl Machine {
             prompt_id: named.to_owned(),
             started: Instant::now(),
             reply_to: session.queued.pop_front().flatten(),
-            segment: None,
+            segment: Some(Segment::new(named)),
         });
     }
 
@@ -490,7 +492,11 @@ impl Machine {
                 continue;
             };
             let text = segment.text();
-            if text == segment.framed && segment.frame_at.elapsed() < REFRESH {
+            if segment
+                .framed
+                .as_ref()
+                .is_some_and(|(framed, at)| *framed == text && at.elapsed() < REFRESH)
+            {
                 continue;
             }
             let head = hook::head(&session.project, &id, Some(&turn.prompt_id));
@@ -506,8 +512,7 @@ impl Machine {
             else {
                 continue;
             };
-            segment.framed = text;
-            segment.frame_at = Instant::now();
+            segment.framed = Some((text, Instant::now()));
         }
     }
 
