@@ -136,6 +136,10 @@ reply carries that message as Telegram rendered it, a list of paragraphs made of
 so the address is the code span of its first paragraph. A restarted resident therefore
 still routes replies to messages it never posted.
 
+The socket has a thread of its own, which moves each datagram into memory as it lands.
+A Telegram call holds the machine for as long as the call takes, and the socket's buffer
+is a few hundred deltas deep, past which the hooks fall back to posting for themselves.
+
 Per-session state expires on its own. A session is forgotten when `/proc/<pid>` is gone,
 and what a session killed mid-turn had already said is posted then.
 

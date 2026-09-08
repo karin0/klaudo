@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{Error, ErrorKind};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -113,30 +113,41 @@ pub fn run() {
     let path = socket_path();
     let _ = fs::remove_file(&path);
     let socket = UnixDatagram::bind(&path).expect("bind");
-    socket.set_read_timeout(Some(POLL)).expect("read timeout");
     std::thread::spawn(|| poll(&socket_path()));
+    let arrivals = read(socket);
 
     let mut machine = Machine {
         telegram: Telegram::from_env(),
         sessions: BTreeMap::new(),
         opening: Vec::new(),
     };
-    let mut buffer = vec![0u8; DATAGRAM_MAX];
     loop {
-        match socket.recv(&mut buffer) {
-            Ok(size) => match serde_json::from_slice(&buffer[..size]) {
-                Ok(arrival) => machine.arrival(arrival),
-                Err(error) => eprintln!("unreadable arrival: {error}"),
-            },
-            Err(error) if quiet(&error) => {}
-            Err(error) => panic!("recv: {error}"),
+        match arrivals.recv_timeout(POLL) {
+            Ok(arrival) => machine.arrival(arrival),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => panic!("the reader stopped"),
         }
         machine.tick();
     }
 }
 
-fn quiet(error: &Error) -> bool {
-    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+/// Moves every datagram out of the socket's buffer as it lands. A Telegram call holds
+/// the machine for as long as the call takes, and the socket's own buffer is a few
+/// hundred deltas deep, past which a hook's handoff fails and that hook posts its event
+/// by itself, one message per delta.
+fn read(socket: UnixDatagram) -> Receiver<Arrival> {
+    let (sender, arrivals) = channel();
+    std::thread::spawn(move || {
+        let mut buffer = vec![0u8; DATAGRAM_MAX];
+        loop {
+            let size = socket.recv(&mut buffer).expect("recv");
+            match serde_json::from_slice(&buffer[..size]) {
+                Ok(arrival) => sender.send(arrival).expect("the machine is running"),
+                Err(error) => eprintln!("unreadable arrival: {error}"),
+            }
+        }
+    });
+    arrivals
 }
 
 fn acquire(lock: &File) -> bool {
