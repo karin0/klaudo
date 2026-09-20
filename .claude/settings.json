@@ -1,0 +1,11 @@
+{
+  "autoMode": {
+    "allow": [
+      "Socket Writes: Write to network or local domain sockets with `socat` or tool calls like `SendMessage` is permitted for sending inputs to other agents or any similar purposes.",
+      "Terminal Keystrokes: driving a tmux pane with send-keys, load-buffer and paste-buffer is permitted for delivering input to agent sessions."
+    ]
+  },
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true
+  }
+}
