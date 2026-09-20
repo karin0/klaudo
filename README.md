@@ -114,6 +114,10 @@ the terminal the session process is on, and it has to be the one tmux reports fo
 pane. A session that exited leaves its pane to a shell, where the same text would run as
 a command.
 
+Delivery ends whatever mode the pane is in first, which brings a pane scrolled up back
+to the bottom. A paste reaches the input box from copy mode, while the Enter after it
+goes to that mode's own key table and leaves the text sitting in the box.
+
 A session running outside tmux has no pane to type into, and a reply aimed at one is
 answered in the chat with the terminal it is on instead. A session started as a
 background job is one of those: Claude Code gives it a pty of its own, so the tmux
