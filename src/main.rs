@@ -33,9 +33,10 @@ fn hook(event: &Event, raw: &[u8]) {
         "MessageDisplay" if event.agent_id.is_some() => {}
         // Nothing here is a message on its own. `SessionStart` says the session is
         // ready for input, which is what a conversation opened from the chat waits for,
-        // and a tool call is a line of the run the resident is drafting. `PreToolUse`
-        // also holds up the call it announces, so it must never reach the network.
-        "SessionStart" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
+        // a tool call is a line of the run the resident is drafting, and a delta is a
+        // fragment of the message the resident assembles from them. `PreToolUse` also
+        // holds up the call it announces, so it must never reach the network.
+        "SessionStart" | "MessageDisplay" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
             forward(raw);
         }
         // Every other event ends up in the chat either way: through the resident, which
