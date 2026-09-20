@@ -53,7 +53,7 @@ fn hook(event: &Event, raw: &[u8]) {
                 );
                 // No resident reported this turn, so this message is all of it, and
                 // there is no prompt of its own in the chat for it to reply to.
-                telegram::Telegram::from_env().send(
+                telegram::Telegram::new().send(
                     &hook::message(event, &head, ""),
                     telegram::Sound::Ring,
                     None,

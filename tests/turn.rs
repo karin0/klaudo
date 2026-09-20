@@ -21,13 +21,12 @@ const GRACE: Duration = Duration::from_millis(600);
 #[test]
 fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("segments");
-    let resident = resident(&root, port);
+    let root = prepare("segments", port);
+    let resident = resident(&root);
     let session = "0123456789abcdef";
 
     hook(
         &root,
-        port,
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": session,
@@ -44,7 +43,6 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     ] {
         hook(
             &root,
-            port,
             &json!({
                 "hook_event_name": "MessageDisplay",
                 "session_id": session,
@@ -58,7 +56,6 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
 
     hook(
         &root,
-        port,
         &json!({
             "hook_event_name": "Stop",
             "session_id": session,
@@ -103,8 +100,8 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
 #[test]
 fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("queue");
-    let resident = resident(&root, port);
+    let root = prepare("queue", port);
+    let resident = resident(&root);
     let session = "fedcba9876543210";
     let first = "aaaaaaaa-1111";
     let second = "bbbbbbbb-2222";
@@ -124,7 +121,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
         let streaming = event["hook_event_name"] == json!("MessageDisplay");
-        hook(&root, port, &event);
+        hook(&root, &event);
         if streaming {
             std::thread::sleep(Duration::from_millis(400));
         }
@@ -174,12 +171,11 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
 #[test]
 fn a_turn_is_on_screen_before_it_has_said_anything() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("waiting");
-    let resident = resident(&root, port);
+    let root = prepare("waiting", port);
+    let resident = resident(&root);
 
     hook(
         &root,
-        port,
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "0123456789abcdef",
@@ -200,8 +196,8 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
 #[test]
 fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("watched");
-    let resident = resident(&root, port);
+    let root = prepare("watched", port);
+    let resident = resident(&root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -215,7 +211,7 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
     for (step, mut event) in turn.into_iter().enumerate() {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, port, &event);
+        hook(&root, &event);
         if step < last {
             // Longer than the gap the resident leaves between two rewrites, so every
             // step of the turn is one the chat was shown.
@@ -255,8 +251,8 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
 #[test]
 fn a_run_of_tool_calls_is_a_message_of_its_own() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("tools");
-    let resident = resident(&root, port);
+    let root = prepare("tools", port);
+    let resident = resident(&root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -276,7 +272,7 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     for mut event in turn {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, port, &event);
+        hook(&root, &event);
         // What a turn says after a run of tool calls arrives once those calls have run,
         // which is far longer than the wait a call is filed after.
         std::thread::sleep(Duration::from_millis(400));
@@ -320,8 +316,8 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
 #[test]
 fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("settling");
-    let resident = resident(&root, port);
+    let root = prepare("settling", port);
+    let resident = resident(&root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -338,7 +334,7 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     for (step, mut event) in turn.into_iter().enumerate() {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, port, &event);
+        hook(&root, &event);
         // The call, its words and its outcome arrive together; the turn ends later.
         if step == last - 1 {
             std::thread::sleep(Duration::from_millis(600));
@@ -365,8 +361,8 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
 #[test]
 fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("straggler");
-    let resident = resident(&root, port);
+    let root = prepare("straggler", port);
+    let resident = resident(&root);
     let session = "0123456789abcdef";
     let prompt = "aaaaaaaa-1111";
 
@@ -379,7 +375,7 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     for mut event in turn {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, port, &event);
+        hook(&root, &event);
         std::thread::sleep(Duration::from_millis(400));
     }
 
@@ -403,15 +399,14 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
 #[test]
 fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
     let (port, calls, chat) = recorder();
-    let root = prepare("unaddressed");
-    let resident = resident(&root, port);
+    let root = prepare("unaddressed", port);
+    let resident = resident(&root);
 
     // The later session sorts first, so what answers is the one heard from last
     // rather than the first one klaude happens to hold.
     for session in ["fedcba9876543210", "0123456789abcdef"] {
         hook(
             &root,
-            port,
             &json!({
                 "hook_event_name": "SessionStart",
                 "session_id": session,
@@ -559,10 +554,19 @@ fn showing(markdown: &str, text: &str) {
     println!("frame:\n{markdown}");
 }
 
-fn prepare(name: &str) -> PathBuf {
+/// A throwaway root holding the runtime directory the resident binds its socket in and
+/// the credentials file every klaude process started from it reads, so a machine's own
+/// credentials stay out of the test.
+fn prepare(name: &str, port: u16) -> PathBuf {
     let root = std::env::temp_dir().join(format!("klaude-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
+    std::fs::create_dir_all(root.join("config/klaude")).expect("configuration directory");
+    std::fs::write(
+        root.join("config/klaude/env"),
+        format!("BOT_TOKEN=111111:secret\nCHAT_ID=1\nAPI_BASE=http://127.0.0.1:{port}\n"),
+    )
+    .expect("credentials");
     root
 }
 
@@ -576,8 +580,8 @@ impl Drop for Resident {
     }
 }
 
-fn resident(root: &Path, port: u16) -> Resident {
-    let child = klaude(root, port)
+fn resident(root: &Path) -> Resident {
+    let child = klaude(root)
         .arg("listen")
         .spawn()
         .expect("run the resident");
@@ -586,23 +590,21 @@ fn resident(root: &Path, port: u16) -> Resident {
     Resident(child)
 }
 
-/// The credentials reach the resident the way they reach it in a hook: through the
-/// environment the command was started with.
-fn klaude(root: &Path, port: u16) -> Command {
+/// Both directories the binary resolves what it needs from point into the throwaway
+/// root.
+fn klaude(root: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_klaude"));
     command
         .env("XDG_RUNTIME_DIR", root.join("run"))
-        .env("BOT_TOKEN", "111111:secret")
-        .env("CHAT_ID", "1")
-        .env("API_BASE", format!("http://127.0.0.1:{port}"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .stdin(Stdio::piped());
     command
 }
 
-fn hook(root: &Path, port: u16, event: &serde_json::Value) {
-    let mut client = klaude(root, port).spawn().expect("run the hook");
+fn hook(root: &Path, event: &serde_json::Value) {
+    let mut client = klaude(root).spawn().expect("run the hook");
     client
         .stdin
         .take()
@@ -732,8 +734,8 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
 #[test]
 fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("straggling-flush");
-    let resident = resident(&root, port);
+    let root = prepare("straggling-flush", port);
+    let resident = resident(&root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -750,7 +752,7 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     for mut event in turn {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, port, &event);
+        hook(&root, &event);
         std::thread::sleep(Duration::from_millis(300));
     }
 

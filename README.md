@@ -130,14 +130,14 @@ One command answers every event, so `settings.json` repeats it under `SessionSta
 `Stop`, `StopFailure` and `Notification`:
 
 ```json
-{"type": "command", "command": "set -a && . <secrets file> && exec <path to klaude>"}
+{"type": "command", "command": "exec <path to klaude>"}
 ```
 
 The hook writes the event to a unix datagram socket and exits. Along with the event it
 carries `$TMUX`, `$TMUX_PANE` and its own parent process id, which is where the resident
-learns which terminal a session is on. The parent is the session because of `exec`:
-without it the parent would be the shell that read the secrets file, which exits
-immediately.
+learns which terminal a session is on. The parent is the session because of `exec`: it
+hands the shell Claude Code starts the command in over to the binary, which leaves the
+session as the parent the binary reports.
 
 `SessionStart` fires once the session is ready for input, after the trust dialog, so it
 is both how a session announces where it lives and how a conversation opened from the
@@ -145,17 +145,21 @@ chat knows when to type its first prompt.
 
 ## Configuration
 
-`BOT_TOKEN` and `CHAT_ID` are read from the environment. That is what the first half of
-the hook command is for: `set -a` marks what follows for export, so a file of plain
-shell assignments becomes variables the binary after it can see. `CHAT_ID` is the
-integer id of a private chat, and it is the sender every incoming message is checked
-against.
+`BOT_TOKEN` and `CHAT_ID` come from `$XDG_CONFIG_HOME/klaude/env`, which defaults to
+`~/.config/klaude/env`. That file is the whole of where they come from, so a token
+changed there is the token every session uses from its next event on, and a value
+exported in a shell reaches nothing. A file that cannot be read, or a name missing from
+it, stops the process and names the file. `CHAT_ID` is the integer id of a private chat,
+and it is the sender every incoming message is checked against.
 
-`API_BASE` is optional and defaults to `https://api.telegram.org`; the test points it at
-a server of its own.
+`dotenvy` reads the file: `NAME=value` lines, `#` opening a comment, an `export` in
+front allowed, and a `$` expanding outside single quotes, so a file written for a shell
+to source reads the same way here.
 
-`klaude.service` runs the resident. It reads the same assignments from
-`~/.config/klaude/env`, so point that at the file the hook command sources:
+`API_BASE` is optional and defaults to `https://api.telegram.org`; the test writes it
+into a file of its own, pointing at a server of its own.
+
+`klaude.service` runs the resident and reads the same file:
 
 ```sh
 mkdir -p ~/.config/klaude && ln -s <secrets file> ~/.config/klaude/env

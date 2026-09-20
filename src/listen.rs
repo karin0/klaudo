@@ -140,7 +140,7 @@ pub fn run() {
     let arrivals = read(socket);
 
     let mut machine = Machine {
-        telegram: Telegram::from_env(),
+        telegram: Telegram::new(),
         sessions: BTreeMap::new(),
         opening: Vec::new(),
     };
@@ -193,7 +193,7 @@ fn acquire(lock: &File) -> bool {
 /// landed. Messages older than this loop are the backlog Telegram still holds, and
 /// typing those into a terminal would replay an afternoon of asks.
 fn poll(target: &Path) {
-    let telegram = Telegram::from_env();
+    let telegram = Telegram::new();
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("a clock after 1970")
