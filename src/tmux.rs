@@ -4,7 +4,6 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 /// The tmux session that holds the windows klaude opens for conversations started from
 /// the chat, so one `tmux attach -t klaude` reaches all of them.
@@ -12,13 +11,6 @@ const OWNED_SESSION: &str = "klaude";
 /// Named rather than the default buffer, so a paste klaude issues cannot consume what
 /// the user copied.
 const BUFFER: &str = "klaude";
-/// The input box takes a paste on the session's own tick, and an Enter that reaches it
-/// in the same read is handled while the box is still empty. tmux writes both into one
-/// buffer for the pane, which libevent is free to flush in a single write, so the wait
-/// is what keeps them apart. Claude Code waits 10 milliseconds here when it types a
-/// reply into a session itself; this goes through a tmux server and two process starts,
-/// which jitter by more than that.
-const SETTLE: Duration = Duration::from_millis(100);
 
 /// Where a session's terminal is. `$TMUX` names the server, `$TMUX_PANE` the pane, and
 /// a hook inherits both from the session it reports for.
@@ -91,7 +83,6 @@ impl Pane {
         run(self
             .tmux()
             .args(["paste-buffer", "-b", BUFFER, "-t", &self.id, "-p", "-d"]))?;
-        std::thread::sleep(SETTLE);
         run(self.tmux().args(["send-keys", "-t", &self.id, "Enter"]))
     }
 
