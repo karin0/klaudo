@@ -217,13 +217,15 @@ the pairing after that is by position and can attach a turn to the wrong prompt.
 ## When the resident is not there
 
 A machine without the unit installed, or a resident that died, leaves the socket
-unanswered. `Stop`, `StopFailure` and `Notification` then send from the hook process
-itself, so the chat still gets the turn, as a message of its own with nothing shown
-before it and no prompt above it to reply to. Nothing can be sent back to a session in that state.
+unanswered. `UserPromptSubmit`, `Stop`, `StopFailure` and `Notification` then send from
+the hook process itself, so the chat still gets the ask and the answer, each as a
+message of its own with nothing shown before it and no prompt above it to reply to.
+Nothing can be sent back to a session in that state.
 
-`SessionStart` and the three tool events are dropped instead. A tool event posted on its
-own would be one Telegram call per tool call, and `PreToolUse` holds up the call it
-announces until the hook returns.
+`SessionStart`, the three tool events and `MessageDisplay` are dropped instead. Each of
+them says something only as part of what the resident is assembling, so posted alone it
+would be one Telegram call per tool call and per streamed fragment, and `PreToolUse`
+holds up the call it announces until the hook returns.
 
 ## Checks
 
