@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -32,17 +35,16 @@ pub struct Telegram {
 }
 
 impl Telegram {
-    /// A hook inherits the environment the command that started it was given, which is
-    /// where the credentials come from.
-    pub fn from_env() -> Self {
+    /// The credentials come from the file below, which every klaude process reads for
+    /// itself.
+    pub fn new() -> Self {
         let token = required("BOT_TOKEN");
         // Drafts are a private-chat feature, whose chat id is an integer.
         let chat_id = required("CHAT_ID")
             .parse()
             .expect("CHAT_ID is the integer id of a private chat");
         // The test stands a recording server in front of the daemon here.
-        let base =
-            std::env::var("API_BASE").unwrap_or_else(|_| "https://api.telegram.org".to_owned());
+        let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
         let agent = ureq::Agent::config_builder()
             // Telegram explains a rejection in the body of the failing response.
             .http_status_as_error(false)
@@ -202,8 +204,43 @@ fn clamp(markdown: &str) -> String {
         .collect()
 }
 
+/// Where a machine's credentials live. It is the whole of where they come from, so a
+/// token changed there is the token every session uses from its next event on, and a
+/// hook command is the binary's own path.
+fn env_file() -> PathBuf {
+    let config = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".config"),
+    };
+    config.join("klaude").join("env")
+}
+
+/// What a credentials file assigns. A file that cannot be read stops the process, and
+/// so does a line that assigns nothing, which stays out of the message because it holds
+/// a credential.
+fn read(path: &Path) -> HashMap<String, String> {
+    let entries = match dotenvy::from_path_iter(path) {
+        Ok(entries) => entries,
+        Err(error) => panic!("{}: {error}", path.display()),
+    };
+    entries
+        .map(|entry| {
+            entry.unwrap_or_else(|_| panic!("{} holds a line that assigns nothing", path.display()))
+        })
+        .collect()
+}
+
+fn stored() -> &'static HashMap<String, String> {
+    static STORED: OnceLock<HashMap<String, String>> = OnceLock::new();
+    STORED.get_or_init(|| read(&env_file()))
+}
+
+fn setting(name: &str) -> Option<String> {
+    stored().get(name).cloned()
+}
+
 fn required(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| panic!("{name} is not in the environment"))
+    setting(name).unwrap_or_else(|| panic!("{name} is not in {}", env_file().display()))
 }
 
 #[cfg(test)]
@@ -221,6 +258,23 @@ mod tests {
     #[test]
     fn a_body_within_the_limit_is_untouched() {
         assert_eq!(clamp("short"), "short");
+    }
+
+    #[test]
+    fn the_file_a_shell_used_to_source_reads_as_it_stands() {
+        let path = std::env::temp_dir().join(format!("klaude-env-{}", std::process::id()));
+        std::fs::write(
+            &path,
+            "# credentials\nexport BOT_TOKEN=123:abc\nCHAT_ID=42\nAPI_BASE='http://localhost:1'\n",
+        )
+        .expect("the test writes its own file");
+        let stored = read(&path);
+        std::fs::remove_file(&path).expect("the file the test wrote");
+
+        assert_eq!(stored["BOT_TOKEN"], "123:abc");
+        assert_eq!(stored["CHAT_ID"], "42");
+        assert_eq!(stored["API_BASE"], "http://localhost:1");
+        assert_eq!(stored.len(), 3);
     }
 
     #[test]
