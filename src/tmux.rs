@@ -66,6 +66,11 @@ impl Pane {
     /// Text arrives through a paste buffer, so newlines reach the input box as newlines
     /// and nothing in the message needs escaping. The Enter that follows submits it.
     pub fn deliver(&self, text: &str) -> Result<(), String> {
+        // A pane in copy mode, which a wheel tick alone enters wherever the mouse is
+        // on, takes the paste into the input box and gives the Enter to the mode's own
+        // key table, where it ends the mode and submits nothing. Leaving the mode is a
+        // no-op on a pane that is in none.
+        run(self.tmux().args(["copy-mode", "-q", "-t", &self.id]))?;
         let mut load = self
             .tmux()
             .args(["load-buffer", "-b", BUFFER, "-"])
@@ -174,5 +179,55 @@ mod tests {
     fn a_pane_that_names_no_server_refuses_to_hold_anything() {
         let pane = Pane::new("/nonexistent/tmux-socket", "%0");
         assert!(!pane.holds(std::process::id()));
+    }
+
+    /// The pane reads one line and writes it back, so what it shows says the Enter
+    /// submitted rather than only that the text arrived.
+    #[test]
+    fn a_reply_submits_in_a_pane_the_reader_left_in_copy_mode() {
+        let socket = std::env::temp_dir().join(format!("klaude-test-{}", std::process::id()));
+        let tmux = |args: &[&str]| {
+            let output = Command::new("tmux")
+                .arg("-S")
+                .arg(&socket)
+                .args(args)
+                .output()
+                .expect("tmux runs");
+            assert!(output.status.success(), "tmux {args:?}: {output:?}");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .trim()
+                .to_owned()
+        };
+        tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            "probe",
+            "sh",
+            "-c",
+            "read line; printf 'read %s' \"$line\"; sleep 30",
+        ]);
+        let id = tmux(&["display-message", "-p", "-t", "probe", "#{pane_id}"]);
+        tmux(&["copy-mode", "-t", "probe"]);
+        let pane = Pane::new(&socket.to_string_lossy(), &id);
+
+        let delivered = pane.deliver("scrolled away");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut screen = String::new();
+        while std::time::Instant::now() < deadline {
+            screen = pane.screen().unwrap_or_default();
+            if screen.contains("read scrolled away") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        tmux(&["kill-server"]);
+        delivered.expect("delivered");
+        assert!(
+            screen.contains("read scrolled away"),
+            "screen reads {screen:?}"
+        );
     }
 }
