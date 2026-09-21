@@ -80,6 +80,26 @@ transcript under, then `session/prompt` shortened to eight characters each. That
 directory is where the session was opened, so it stays put across a `cd` inside a turn.
 The line is also the address a reply is routed by.
 
+## Rich messages
+
+A message is posted with `sendRichMessage` and rewritten with `editMessageText`, both
+carrying the body in the `markdown` field of a `rich_message` parameter. Bot API 10.1
+added the method in June 2026, and its markdown is a dialect of its own, documented at
+<https://core.telegram.org/bots/api#rich-message-formatting-options>. Headings, tables,
+footnotes, `==marked==`, `||spoiler||` and `$formula$` belong to it along with the
+emphasis every markdown has, where `**text**` is bold and `*text*` is italic as
+CommonMark has them; the `parse_mode` markdown of the older methods gives `*text*` to
+bold.
+
+A backslash in front of a character the dialect owns is consumed and the character
+stands. In front of any other character it stays, and a client copying the message out
+hands back the backslash with it, which is why `hook::prose` escapes against that set
+alone. HTML tags are parsed inside this markdown, so the characters HTML owns travel as
+entities.
+
+A rich message holds 32768 characters and 500 blocks, against which a turn's longest
+message is a few thousand characters of one paragraph.
+
 ## What you can send
 
 What a message replies to is where it goes. A message replying to nothing goes to the
