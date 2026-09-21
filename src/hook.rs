@@ -20,8 +20,10 @@ const SUBJECT: [&str; 7] = [
     "path",
     "prompt",
 ];
-/// One line of a tool call, past which the rest says nothing at a glance.
-const SUBJECT_MAX: usize = 60;
+/// How far a field of a tool's input reads, past which the rest says nothing at a
+/// glance. Three lines of a phone's screen, which a command fills before a reader has
+/// stopped taking it in.
+const SUBJECT_MAX: usize = 120;
 
 /// Marks the end of a turn, so a chat holding several projects can be filtered down to
 /// the replies that finished a piece of work.

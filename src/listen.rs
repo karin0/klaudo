@@ -258,13 +258,14 @@ impl Call {
             None => String::new(),
         };
         // A description is prose, while what the call works on is a path or a command
-        // and keeps the span that carries it verbatim.
+        // and keeps the span that carries it verbatim. Two spaces after the tool, which
+        // is what holds its name apart from the words that follow it.
         let (said, under) = match (self.description.as_str(), self.subject.as_str()) {
             ("", "") => (String::new(), None),
-            ("", subject) => (format!(" {}", code(subject)), None),
-            (description, "") => (format!(" {}", hook::prose(description)), None),
+            ("", subject) => (format!("  {}", code(subject)), None),
+            (description, "") => (format!("  {}", hook::prose(description)), None),
             (description, subject) => (
-                format!(" {}", hook::prose(description)),
+                format!("  {}", hook::prose(description)),
                 Some(code(subject)),
             ),
         };
@@ -1205,7 +1206,7 @@ mod tests {
     fn a_call_reads_as_its_tool_its_subject_and_how_it_went() {
         assert_eq!(
             call("Read", "src/listen.rs", Outcome::Running).line(),
-            "○ **Read** `src/listen.rs`"
+            "○ **Read**  `src/listen.rs`"
         );
         assert_eq!(
             call(
@@ -1214,7 +1215,7 @@ mod tests {
                 Outcome::Done(Duration::from_millis(1400))
             )
             .line(),
-            "● **Bash** `cargo test` **1s**"
+            "● **Bash**  `cargo test` **1s**"
         );
         assert_eq!(
             call(
@@ -1223,7 +1224,7 @@ mod tests {
                 Outcome::Done(Duration::from_millis(12))
             )
             .line(),
-            "● **Bash** `cargo test` **12ms**"
+            "● **Bash**  `cargo test` **12ms**"
         );
         // What a failure reported reads on a line of its own.
         assert_eq!(
@@ -1233,7 +1234,7 @@ mod tests {
                 Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
             )
             .line(),
-            "× **Bash** `cargo test` **4s**  \n⎿ Exit code 1"
+            "× **Bash**  `cargo test` **4s**  \n⎿ Exit code 1"
         );
         // A tool that describes its calls says that first and shows the command under it.
         let described = Call {
@@ -1246,7 +1247,7 @@ mod tests {
         };
         assert_eq!(
             described.line(),
-            "× **Bash** run the tests **4s**  \n⎿ `cargo test`  \n⎿ Exit code 1"
+            "× **Bash**  run the tests **4s**  \n⎿ `cargo test`  \n⎿ Exit code 1"
         );
         let markup = Call {
             description: "find *.rs in _src_".to_owned(),
@@ -1254,13 +1255,13 @@ mod tests {
         };
         assert_eq!(
             markup.line(),
-            "○ **Grep** find \\*\\.rs in \\_src\\_  \n⎿ `fn seal`"
+            "○ **Grep**  find \\*\\.rs in \\_src\\_  \n⎿ `fn seal`"
         );
         let subagent = Call {
             agent: Some("Explore".to_owned()),
             ..call("Grep", "fn seal", Outcome::Running)
         };
-        assert_eq!(subagent.line(), "○ [Explore] **Grep** `fn seal`");
+        assert_eq!(subagent.line(), "○ [Explore] **Grep**  `fn seal`");
     }
 
     #[test]
@@ -1277,7 +1278,7 @@ mod tests {
         ]);
         assert_eq!(
             listed,
-            "○ **Read** `src/listen.rs`  \n● **Bash** `cargo test` **1s**"
+            "○ **Read**  `src/listen.rs`  \n● **Bash**  `cargo test` **1s**"
         );
     }
 
@@ -1289,11 +1290,11 @@ mod tests {
         let listed = listing(&calls);
         assert!(listed.contains("… 3 earlier"), "the run reads {listed}");
         assert!(
-            !listed.contains("**Read** `file2`"),
+            !listed.contains("**Read**  `file2`"),
             "the third call is still listed"
         );
         assert!(
-            listed.contains("**Read** `file3`"),
+            listed.contains("**Read**  `file3`"),
             "the fourth call is dropped"
         );
         assert!(
