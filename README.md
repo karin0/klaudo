@@ -35,16 +35,20 @@ marked as such and shows no time, so a run reads as the terminal does, and a run
 message went out with a call still running is rewritten once that call reports. A run
 past thirty calls lists the newest thirty and counts the rest.
 
-● Bash `run the tests` 4s
+● **Bash** run the tests **4s**
 ⎿ `cargo test`
-× Bash `lint everything` 2s
+× **Bash** lint everything **2s**
 ⎿ `cargo clippy`
 ⎿ Exit code 1
-○ [Explore] Grep `fn seal`
+○ [Explore] **Grep** `fn seal`
 
-The lines are ordinary text, so a long command wraps where a preformatted block would
-have asked the reader to scroll sideways. Both fields travel in a code span, which is
-what keeps a command carrying markdown from being read as markdown.
+The tool and the time are bold, which is what the eye follows down a run whose middles
+are of every length. The lines are ordinary text, so a long command wraps where a
+preformatted block would have asked the reader to scroll sideways. What a call works on
+travels in a code span, which is what keeps a command carrying markdown from being read
+as markdown. A description reads as the sentence it is, and so does every other sentence
+a person or a tool wrote, its markdown characters escaped on the way out. What Claude
+Code answered is markdown and reads as markdown.
 
 Telegram's message drafts do the same job in one call, and klaude was built on them
 first. A draft is ephemeral: it expires thirty seconds after its last frame, no method

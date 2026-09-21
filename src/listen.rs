@@ -245,28 +245,33 @@ impl Call {
     /// A mark for how it went, the tool and what it says it is doing, and the time it
     /// took. What it is working on and what a failure reported go on lines under that,
     /// where the eye finds them and a long command wraps without pushing the time away.
+    /// The tool and the time are bold, so the eye finds a call and its cost down a run
+    /// of lines whose middles are of every length.
     fn line(&self) -> String {
         let (mark, took, why) = match &self.outcome {
             Outcome::Running => (RUNNING, String::new(), None),
-            Outcome::Done(took) => (DONE, format!(" {}", spent(*took)), None),
-            Outcome::Failed(took, why) => (FAILED, format!(" {}", spent(*took)), Some(why)),
+            Outcome::Done(took) => (DONE, format!(" **{}**", spent(*took)), None),
+            Outcome::Failed(took, why) => (FAILED, format!(" **{}**", spent(*took)), Some(why)),
         };
         let agent = match &self.agent {
             Some(agent) => format!("[{agent}] "),
             None => String::new(),
         };
-        let (said, under) = match self.description.as_str() {
-            "" => (self.subject.as_str(), ""),
-            description => (description, self.subject.as_str()),
+        // A description is prose, while what the call works on is a path or a command
+        // and keeps the span that carries it verbatim.
+        let (said, under) = match (self.description.as_str(), self.subject.as_str()) {
+            ("", "") => (String::new(), None),
+            ("", subject) => (format!(" {}", code(subject)), None),
+            (description, "") => (format!(" {}", hook::prose(description)), None),
+            (description, subject) => (
+                format!(" {}", hook::prose(description)),
+                Some(code(subject)),
+            ),
         };
-        let said = match said {
-            "" => String::new(),
-            said => format!(" {}", code(said)),
-        };
-        let head = format!("{mark} {agent}{}{said}{took}", self.name);
+        let head = format!("{mark} {agent}**{}**{said}{took}", self.name);
         [
             Some(head),
-            (!under.is_empty()).then(|| format!("⎿ {}", code(under))),
+            under.map(|under| format!("⎿ {under}")),
             why.map(|why| format!("⎿ {}", hook::prose(why))),
         ]
         .into_iter()
@@ -1200,7 +1205,7 @@ mod tests {
     fn a_call_reads_as_its_tool_its_subject_and_how_it_went() {
         assert_eq!(
             call("Read", "src/listen.rs", Outcome::Running).line(),
-            "○ Read `src/listen.rs`"
+            "○ **Read** `src/listen.rs`"
         );
         assert_eq!(
             call(
@@ -1209,7 +1214,7 @@ mod tests {
                 Outcome::Done(Duration::from_millis(1400))
             )
             .line(),
-            "● Bash `cargo test` 1s"
+            "● **Bash** `cargo test` **1s**"
         );
         assert_eq!(
             call(
@@ -1218,7 +1223,7 @@ mod tests {
                 Outcome::Done(Duration::from_millis(12))
             )
             .line(),
-            "● Bash `cargo test` 12ms"
+            "● **Bash** `cargo test` **12ms**"
         );
         // What a failure reported reads on a line of its own.
         assert_eq!(
@@ -1228,7 +1233,7 @@ mod tests {
                 Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
             )
             .line(),
-            "× Bash `cargo test` 4s  \n⎿ Exit code 1"
+            "× **Bash** `cargo test` **4s**  \n⎿ Exit code 1"
         );
         // A tool that describes its calls says that first and shows the command under it.
         let described = Call {
@@ -1241,13 +1246,21 @@ mod tests {
         };
         assert_eq!(
             described.line(),
-            "× Bash `run the tests` 4s  \n⎿ `cargo test`  \n⎿ Exit code 1"
+            "× **Bash** run the tests **4s**  \n⎿ `cargo test`  \n⎿ Exit code 1"
+        );
+        let markup = Call {
+            description: "find *.rs in _src_".to_owned(),
+            ..call("Grep", "fn seal", Outcome::Running)
+        };
+        assert_eq!(
+            markup.line(),
+            "○ **Grep** find \\*\\.rs in \\_src\\_  \n⎿ `fn seal`"
         );
         let subagent = Call {
             agent: Some("Explore".to_owned()),
             ..call("Grep", "fn seal", Outcome::Running)
         };
-        assert_eq!(subagent.line(), "○ [Explore] Grep `fn seal`");
+        assert_eq!(subagent.line(), "○ [Explore] **Grep** `fn seal`");
     }
 
     #[test]
@@ -1262,7 +1275,10 @@ mod tests {
             call("Read", "src/listen.rs", Outcome::Running),
             call("Bash", "cargo test", Outcome::Done(Duration::from_secs(1))),
         ]);
-        assert_eq!(listed, "○ Read `src/listen.rs`  \n● Bash `cargo test` 1s");
+        assert_eq!(
+            listed,
+            "○ **Read** `src/listen.rs`  \n● **Bash** `cargo test` **1s**"
+        );
     }
 
     #[test]
@@ -1273,11 +1289,11 @@ mod tests {
         let listed = listing(&calls);
         assert!(listed.contains("… 3 earlier"), "the run reads {listed}");
         assert!(
-            !listed.contains("Read `file2`"),
+            !listed.contains("**Read** `file2`"),
             "the third call is still listed"
         );
         assert!(
-            listed.contains("Read `file3`"),
+            listed.contains("**Read** `file3`"),
             "the fourth call is dropped"
         );
         assert!(
