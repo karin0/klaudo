@@ -286,7 +286,7 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
             ("silent", "on it".to_owned()),
             (
                 "silent",
-                "× **Bash** `cargo test` **4s**  \n⎿ Exit code 1  \n● [Explore] **Read** `/src/listen.rs` **12ms**"
+                "× **Bash**  `cargo test` **4s**  \n⎿ Exit code 1  \n● [Explore] **Read**  `/src/listen.rs` **12ms**"
                     .to_owned()
             ),
             ("ring", "one test fails".to_owned()),
@@ -347,7 +347,7 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
         [
             ("silent", ">go".to_owned()),
             ("silent", "let me check".to_owned()),
-            ("silent", "● **Bash** `cargo test` **30ms**".to_owned()),
+            ("silent", "● **Bash**  `cargo test` **30ms**".to_owned()),
             ("ring", "checked".to_owned()),
         ]
     );
@@ -764,7 +764,7 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
             // The flush that lost the race is written into the message it belongs to.
             ("silent", "on it now"),
             // So is the outcome of a call that reported after its run went out.
-            ("silent", "● **Bash** `cargo test` **30ms**"),
+            ("silent", "● **Bash**  `cargo test` **30ms**"),
             ("ring", "done"),
         ]
         .map(|(sound, body)| (sound, body.to_owned()))

@@ -35,12 +35,12 @@ marked as such and shows no time, so a run reads as the terminal does, and a run
 message went out with a call still running is rewritten once that call reports. A run
 past thirty calls lists the newest thirty and counts the rest.
 
-● **Bash** run the tests **4s**
+● **Bash**  run the tests **4s**
 ⎿ `cargo test`
-× **Bash** lint everything **2s**
+× **Bash**  lint everything **2s**
 ⎿ `cargo clippy`
 ⎿ Exit code 1
-○ [Explore] **Grep** `fn seal`
+○ [Explore] **Grep**  `fn seal`
 
 The tool and the time are bold, which is what the eye follows down a run whose middles
 are of every length. The lines are ordinary text, so a long command wraps where a
