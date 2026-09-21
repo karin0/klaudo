@@ -8,9 +8,10 @@ use serde_json::{Value, json};
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// How long Telegram holds a poll open with nothing to report.
 const POLL_SECONDS: u64 = 50;
-/// Telegram rejects a message body past 4096 characters, and a truncated notification
-/// beats a rejected one.
-const MAX_CHARS: usize = 4000;
+/// Telegram rejects a rich message past 32768 characters of rendered text, and a
+/// truncated notification beats a rejected one. The markup a body carries is counted
+/// here along with the text it renders, which leaves the count on the safe side.
+const MAX_CHARS: usize = 32768;
 /// A rejection Telegram would answer the same way stands, and the rest are worth asking
 /// about again this many times. A retry can post a message twice when the answer to the
 /// first was lost, which is the smaller harm, because the message a turn's thread hangs
