@@ -235,13 +235,16 @@ struct Call {
     /// The subagent that made it, absent on the main thread.
     agent: Option<String>,
     name: String,
+    /// What the call says it is doing, empty where its tool describes no call of itself.
+    description: String,
     subject: String,
     outcome: Outcome,
 }
 
 impl Call {
-    /// A mark for how it went, the tool and what it is doing, and the time it took. What
-    /// a failure reported goes on a line under that, where the eye finds it.
+    /// A mark for how it went, the tool and what it says it is doing, and the time it
+    /// took. What it is working on and what a failure reported go on lines under that,
+    /// where the eye finds them and a long command wraps without pushing the time away.
     fn line(&self) -> String {
         let (mark, took, why) = match &self.outcome {
             Outcome::Running => (RUNNING, String::new(), None),
@@ -252,15 +255,24 @@ impl Call {
             Some(agent) => format!("[{agent}] "),
             None => String::new(),
         };
-        let subject = match self.subject.as_str() {
-            "" => String::new(),
-            subject => format!(" {}", code(subject)),
+        let (said, under) = match self.description.as_str() {
+            "" => (self.subject.as_str(), ""),
+            description => (description, self.subject.as_str()),
         };
-        let line = format!("{mark} {agent}{}{subject}{took}", self.name);
-        match why {
-            Some(why) => format!("{line}{BREAK}⎿ {why}"),
-            None => line,
-        }
+        let said = match said {
+            "" => String::new(),
+            said => format!(" {}", code(said)),
+        };
+        let head = format!("{mark} {agent}{}{said}{took}", self.name);
+        [
+            Some(head),
+            (!under.is_empty()).then(|| format!("⎿ {}", code(under))),
+            why.map(|why| format!("⎿ {why}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(BREAK)
     }
 }
 
@@ -621,6 +633,7 @@ impl Machine {
                 id: tool_use_id.clone(),
                 agent: event.agent_type.clone(),
                 name: name.clone(),
+                description: event.description(),
                 subject: event.subject(),
                 outcome: Outcome::Running,
             },
@@ -1177,6 +1190,7 @@ mod tests {
             id: name.to_owned(),
             agent: None,
             name: name.to_owned(),
+            description: String::new(),
             subject: subject.to_owned(),
             outcome,
         }
@@ -1215,6 +1229,19 @@ mod tests {
             )
             .line(),
             "× Bash `cargo test` 4s  \n⎿ Exit code 1"
+        );
+        // A tool that describes its calls says that first and shows the command under it.
+        let described = Call {
+            description: "run the tests".to_owned(),
+            ..call(
+                "Bash",
+                "cargo test",
+                Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned()),
+            )
+        };
+        assert_eq!(
+            described.line(),
+            "× Bash `run the tests` 4s  \n⎿ `cargo test`  \n⎿ Exit code 1"
         );
         let subagent = Call {
             agent: Some("Explore".to_owned()),
