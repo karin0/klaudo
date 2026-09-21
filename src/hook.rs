@@ -129,10 +129,11 @@ impl Event {
             // What was asked is quoted, so a chat scrolled through tells the asks from
             // the answers at a glance.
             "UserPromptSubmit" => quote(self.prompt.as_deref().unwrap_or_default()),
+            // What Claude Code answered is markdown, and reads as the markdown it is.
             "Stop" => self.last_assistant_message.clone().unwrap_or_default(),
-            "StopFailure" => self.error.clone().unwrap_or_else(|| self.residue()),
-            "Notification" => self.message.clone().unwrap_or_else(|| self.residue()),
-            _ => self.residue(),
+            "StopFailure" => prose(&self.error.clone().unwrap_or_else(|| self.residue())),
+            "Notification" => prose(&self.message.clone().unwrap_or_else(|| self.residue())),
+            _ => prose(&self.residue()),
         }
     }
 
@@ -162,11 +163,35 @@ fn slug(dir: &Path) -> String {
         .collect()
 }
 
+/// The characters this markdown gives a meaning to, which prose carrying one escapes.
+/// Telegram consumes the backslash in front of exactly these and leaves one in front of
+/// anything else standing in the text a client copies out.
+const ESCAPED: &str = "\\_*[]()~`>#+-=|{}.!$";
+
+/// What someone wrote, reaching the chat as they wrote it. A tag is read out of the
+/// characters HTML owns, which carry no backslash escape and travel as entities.
+pub fn prose(text: &str) -> String {
+    let mut written = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => written.push_str("&amp;"),
+            '<' => written.push_str("&lt;"),
+            character => {
+                if ESCAPED.contains(character) {
+                    written.push('\\');
+                }
+                written.push(character);
+            }
+        }
+    }
+    written
+}
+
 /// A block quotation, which every line carries its own marker of because a line without
 /// one ends the quote.
 fn quote(text: &str) -> String {
     text.lines()
-        .map(|line| format!(">{line}"))
+        .map(|line| format!(">{}", prose(line)))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -175,7 +200,7 @@ fn quote(text: &str) -> String {
 pub fn project(dir: &Path) -> String {
     format!(
         "**{}**",
-        dir.file_name().unwrap_or(dir.as_os_str()).display()
+        prose(&dir.file_name().unwrap_or(dir.as_os_str()).to_string_lossy())
     )
 }
 
@@ -324,6 +349,8 @@ mod tests {
     fn every_line_of_a_quoted_prompt_carries_its_own_marker() {
         assert_eq!(quote("one\ntwo"), ">one\n>two");
         assert_eq!(quote(""), "");
+        // A prompt reads as it was typed, not as the markdown it happens to carry.
+        assert_eq!(quote("run *.rs & <b>"), r">run \*\.rs &amp; &lt;b\>");
     }
 
     #[test]
@@ -336,7 +363,7 @@ mod tests {
         }));
         assert_eq!(
             message(&odd, "**p**", ""),
-            "**p**  #claude #PreCompact\n\n{\"trigger\":\"auto\"}"
+            "**p**  #claude #PreCompact\n\n\\{\"trigger\":\"auto\"\\}"
         );
     }
 
@@ -349,7 +376,7 @@ mod tests {
         }));
         assert_eq!(
             message(&failed, "**p**", ""),
-            "**p**  #claude #failed\n\n{\"reason\":\"overloaded\"}"
+            "**p**  #claude #failed\n\n\\{\"reason\":\"overloaded\"\\}"
         );
     }
 }

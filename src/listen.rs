@@ -267,7 +267,7 @@ impl Call {
         [
             Some(head),
             (!under.is_empty()).then(|| format!("⎿ {}", code(under))),
-            why.map(|why| format!("⎿ {why}")),
+            why.map(|why| format!("⎿ {}", hook::prose(why))),
         ]
         .into_iter()
         .flatten()
@@ -965,7 +965,7 @@ impl Machine {
             return;
         }
         let head = hook::head(&hook::project(&cwd), NEW, None);
-        let message = hook::compose(&head, "", "", &cwd.to_string_lossy());
+        let message = hook::compose(&head, "", "", &hook::prose(&cwd.to_string_lossy()));
         self.telegram.send(&message, Sound::Silent, None);
     }
 
@@ -973,7 +973,7 @@ impl Machine {
     /// there reports that it is ready.
     fn open(&mut self, cwd: &Path, ask: Ask) {
         if let Err(error) = tmux::open(cwd) {
-            self.say(&format!("tmux: {error}"));
+            self.say(&format!("tmux: {}", hook::prose(&error)));
             return;
         }
         self.opening.push((cwd.to_owned(), ask));
@@ -1011,7 +1011,7 @@ impl Machine {
             return;
         }
         if let Err(error) = pane.deliver(&ask.text) {
-            self.say(&format!("tmux: {error}"));
+            self.say(&format!("tmux: {}", hook::prose(&error)));
             return;
         }
         self.sessions
