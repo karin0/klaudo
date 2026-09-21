@@ -25,23 +25,26 @@ nothing to take back. The last segment keeps no message of its own: the `Stop` e
 carries its text, so the message that was showing it is taken back once the answer is in
 the chat.
 
-A run of tool calls is posted a line per call: a mark for how it went, the tool, the
-field of its input that says what it is doing, and the time it took. What a failed tool
-reported goes on a line under that, its first sixty characters. A call a subagent made
-carries that agent's type in brackets, and one still running is marked as such and shows
-no time, so a run reads as the terminal does, and a run whose message went out with a
-call still running is rewritten once that call reports. A run past thirty calls lists the
-newest thirty and counts the rest.
+A run of tool calls is posted a line per call: a mark for how it went, the tool, what
+the call says it is doing, and the time it took. A tool whose input describes the call,
+as Bash's does, gives that line its words and carries what the call works on, the
+command, on a line under it; where nothing describes the call, that field stands on the
+line itself. What a failed tool reported goes under those, its first sixty characters. A
+call a subagent made carries that agent's type in brackets, and one still running is
+marked as such and shows no time, so a run reads as the terminal does, and a run whose
+message went out with a call still running is rewritten once that call reports. A run
+past thirty calls lists the newest thirty and counts the rest.
 
-● Bash `cargo test` 4s
-× Bash `cargo clippy` 2s
+● Bash `run the tests` 4s
+⎿ `cargo test`
+× Bash `lint everything` 2s
+⎿ `cargo clippy`
 ⎿ Exit code 1
 ○ [Explore] Grep `fn seal`
 
 The lines are ordinary text, so a long command wraps where a preformatted block would
-have asked the reader to scroll sideways for the time at its end. The command itself
-travels in a code span, which is what keeps a command carrying markdown from being read
-as markdown.
+have asked the reader to scroll sideways. Both fields travel in a code span, which is
+what keeps a command carrying markdown from being read as markdown.
 
 Telegram's message drafts do the same job in one call, and klaude was built on them
 first. A draft is ephemeral: it expires thirty seconds after its last frame, no method

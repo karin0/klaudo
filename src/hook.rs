@@ -7,16 +7,17 @@ use serde_json::{Map, Value};
 /// verbatim report an unrecognised event falls back to.
 const BOILERPLATE: [&str; 2] = ["permission_mode", "effort"];
 
-/// The field of a tool's input that says what the call is doing, tried in this order
-/// because nothing in the event marks which field that is.
-const SUBJECT: [&str; 8] = [
+/// The field a tool's input says what the call is doing in, where the tool carries one.
+const DESCRIPTION: [&str; 1] = ["description"];
+/// The field of a tool's input that names what the call is working on, tried in this
+/// order because nothing in the event marks which field that is.
+const SUBJECT: [&str; 7] = [
     "command",
     "file_path",
     "pattern",
     "url",
     "query",
     "path",
-    "description",
     "prompt",
 ];
 /// One line of a tool call, past which the rest says nothing at a glance.
@@ -84,15 +85,25 @@ impl Event {
             .map(Path::to_path_buf)
     }
 
-    /// What a tool call is doing, in one line.
+    /// What a tool call says it is doing, in one line, empty where its tool describes
+    /// no call of itself.
+    pub fn description(&self) -> String {
+        self.field(&DESCRIPTION)
+    }
+
+    /// What a tool call is working on, in one line.
     pub fn subject(&self) -> String {
-        let Some(subject) = SUBJECT
+        self.field(&SUBJECT)
+    }
+
+    fn field(&self, keys: &[&str]) -> String {
+        let Some(value) = keys
             .iter()
             .find_map(|key| self.tool_input.get(*key)?.as_str())
         else {
             return String::new();
         };
-        let flat = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = value.split_whitespace().collect::<Vec<_>>().join(" ");
         if flat.chars().count() <= SUBJECT_MAX {
             return flat;
         }
@@ -237,35 +248,37 @@ mod tests {
     }
 
     #[test]
-    fn a_call_reads_by_the_field_of_its_input_that_says_what_it_does() {
+    fn a_call_reads_by_the_fields_of_its_input_that_say_what_it_does() {
         let call = |input: serde_json::Value| {
-            event(serde_json::json!({
+            let event = event(serde_json::json!({
                 "hook_event_name": "PreToolUse",
                 "session_id": "s",
                 "tool_input": input,
-            }))
-            .subject()
+            }));
+            (event.description(), event.subject())
         };
         assert_eq!(
             call(serde_json::json!({"command": "cargo test", "description": "run the tests"})),
-            "cargo test"
+            ("run the tests".to_owned(), "cargo test".to_owned())
         );
         assert_eq!(
             call(serde_json::json!({"file_path": "/src/hook.rs"})),
-            "/src/hook.rs"
+            (String::new(), "/src/hook.rs".to_owned())
         );
-        // An agent carries both, and the short one is what reads at a glance.
         assert_eq!(
             call(serde_json::json!({"description": "find the seal", "prompt": "a paragraph"})),
-            "find the seal"
+            ("find the seal".to_owned(), "a paragraph".to_owned())
         );
         // A prompt is one line by the time it is a call's subject.
         assert_eq!(
-            call(serde_json::json!({"prompt": "first\n  second"})),
+            call(serde_json::json!({"prompt": "first\n  second"})).1,
             "first second"
         );
-        assert_eq!(call(serde_json::json!({"todos": []})), "");
-        let long = call(serde_json::json!({"command": "x".repeat(SUBJECT_MAX + 5)}));
+        assert_eq!(
+            call(serde_json::json!({"todos": []})),
+            (String::new(), String::new())
+        );
+        let long = call(serde_json::json!({"command": "x".repeat(SUBJECT_MAX + 5)})).1;
         assert_eq!(long.chars().count(), SUBJECT_MAX + 1);
         assert!(long.ends_with('…'));
     }
