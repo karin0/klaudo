@@ -1134,7 +1134,7 @@ mod tests {
         assert_eq!(took(Duration::from_secs(60)), " 1m0s");
         assert_eq!(took(Duration::from_secs(3599)), " 59m59s");
         assert_eq!(took(Duration::from_secs(3600)), " 1h0m");
-        assert_eq!(took(Duration::from_secs(7860)), " 2h11m");
+        assert_eq!(took(Duration::from_mins(131)), " 2h11m");
     }
 
     #[test]
