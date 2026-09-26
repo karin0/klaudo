@@ -5,6 +5,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
+
 /// The tmux session that holds the windows klaude opens for conversations started from
 /// the chat, so one `tmux attach -t klaude` reaches all of them.
 const OWNED_SESSION: &str = "klaude";
@@ -17,7 +19,7 @@ const PTS_MAJOR: u32 = 136;
 
 /// Where a session's terminal is. `$TMUX` names the server, `$TMUX_PANE` the pane, and
 /// a hook inherits both from the session it reports for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pane {
     pub server: String,
     pub id: String,

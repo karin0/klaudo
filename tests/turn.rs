@@ -510,6 +510,62 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
     drop(resident);
 }
 
+/// A session idle through a restart of the resident stays reachable, and so does one that
+/// ended before it, though the resident that heard them was killed with no chance to
+/// write anything on its way out.
+#[test]
+fn what_the_resident_knows_outlives_a_restart() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("restart", port);
+    let root = temporary.path();
+    let resident = resident(root);
+
+    for (event, session, cwd) in [
+        (
+            "SessionStart",
+            "0123456789abcdef",
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+        ),
+        ("SessionStart", "fedcba9876543210", root),
+        ("SessionEnd", "fedcba9876543210", root),
+    ] {
+        hook(
+            root,
+            &json!({"hook_event_name": event, "session_id": session, "cwd": cwd}),
+        );
+    }
+    // Answered once the events ahead of it are in, and the private chat has no
+    // session left.
+    chat.says(OWNER, OWNER, "anyone");
+    collect(&calls, |call| {
+        call.markdown.starts_with("no session is running here")
+    });
+    drop(resident);
+    std::fs::remove_file(root.join("run/klaude/listen.sock")).expect("the old socket");
+    let resident = self::resident(root);
+
+    chat.replies(
+        OWNER,
+        OWNER,
+        "pick it up",
+        &json!({"rich_message": {"blocks": [
+            {"type": "paragraph", "text": [{"type": "code", "text": "fedcba98"}]},
+        ]}}),
+    );
+    chat.says(GROUP, OWNER, "carry on");
+    collect(&calls, |call| {
+        call.chat == Some(GROUP) && call.markdown.starts_with("`01234567` ")
+    });
+    let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
+    assert!(
+        log.lines()
+            .any(|line| line.starts_with("new-window")
+                && line.ends_with("--resume fedcba9876543210")),
+        "tmux was called as {log:?}"
+    );
+    drop(resident);
+}
+
 /// A reply to a session that has exited, whether its process is gone or it reported its
 /// end, opens a window resuming it in the directory it ran in, and a second reply before
 /// that session starts waits for the same window.
@@ -903,7 +959,10 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
     let mut chunk = [0; 4096];
     let (method, length, boundary, head) = loop {
         let read = stream.read(&mut chunk).expect("request");
-        assert!(read > 0, "the request ended inside its head");
+        // A resident killed on its way to the next request leaves nothing to answer.
+        if read == 0 {
+            return;
+        }
         received.extend_from_slice(&chunk[..read]);
         let mut headers = [httparse::EMPTY_HEADER; 32];
         let mut request = httparse::Request::new(&mut headers);

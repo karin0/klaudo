@@ -121,8 +121,8 @@ Replying to a message from a session that has exited opens a window running
 `claude --resume` on it in the directory it ran in, and types the reply once it is
 ready, the way a reply to a `/new` anchor starts a conversation. Further replies sent
 before it is ready wait for the same window. The resident keeps the directories of
-the last thousand sessions it saw exit in memory, so a session that exited before the
-resident started, or a thousand sessions ago, answers that it is unknown.
+the last thousand sessions it saw exit, so a session that exited a thousand sessions
+ago, or one no resident ever heard from, answers that it is unknown.
 
 A message whose text reached an input box gets a 👀 reaction once Claude Code reports
 the prompt, so a chat scrolled back shows which asks were accepted.
@@ -286,6 +286,14 @@ checks before it routes a message from the chat and, while a turn is
 running, every five seconds, so what a session killed mid-turn had already said is in
 the chat within that time.
 
+Where each session is, when it was last heard from, and where each exited one ran are
+written to `$XDG_RUNTIME_DIR/klaude/state.json` after every event but streamed text and
+tool calls, and read back when the resident starts. A session idle through a restart
+sends nothing until its next prompt, so without this file a message from the chat would
+find no session until then. Writing as the state changes keeps it through a crash, and
+a file that no longer parses is reported and replaced. A turn in flight is left behind,
+and so is a first prompt waiting for its window.
+
 ## Queued prompts
 
 Claude Code fires `UserPromptSubmit` when a prompt is submitted, including one submitted
@@ -342,7 +350,8 @@ whose session was killed stops reading as running with no further event; that a 
 heard from fails the command, and one sent outside Claude Code from a directory not in
 `CHAT_PROJECTS` goes to the private chat; that `--help` and a call the binary cannot
 act on print the usage, and a missing file or a stopped resident is named without a
-panic; that a
+panic; that an idle session and an exited one stay reachable after the resident is
+killed and started again; that a
 message replying to nothing reaches the session heard from last in its chat, while a
 session in the other chat stays out of reach, and the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to

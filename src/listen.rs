@@ -169,14 +169,28 @@ pub fn run() {
     std::thread::spawn(move || poll(&path));
     let arrivals = read(socket);
 
+    let state = directory.join("state.json");
+    let saved = load(&state);
     let mut machine = Machine {
         telegram: Telegram::new(),
         answers,
-        sessions: BTreeMap::new(),
+        sessions: saved
+            .sessions
+            .into_iter()
+            .map(|known| {
+                (
+                    known.id,
+                    Session::new(known.dir, known.pid, known.pane, instant(known.seen)),
+                )
+            })
+            .collect(),
         opening: Vec::new(),
-        ended: VecDeque::new(),
+        ended: saved.ended,
         swept: Instant::now(),
+        state,
     };
+    // Whatever exited while nothing was listening.
+    machine.sweep();
     loop {
         let arrival = match machine.due() {
             Some(at) => arrivals.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -475,6 +489,19 @@ struct Session {
 }
 
 impl Session {
+    fn new(dir: PathBuf, pid: u32, pane: Option<Pane>, seen: Instant) -> Self {
+        Self {
+            dir,
+            pid,
+            pane,
+            queued: VecDeque::new(),
+            asked: VecDeque::new(),
+            turn: None,
+            done: None,
+            seen,
+        }
+    }
+
     fn head(&self, id: &str, prompt: Option<&str>) -> String {
         hook::head(&hook::project(&self.dir), id, prompt)
     }
@@ -490,6 +517,54 @@ struct Machine {
     /// it, oldest first.
     ended: VecDeque<(String, PathBuf)>,
     swept: Instant,
+    /// Where `Saved` is written.
+    state: PathBuf,
+}
+
+/// What of the resident outlives a restart, so a session idle through one is still
+/// reachable: where each session is and when it was last heard from, and where each
+/// exited one ran. A turn in flight and what the chat asked of a window are left behind.
+#[derive(Serialize, Deserialize, Default)]
+struct Saved {
+    sessions: Vec<Known>,
+    ended: VecDeque<(String, PathBuf)>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Known {
+    id: String,
+    dir: PathBuf,
+    pid: u32,
+    pane: Option<Pane>,
+    /// Unix milliseconds.
+    seen: u64,
+}
+
+/// A state file a different version wrote may not parse, and it only saves the sessions
+/// from waiting for their next event, so that costs a warning.
+fn load(path: &Path) -> Saved {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Saved::default(),
+        Err(error) => panic!("{}: {error}", path.display()),
+    };
+    serde_json::from_slice(&raw).unwrap_or_else(|error| {
+        eprintln!("{}: {error}", path.display());
+        Saved::default()
+    })
+}
+
+fn unix_millis(at: SystemTime) -> u64 {
+    at.duration_since(UNIX_EPOCH).map_or(0, |since| {
+        u64::try_from(since.as_millis()).expect("a date before 2^64 ms")
+    })
+}
+
+/// The moment `unix_millis` names, on this process's clock.
+fn instant(millis: u64) -> Instant {
+    let age = unix_millis(SystemTime::now()).saturating_sub(millis);
+    let now = Instant::now();
+    now.checked_sub(Duration::from_millis(age)).unwrap_or(now)
 }
 
 /// What the chat asked, waiting for the session of the window klaude opened for it.
@@ -531,15 +606,8 @@ impl Machine {
         if !self.sessions.contains_key(&id) {
             self.ended.retain(|(ended, _)| *ended != id);
         }
-        let session = self.sessions.entry(id.clone()).or_insert_with(|| Session {
-            dir: PathBuf::from(&event.cwd),
-            pid,
-            pane: pane.clone(),
-            queued: VecDeque::new(),
-            asked: VecDeque::new(),
-            turn: None,
-            done: None,
-            seen: Instant::now(),
+        let session = self.sessions.entry(id.clone()).or_insert_with(|| {
+            Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), Instant::now())
         });
         session.pid = pid;
         session.pane = pane;
@@ -559,6 +627,40 @@ impl Machine {
             // A session waiting on a dialog is the other thing worth coming back to.
             "Notification" => self.aside(&id, event, Sound::Ring),
             _ => self.aside(&id, event, Sound::Silent),
+        }
+        // Streamed text and tool calls arrive many times a second and change nothing
+        // saved but `seen`, which the next event at a turn's edges saves.
+        if !matches!(
+            event.hook_event_name.as_str(),
+            "MessageDisplay" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+        ) {
+            self.save();
+        }
+    }
+
+    fn save(&self) {
+        let now = SystemTime::now();
+        let saved = Saved {
+            sessions: self
+                .sessions
+                .iter()
+                .map(|(id, session)| Known {
+                    id: id.clone(),
+                    dir: session.dir.clone(),
+                    pid: session.pid,
+                    pane: session.pane.clone(),
+                    seen: unix_millis(now - session.seen.elapsed()),
+                })
+                .collect(),
+            ended: self.ended.clone(),
+        };
+        // Renamed into place, so a resident killed mid-write leaves the last state whole.
+        let written = self.state.with_extension("tmp");
+        let raw = serde_json::to_vec(&saved).expect("the state serializes");
+        if let Err(error) =
+            fs::write(&written, raw).and_then(|()| fs::rename(&written, &self.state))
+        {
+            eprintln!("save {}: {error}", self.state.display());
         }
     }
 
@@ -1029,9 +1131,13 @@ impl Machine {
             .filter(|(_, session)| !Path::new(&format!("/proc/{}", session.pid)).exists())
             .map(|(id, _)| id.clone())
             .collect();
+        if gone.is_empty() {
+            return;
+        }
         for id in gone {
             self.end(&id);
         }
+        self.save();
     }
 
     /// A session that ended mid-turn never sends Stop, and what it did say still goes.
