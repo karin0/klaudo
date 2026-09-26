@@ -186,7 +186,9 @@ it, stops the process and names the file. `CHAT_ID` is the integer id of the cha
 turn started in the terminal goes to, and `USER_ID` is the integer id of the person
 klaude answers. A private chat's id is its person's id, so `USER_ID` defaults to
 `CHAT_ID`. A group's id is negative, and a group `CHAT_ID` without `USER_ID` stops the
-process.
+process. A message klaude ignores is logged with its chat's id and title
+and its sender's id, so `journalctl --user -u klaude` after a message sent in a group
+shows the ids to write here.
 
 `dotenvy` reads the file: `NAME=value` lines, `#` opening a comment, an `export` in
 front allowed, and a `$` expanding outside single quotes, so a file written for a shell
