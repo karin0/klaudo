@@ -206,13 +206,12 @@ window its output appears in belongs to the session that launched it.
 
 ## Hooks
 
-One command answers every event, so `settings.json` repeats it under `SessionStart`,
-`SessionEnd`, `UserPromptSubmit`, `MessageDisplay`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
-`Stop`, `StopFailure`, `Notification`, `PreCompact` and `PostCompact`:
-
-```json
-{"type": "command", "command": "exec <path to klaude>"}
-```
+One command, `exec klaude`, answers every event. `hooks.json` is the `hooks` key of a
+`settings.json` that runs it under each event klaude handles, to be merged into
+`~/.claude/settings.json`. The command finds the binary on `PATH`, so klaude is
+installed as `/usr/local/bin/klaude`, a directory on the `PATH` Claude Code runs hooks
+with. The `Notification` matcher names the notifications that ask for you; an idle
+prompt or a finished auth is left out.
 
 The hook writes the event to the unix datagram socket `$XDG_RUNTIME_DIR/klaude/listen.sock`
 and exits. `$XDG_RUNTIME_DIR` belongs to the user alone, and a session without it
@@ -256,9 +255,13 @@ into a file of its own, pointing at a server of its own.
 `klaude.service` runs the resident and reads the same file:
 
 ```sh
+sudo ln -s "$PWD/target/release/klaude" /usr/local/bin/klaude
 mkdir -p ~/.config/klaude && ln -s <secrets file> ~/.config/klaude/env
-systemctl --user enable --now klaude
+systemctl --user enable --now "$PWD/klaude.service"
 ```
+
+The link points at the release build, so rebuilding updates what the hooks and the
+unit run.
 
 ## Why one resident owns everything
 
