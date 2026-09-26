@@ -550,6 +550,7 @@ impl Machine {
 
         match event.hook_event_name.as_str() {
             "SessionStart" => self.started(&id),
+            "SessionEnd" => self.end(&id),
             "UserPromptSubmit" => self.submitted(&id, event),
             "MessageDisplay" => self.delta(&id, event),
             "PreToolUse" => self.calling(&id, event),
@@ -1034,6 +1035,8 @@ impl Machine {
     }
 
     /// A session that ended mid-turn never sends Stop, and what it did say still goes.
+    /// Its process may linger after `SessionEnd`, or it may have been killed before
+    /// saying anything, so both that event and the sweep end a session here.
     fn end(&mut self, id: &str) {
         self.seal(id);
         let live = self

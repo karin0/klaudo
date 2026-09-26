@@ -510,8 +510,9 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
     drop(resident);
 }
 
-/// A reply to a session that has exited opens a window resuming it in the directory it
-/// ran in, and a second reply before that session starts waits for the same window.
+/// A reply to a session that has exited, whether its process is gone or it reported its
+/// end, opens a window resuming it in the directory it ran in, and a second reply before
+/// that session starts waits for the same window.
 #[test]
 fn a_reply_to_a_session_that_exited_resumes_it() {
     let (port, calls, chat) = recorder();
@@ -531,6 +532,17 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         }),
     );
     // The shell has exited, and a reply looks for the session only when it arrives.
+    // This one's process is the test itself, which outlives it.
+    for event in ["SessionStart", "SessionEnd"] {
+        hook(
+            root,
+            &json!({
+                "hook_event_name": event,
+                "session_id": "fedcba9876543210",
+                "cwd": root,
+            }),
+        );
+    }
     let replied = json!({"rich_message": {"blocks": [
         {"type": "paragraph", "text": [
             {"type": "bold", "text": "klaude"}, " ", {"type": "code", "text": "01234567/89abcdef"},
@@ -538,6 +550,14 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
     ]}});
     chat.replies(OWNER, OWNER, "pick it up", &replied);
     chat.replies(OWNER, OWNER, "and then", &replied);
+    chat.replies(
+        OWNER,
+        OWNER,
+        "and that",
+        &json!({"rich_message": {"blocks": [
+            {"type": "paragraph", "text": [{"type": "code", "text": "fedcba98"}]},
+        ]}}),
+    );
     chat.replies(
         OWNER,
         OWNER,
@@ -559,13 +579,16 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         .lines()
         .filter(|line| line.starts_with("new-window"))
         .collect();
-    assert_eq!(
-        windows,
-        [format!(
-            "new-window -t klaude: -c {} -n {} claude --resume 0123456789abcdef",
+    let window = |id: &str| {
+        format!(
+            "new-window -t klaude: -c {} -n {} claude --resume {id}",
             root.display(),
             root.file_name().expect("a name").display()
-        )]
+        )
+    };
+    assert_eq!(
+        windows,
+        [window("0123456789abcdef"), window("fedcba9876543210")]
     );
 
     // The resumed session starts outside tmux, so each reply it takes is answered with
