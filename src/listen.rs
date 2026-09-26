@@ -25,6 +25,10 @@ const REFRESH: Duration = Duration::from_secs(30);
 /// runs before the message exists, so a turn answered at once leaves nothing to take
 /// back.
 const REWRITE: Duration = Duration::from_secs(3);
+/// The shortest gap between two rewrites in a group. Telegram lets a bot send a group 20
+/// messages a minute and counts a rewrite as one, so this leaves room for the rest of the
+/// turn and for other sessions posting there.
+const GROUP_REWRITE: Duration = Duration::from_secs(10);
 /// How long a tool call waits before it is filed. An assistant message's last flush
 /// reaches the resident tens of milliseconds after the hook of the tool call that
 /// message ends with, so a call filed as it is announced stands above the words that
@@ -988,7 +992,7 @@ impl Machine {
         let due = match &segment.written {
             None => true,
             Some((written, at)) if *written == text => at.elapsed() >= REFRESH,
-            Some((_, at)) => at.elapsed() >= REWRITE,
+            Some((_, at)) => at.elapsed() >= rewrite(turn.thread.chat),
         };
         if !due {
             return;
@@ -1256,6 +1260,11 @@ fn seed(prompt_id: &str) -> u64 {
     hasher.finish() % WORDS.len() as u64
 }
 
+/// A group's id is negative.
+fn rewrite(chat: i64) -> Duration {
+    if chat < 0 { GROUP_REWRITE } else { REWRITE }
+}
+
 /// The body of the message showing an open segment: what it has said, then the status
 /// line, which is what a turn spending minutes in tool calls reads by.
 fn running(text: &str, status: &str) -> String {
@@ -1332,6 +1341,12 @@ mod tests {
         assert_eq!(word(0), word(REFRESH.as_secs() - 1));
         assert_ne!(word(0), word(REFRESH.as_secs()));
         assert_ne!(status(Duration::ZERO, 1), status(Duration::ZERO, 2));
+    }
+
+    #[test]
+    fn a_group_is_rewritten_less_often_than_a_private_chat() {
+        assert_eq!(rewrite(-1001), GROUP_REWRITE);
+        assert_eq!(rewrite(7), REWRITE);
     }
 
     #[test]

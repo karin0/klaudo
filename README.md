@@ -21,7 +21,8 @@ was watched in. Under what the open segment has said, that message carries a sta
 line, a word from Claude Code's own vocabulary and the turn's elapsed time, stepping to
 the next word on every refresh, so the minutes a turn spends thinking are on screen as
 they pass. It goes up three seconds into the turn, which leaves a turn answered at once
-nothing to take back. The last segment keeps no message of its own: the `Stop` event
+nothing to take back. In a group it is rewritten at most every ten seconds, because
+Telegram counts a rewrite against the twenty messages a minute a bot may send a group. The last segment keeps no message of its own: the `Stop` event
 carries its text, so the message that was showing it is taken back once the answer is in
 the chat.
 
