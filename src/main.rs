@@ -66,10 +66,11 @@ fn hook(event: &Event, raw: &[u8]) {
         // ready for input, which is what a conversation opened from the chat waits for,
         // `SessionEnd` that a reply to it now resumes it, a tool call is a line of the
         // run the resident is drafting, and a delta is a fragment of the message the
-        // resident assembles from them. `PreToolUse` also holds up the call it
-        // announces, so it must never reach the network.
+        // resident assembles from them, and `PreCompact` that a `/compact` the resident
+        // typed was accepted. `PreToolUse` also holds up the call it announces, so it
+        // must never reach the network.
         "SessionStart" | "SessionEnd" | "MessageDisplay" | "PreToolUse" | "PostToolUse"
-        | "PostToolUseFailure" => {
+        | "PostToolUseFailure" | "PreCompact" => {
             forward(raw);
         }
         // Every other event ends up in the chat either way: through the resident, which
