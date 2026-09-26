@@ -664,14 +664,25 @@ fn showing(markdown: &str, text: &str) {
             .expect("what was said and a status line")
     };
     let status = status.strip_prefix("✻ ").expect("the mark");
-    let (word, took) = status.split_once("… ").expect("a word and an elapsed time");
+    let (word, started) = status.split_once("… ").expect("a word and a start");
     assert!(
         !word.is_empty() && word.chars().all(char::is_alphabetic),
         "status word reads {word:?}"
     );
+    // The test's own turn started moments ago.
+    let unix: u64 = started
+        .strip_prefix("(started ![")
+        .and_then(|rest| rest.split_once(" ago](tg://time?unix="))
+        .and_then(|(_, rest)| rest.strip_suffix("&format=r))"))
+        .and_then(|unix| unix.parse().ok())
+        .unwrap_or_else(|| panic!("the start reads {started:?}"));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs();
     assert!(
-        took.starts_with('(') && took.ends_with("s)"),
-        "elapsed time reads {took:?}"
+        now.abs_diff(unix) < 60,
+        "the turn started at {unix}, now is {now}"
     );
     println!("frame:\n{markdown}");
 }

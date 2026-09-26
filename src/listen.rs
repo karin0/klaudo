@@ -18,9 +18,8 @@ use crate::hook::{self, Event};
 use crate::telegram::{Sound, Telegram};
 use crate::tmux::{self, Pane};
 
-/// The longest the message showing an open segment goes without its clock advancing,
-/// so a turn that goes quiet inside a long tool call still reads as running.
-const REFRESH: Duration = Duration::from_secs(30);
+/// How long the status line keeps one word. The first rewrite after that shows the next.
+const WORD_TIME: Duration = Duration::from_secs(30);
 /// The shortest gap between two rewrites of that message. It is also how long a turn
 /// runs before the message exists, so a turn answered at once leaves nothing to take
 /// back.
@@ -1026,7 +1025,7 @@ impl Machine {
         let text = segment.text();
         let due = match &segment.written {
             None => true,
-            Some((written, at)) if *written == text => at.elapsed() >= REFRESH,
+            Some((written, _)) if *written == text => false,
             Some((_, at)) => at.elapsed() >= rewrite(turn.thread.chat),
         };
         if !due {
@@ -1035,11 +1034,15 @@ impl Machine {
         let head = session.head(id, Some(&turn.prompt_id));
         let live = turn.live;
         let thread = turn.thread;
+        let started = SystemTime::now()
+            .checked_sub(elapsed)
+            .and_then(|started| started.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_secs());
         let shown = hook::compose(
             &head,
-            &took(elapsed),
             "",
-            &running(&text, &status(elapsed, turn.seed)),
+            "",
+            &running(&text, &status(elapsed, turn.seed, started)),
         );
         let message = match live {
             Some(message) => {
@@ -1324,10 +1327,15 @@ fn running(text: &str, status: &str) -> String {
 
 /// The word changes once per refresh, so a turn sitting in a long tool call keeps
 /// showing a line that differs from the last one.
-fn status(elapsed: Duration, seed: u64) -> String {
-    let step = seed + elapsed.as_secs() / REFRESH.as_secs();
+fn status(elapsed: Duration, seed: u64, started: u64) -> String {
+    let step = seed + elapsed.as_secs() / WORD_TIME.as_secs();
     let word = WORDS[usize::try_from(step).expect("a turn's seconds") % WORDS.len()];
-    format!("✻ {word}… ({})", took(elapsed).trim())
+    // Telegram shows the start relative to the reader's clock and keeps it current, so
+    // the line reads true between rewrites. A client without the entity shows the text.
+    format!(
+        "✻ {word}… (started ![{} ago](tg://time?unix={started}&format=r))",
+        took(elapsed).trim()
+    )
 }
 
 /// How long a tool call took, in the units a tool call runs in.
@@ -1375,19 +1383,22 @@ mod tests {
     }
 
     #[test]
-    fn a_status_line_names_the_elapsed_time_and_moves_on_every_refresh() {
+    fn a_status_line_names_when_the_turn_started_and_moves_on_after_a_while() {
         let word = |seconds| {
-            status(Duration::from_secs(seconds), 1)
+            status(Duration::from_secs(seconds), 1, 0)
                 .split('…')
                 .next()
                 .expect("a word")
                 .to_owned()
         };
-        assert!(status(Duration::from_secs(80), 1).ends_with("… (1m20s)"));
-        assert!(status(Duration::ZERO, 1).starts_with('✻'));
-        assert_eq!(word(0), word(REFRESH.as_secs() - 1));
-        assert_ne!(word(0), word(REFRESH.as_secs()));
-        assert_ne!(status(Duration::ZERO, 1), status(Duration::ZERO, 2));
+        assert!(
+            status(Duration::from_secs(80), 1, 1000)
+                .ends_with("… (started ![1m20s ago](tg://time?unix=1000&format=r))")
+        );
+        assert!(status(Duration::ZERO, 1, 0).starts_with('✻'));
+        assert_eq!(word(0), word(WORD_TIME.as_secs() - 1));
+        assert_ne!(word(0), word(WORD_TIME.as_secs()));
+        assert_ne!(status(Duration::ZERO, 1, 0), status(Duration::ZERO, 2, 0));
     }
 
     #[test]
