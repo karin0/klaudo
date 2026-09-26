@@ -137,7 +137,8 @@ the last thousand sessions it saw exit, so a session that exited a thousand sess
 ago, or one no resident ever heard from, answers that it is unknown.
 
 A message whose text reached an input box gets a 👀 reaction once Claude Code reports
-the prompt, so a chat scrolled back shows which asks were accepted.
+the prompt, or for a `/compact`, once its `PreCompact` reports the compaction started,
+so a chat scrolled back shows which asks were accepted.
 
 `/new <directory>` posts an anchor naming that directory and starts nothing, and so
 does `/new@<bot> <directory>`, which is how a group's command menu writes it. Replying to
@@ -207,7 +208,7 @@ window its output appears in belongs to the session that launched it.
 
 One command answers every event, so `settings.json` repeats it under `SessionStart`,
 `SessionEnd`, `UserPromptSubmit`, `MessageDisplay`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
-`Stop`, `StopFailure`, `Notification` and `PostCompact`:
+`Stop`, `StopFailure`, `Notification`, `PreCompact` and `PostCompact`:
 
 ```json
 {"type": "command", "command": "exec <path to klaude>"}

@@ -629,6 +629,8 @@ impl Machine {
             "PreToolUse" => self.calling(&id, event),
             "PostToolUse" | "PostToolUseFailure" => self.called(&id, event),
             "Stop" | "StopFailure" => self.finish(&id, event),
+            "PreCompact" if event.manual() => self.compacting(&id),
+            "PreCompact" => {}
             "PostCompact" if event.manual() => self.compacted(&id, event),
             // A session waiting on a dialog is the other thing worth coming back to.
             "Notification" => self.aside(&id, event, Sound::Ring),
@@ -1045,28 +1047,29 @@ impl Machine {
         }
     }
 
-    /// `/compact` runs no turn, so its end is the answer to it and rings like one. A
-    /// `/compact` klaude typed is paired with the message that asked for it here, since
-    /// it never reports as a prompt.
+    /// A `/compact` klaude typed never reports as a prompt, so its start is what tells
+    /// the chat it was accepted.
+    fn compacting(&self, id: &str) {
+        let Some(session) = self.sessions.get(id) else {
+            return;
+        };
+        if let Some(ask) = compaction(&session.asked) {
+            self.telegram.acknowledge(ask.chat, ask.message);
+        }
+    }
+
+    /// `/compact` runs no turn, so its end is the answer to it and rings like one,
+    /// replying to the message that asked for it when klaude typed it.
     fn compacted(&mut self, id: &str, event: &Event) {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        let asked = session
-            .asked
-            .iter()
+        let typed = compaction(&session.asked)
             .map(|ask| ask.text.clone())
-            .find(|text| {
-                text.strip_prefix("/compact")
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-            });
-        let typed = asked.and_then(|text| pair(&mut session.asked, &text));
+            .and_then(|text| pair(&mut session.asked, &text));
         let head = session.head(id, event.prompt_id.as_deref());
         let session = &self.sessions[id];
         let thread = typed.unwrap_or_else(|| self.thread(session));
-        if let Some(prompt) = typed.and_then(|thread| thread.prompt) {
-            self.telegram.acknowledge(thread.chat, prompt);
-        }
         self.telegram.send(
             thread.chat,
             &hook::message(event, &head, ""),
@@ -1408,6 +1411,15 @@ fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
     asked.drain(..=at).next_back().map(|ask| Thread {
         chat: ask.chat,
         prompt: Some(ask.message),
+    })
+}
+
+/// The `/compact` klaude typed into a session and Claude Code has yet to finish.
+fn compaction(asked: &VecDeque<Ask>) -> Option<&Ask> {
+    asked.iter().find(|ask| {
+        ask.text
+            .strip_prefix("/compact")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
     })
 }
 
@@ -1786,6 +1798,21 @@ mod tests {
         let mut asked = VecDeque::from([ask("from the phone", 3)]);
         assert_eq!(pair(&mut asked, "typed in the terminal"), None);
         assert_eq!(asked.len(), 1);
+    }
+
+    #[test]
+    fn a_compact_klaude_typed_is_found_with_or_without_instructions() {
+        let found = |texts: &[&str]| {
+            let asked = VecDeque::from_iter(texts.iter().zip(1..).map(|(text, message)| Ask {
+                text: (*text).to_owned(),
+                chat: 7,
+                message,
+            }));
+            compaction(&asked).map(|ask| ask.message)
+        };
+        assert_eq!(found(&["/compactor", "/compact"]), Some(2));
+        assert_eq!(found(&["/compact keep the plan"]), Some(1));
+        assert_eq!(found(&["compact it"]), None);
     }
 
     #[test]
