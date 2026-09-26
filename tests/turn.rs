@@ -789,14 +789,26 @@ fn the_command_line_explains_itself() {
     let root = prepare("usage", 0);
     let run = |args: &[&str]| klaude(&root).args(args).output().expect("run klaude");
 
-    let help = run(&["--help"]);
-    assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("klaude send <file>"));
+    for (asked, usage) in [
+        (&["--help"][..], "Usage: klaude [COMMAND]"),
+        (&["-h"], "Usage: klaude [COMMAND]"),
+        (&["send", "--help"], "Usage: klaude send <FILE>"),
+    ] {
+        let help = run(asked);
+        assert!(help.status.success(), "{asked:?}");
+        assert!(
+            String::from_utf8_lossy(&help.stdout).contains(usage),
+            "{asked:?}"
+        );
+    }
 
     for wrong in [&["send"][..], &["send", "a", "b"], &["sned", "a"]] {
         let misused = run(wrong);
         assert_eq!(misused.status.code(), Some(2), "{wrong:?}");
-        assert!(String::from_utf8_lossy(&misused.stderr).starts_with("usage: klaude"));
+        assert!(
+            String::from_utf8_lossy(&misused.stderr).starts_with("error: "),
+            "{wrong:?}"
+        );
     }
 
     let missing = run(&["send", "/definitely/not/here"]);

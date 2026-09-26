@@ -6,8 +6,10 @@ mod tmux;
 use std::io::Read;
 use std::os::unix::net::UnixDatagram;
 use std::os::unix::process::parent_id;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use clap::{Parser, Subcommand};
 use hook::Event;
 
 /// The terminal holds back the text a delta carries until this process returns, so a
@@ -17,26 +19,35 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
 /// of it.
 const UPLOAD_WAIT: Duration =
     Duration::from_secs(telegram::UPLOAD_TIMEOUT.as_secs() * telegram::ATTEMPTS as u64 + 60);
-const USAGE: &str = "\
-usage: klaude              read a Claude Code hook event on stdin
-       klaude listen       run the resident that owns the chat
-       klaude send <file>  post a file in the thread of this session's turn";
+
+/// Carries a Claude Code session's turns to Telegram and what is typed there back into
+/// its terminal. Without a command, it reads a hook event on stdin.
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Run the resident that owns the chat
+    Listen,
+    /// Post a file in the thread of this session's turn
+    Send {
+        /// The file to post
+        file: PathBuf,
+    },
+}
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["-h" | "--help"] => println!("{USAGE}"),
-        ["listen"] => listen::run(),
-        ["send", file] => send(file),
-        [] => {
+    match Cli::parse().command {
+        Some(Command::Listen) => listen::run(),
+        Some(Command::Send { file }) => send(&file),
+        None => {
             let mut raw = Vec::new();
             std::io::stdin().read_to_end(&mut raw).expect("hook input");
             let event: Event = serde_json::from_slice(&raw).expect("hook input is JSON");
             hook(&event, &raw);
-        }
-        _ => {
-            eprintln!("{USAGE}");
-            std::process::exit(2);
         }
     }
 }
@@ -113,11 +124,11 @@ fn forward(raw: &[u8]) -> bool {
 /// for how that went, so the exit status says whether the file reached the chat. Claude
 /// Code names the session in the environment of every command it runs, and a command
 /// run anywhere else sends to the chat of the directory it runs in.
-fn send(file: &str) {
+fn send(file: &Path) {
     let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
     let cwd = std::env::current_dir().expect("working directory");
-    let file =
-        std::fs::canonicalize(file).unwrap_or_else(|error| fail(&format!("{file}: {error}")));
+    let file = std::fs::canonicalize(file)
+        .unwrap_or_else(|error| fail(&format!("{}: {error}", file.display())));
     if !file.is_file() {
         fail(&format!("{} is not a file", file.display()));
     }
