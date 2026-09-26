@@ -33,7 +33,10 @@ const GROUP_REWRITE: Duration = Duration::from_secs(10);
 /// message ends with, so a call filed as it is announced stands above the words that
 /// introduce it.
 const SETTLE: Duration = Duration::from_millis(100);
-const POLL: Duration = Duration::from_millis(200);
+/// How long a session killed mid-turn keeps its message showing the turn as running.
+/// A session that exits on its own says so, and a message from the chat checks every
+/// session before it is routed.
+const SWEEP: Duration = Duration::from_secs(5);
 /// Long enough to let a restarting instance take over from one still shutting down.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(50);
@@ -172,9 +175,14 @@ pub fn run() {
         sessions: BTreeMap::new(),
         opening: Vec::new(),
         ended: VecDeque::new(),
+        swept: Instant::now(),
     };
     loop {
-        match arrivals.recv_timeout(POLL) {
+        let arrival = match machine.due() {
+            Some(at) => arrivals.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => arrivals.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match arrival {
             Ok(arrival) => machine.arrival(arrival),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => panic!("the reader stopped"),
@@ -416,6 +424,17 @@ struct Turn {
 }
 
 impl Turn {
+    /// When the message showing the open segment is due to be written next, which is
+    /// never while the chat already shows what the segment says.
+    fn due(&self) -> Option<Instant> {
+        let segment = self.segment.as_ref()?;
+        match &segment.written {
+            None => Some(self.started + REWRITE),
+            Some((written, _)) if *written == segment.text() => None,
+            Some((_, at)) => Some(*at + rewrite(self.thread.chat)),
+        }
+    }
+
     /// True while the open segment is a run of tool calls rather than an assistant
     /// message.
     fn running_tools(&self) -> bool {
@@ -470,6 +489,7 @@ struct Machine {
     /// The directory each exited session ran in, which is where a reply to one resumes
     /// it, oldest first.
     ended: VecDeque<(String, PathBuf)>,
+    swept: Instant,
 }
 
 /// What the chat asked, waiting for the session of the window klaude opened for it.
@@ -973,7 +993,35 @@ impl Machine {
         )
     }
 
+    /// The next moment `tick` has work: a tool call settling, a message falling due, or
+    /// the sweep for a session killed mid-turn. With none, only an arrival wakes it.
+    fn due(&self) -> Option<Instant> {
+        let turns = || {
+            self.sessions
+                .values()
+                .filter_map(|session| session.turn.as_ref())
+        };
+        let sweep = turns().next().map(|_| self.swept + SWEEP);
+        turns()
+            .flat_map(|turn| [turn.pending.first().map(|(at, _)| *at + SETTLE), turn.due()])
+            .flatten()
+            .chain(sweep)
+            .min()
+    }
+
     fn tick(&mut self) {
+        if self.swept.elapsed() >= SWEEP {
+            self.sweep();
+        }
+        let ids: Vec<String> = self.sessions.keys().cloned().collect();
+        for id in ids {
+            self.place(&id);
+            self.show(&id);
+        }
+    }
+
+    fn sweep(&mut self) {
+        self.swept = Instant::now();
         let gone: Vec<String> = self
             .sessions
             .iter()
@@ -981,27 +1029,25 @@ impl Machine {
             .map(|(id, _)| id.clone())
             .collect();
         for id in gone {
-            // A session killed mid-turn never sends Stop, and what it did say still goes.
-            self.seal(&id);
-            let live = self
-                .sessions
-                .get_mut(&id)
-                .and_then(|session| session.turn.as_mut())
-                .and_then(|turn| Some((turn.thread.chat, turn.live.take()?)));
-            if let Some((chat, message)) = live {
-                self.telegram.delete(chat, message);
-            }
-            let session = self.sessions.remove(&id).expect("a session found gone");
-            self.ended.push_back((id, session.dir));
-            if self.ended.len() > ENDED_MAX {
-                self.ended.pop_front();
-            }
+            self.end(&id);
         }
+    }
 
-        let ids: Vec<String> = self.sessions.keys().cloned().collect();
-        for id in ids {
-            self.place(&id);
-            self.show(&id);
+    /// A session that ended mid-turn never sends Stop, and what it did say still goes.
+    fn end(&mut self, id: &str) {
+        self.seal(id);
+        let live = self
+            .sessions
+            .get_mut(id)
+            .and_then(|session| session.turn.as_mut())
+            .and_then(|turn| Some((turn.thread.chat, turn.live.take()?)));
+        if let Some((chat, message)) = live {
+            self.telegram.delete(chat, message);
+        }
+        let session = self.sessions.remove(id).expect("a session that ended");
+        self.ended.push_back((id.to_owned(), session.dir));
+        if self.ended.len() > ENDED_MAX {
+            self.ended.pop_front();
         }
     }
 
@@ -1015,22 +1061,11 @@ impl Machine {
         let Some(turn) = session.turn.as_ref() else {
             return;
         };
+        if turn.due().is_none_or(|at| at > Instant::now()) {
+            return;
+        }
         let elapsed = turn.started.elapsed();
-        if elapsed < REWRITE {
-            return;
-        }
-        let Some(segment) = turn.segment.as_ref() else {
-            return;
-        };
-        let text = segment.text();
-        let due = match &segment.written {
-            None => true,
-            Some((written, _)) if *written == text => false,
-            Some((_, at)) => at.elapsed() >= rewrite(turn.thread.chat),
-        };
-        if !due {
-            return;
-        }
+        let text = turn.segment.as_ref().expect("a segment falling due").text();
         let head = session.head(id, Some(&turn.prompt_id));
         let live = turn.live;
         let thread = turn.thread;
@@ -1105,6 +1140,8 @@ impl Machine {
             chat,
             message: carrier,
         };
+        // A session that exited without saying so is resumed rather than typed into.
+        self.sweep();
         let replied = &message["reply_to_message"];
         match address(replied) {
             Some(address) if address == NEW => match body(replied) {

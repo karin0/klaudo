@@ -464,6 +464,52 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     drop(resident);
 }
 
+/// A session killed mid-turn sends no event again, and the resident still finds it gone:
+/// the message that showed the turn running is rewritten to what the turn said.
+#[test]
+fn a_turn_whose_session_was_killed_stops_reading_as_running() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("killed", port);
+    let root = temporary.path();
+    let resident = resident(root);
+
+    // Each hook's parent is the session, and every one of these shells exits once its
+    // hook has.
+    for event in [
+        json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "0123456789abcdef",
+            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "prompt": "what does it do",
+        }),
+        json!({
+            "hook_event_name": "MessageDisplay",
+            "session_id": "0123456789abcdef",
+            "message_id": "m1",
+            "index": 0,
+            "delta": "said before dying",
+        }),
+    ] {
+        let mut passing = within(root, "sh");
+        passing.args(["-c", "\"$0\"; true", env!("CARGO_BIN_EXE_klaude")]);
+        report(passing, &event);
+    }
+
+    let made = collect(&calls, |call| {
+        call.label == "editMessageText" && !call.markdown.contains('✻')
+    });
+    let held = holding(&made);
+    assert!(
+        held.iter().any(|(_, body)| body == "said before dying"),
+        "the chat holds {held:?}"
+    );
+    assert!(
+        held.iter().all(|(_, body)| !body.contains('✻')),
+        "the chat holds {held:?}"
+    );
+    drop(resident);
+}
+
 /// A reply to a session that has exited opens a window resuming it in the directory it
 /// ran in, and a second reply before that session starts waits for the same window.
 #[test]
@@ -484,16 +530,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
             "cwd": root,
         }),
     );
-    // Any event after the shell exited is followed by the sweep that finds it gone,
-    // and the reply arrives after this one.
-    hook(
-        root,
-        &json!({
-            "hook_event_name": "SessionStart",
-            "session_id": "fedcba9876543210",
-            "cwd": root,
-        }),
-    );
+    // The shell has exited, and a reply looks for the session only when it arrives.
     let replied = json!({"rich_message": {"blocks": [
         {"type": "paragraph", "text": [
             {"type": "bold", "text": "klaude"}, " ", {"type": "code", "text": "01234567/89abcdef"},

@@ -280,8 +280,10 @@ The socket has a thread of its own, which moves each datagram into memory as it 
 A Telegram call holds the machine for as long as the call takes, and the socket's buffer
 is a few hundred deltas deep, past which the hooks fall back to posting for themselves.
 
-Per-session state expires on its own. A session is forgotten when `/proc/<pid>` is gone,
-and what a session killed mid-turn had already said is posted then.
+Per-session state expires on its own. A session is forgotten once `/proc/<pid>` is gone,
+which the resident checks before it routes a message from the chat and, while a turn is
+running, every five seconds, so what a session killed mid-turn had already said is in
+the chat within that time.
 
 ## Queued prompts
 
@@ -332,7 +334,8 @@ own; that a run of tool calls is a message between the two halves of what the tu
 that a call announced ahead of the words introducing it still
 follows them; that a delta landing after its own `Stop` leaves the answer last; that a
 flush and a
-tool outcome arriving after their segment went out rewrite that message; that a file
+tool outcome arriving after their segment went out rewrite that message; that a turn
+whose session was killed stops reading as running with no further event; that a file
 `klaude send` posts replies to the prompt of its turn, one from a session klaude has not
 heard from fails the command, and one sent outside Claude Code from a directory not in
 `CHAT_PROJECTS` goes to the private chat; that `--help` and a call the binary cannot
