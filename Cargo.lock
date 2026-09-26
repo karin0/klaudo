@@ -380,6 +380,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dotenvy",
+ "httparse",
  "libc",
  "serde",
  "serde_json",

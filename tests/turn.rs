@@ -3,7 +3,7 @@
 //! carries are checked without a network or a chat.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -698,34 +698,40 @@ impl Chat {
 }
 
 fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
-    let mut request = BufReader::new(stream.try_clone().expect("clone"));
-    let mut line = String::new();
-    request.read_line(&mut line).expect("request line");
-    let method = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|path| path.rsplit('/').next())
-        .expect("method")
-        .to_owned();
-
-    let mut length = 0;
-    let mut boundary = None;
-    loop {
-        let mut header = String::new();
-        request.read_line(&mut header).expect("header");
-        if header.trim().is_empty() {
-            break;
-        }
-        let header = header.trim().to_owned();
-        if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = value.trim().parse().expect("content length");
-        }
-        if let Some((_, value)) = header.split_once("boundary=") {
-            boundary = Some(value.to_owned());
-        }
-    }
-    let mut body = vec![0; length];
-    request.read_exact(&mut body).expect("body");
+    let mut received = Vec::new();
+    let mut chunk = [0; 4096];
+    let (method, length, boundary, head) = loop {
+        let read = stream.read(&mut chunk).expect("request");
+        assert!(read > 0, "the request ended inside its head");
+        received.extend_from_slice(&chunk[..read]);
+        let mut headers = [httparse::EMPTY_HEADER; 32];
+        let mut request = httparse::Request::new(&mut headers);
+        let httparse::Status::Complete(head) = request.parse(&received).expect("an HTTP request")
+        else {
+            continue;
+        };
+        let header = |name: &str| {
+            request
+                .headers
+                .iter()
+                .find(|header| header.name.eq_ignore_ascii_case(name))
+                .map(|header| String::from_utf8_lossy(header.value).into_owned())
+        };
+        let method = request
+            .path
+            .and_then(|path| path.rsplit('/').next())
+            .expect("method")
+            .to_owned();
+        let length =
+            header("content-length").map_or(0, |value| value.parse().expect("content length"));
+        let boundary = header("content-type")
+            .and_then(|value| Some(value.split_once("boundary=")?.1.to_owned()));
+        break (method, length, boundary, head);
+    };
+    let mut body = received.split_off(head);
+    let arrived = body.len();
+    body.resize(length, 0);
+    stream.read_exact(&mut body[arrived..]).expect("body");
     let body = match boundary {
         Some(boundary) => form(&String::from_utf8(body).expect("a text form"), &boundary),
         None => serde_json::from_slice(&body).expect("a JSON body"),
