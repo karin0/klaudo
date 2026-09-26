@@ -5,12 +5,13 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::os::unix::net::UnixDatagram;
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hook::{self, Event};
@@ -119,8 +120,9 @@ struct Handoff {
 }
 
 /// What reaches the socket, from a hook, from the poller reading the chat, or from
-/// `klaude send`, which waits at `reply` for an empty answer or what went wrong, and names
-/// no session when it ran outside Claude Code, which leaves `cwd` to say where it goes.
+/// `klaude send` asking where a file goes. That question waits for the answer at the
+/// abstract address `reply`, and names no session when it ran outside Claude Code, which
+/// leaves `cwd` to say where the file goes.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Arrival {
@@ -128,12 +130,19 @@ enum Arrival {
     Chat {
         message: Value,
     },
-    Upload {
+    Locate {
         session: Option<String>,
         cwd: PathBuf,
-        file: PathBuf,
-        reply: PathBuf,
+        reply: String,
     },
+}
+
+/// Where a file `klaude send` uploads goes, and the caption that addresses it.
+#[derive(Serialize, Deserialize)]
+pub struct Placement {
+    pub chat: i64,
+    pub reply_to: Option<i64>,
+    pub caption: Option<String>,
 }
 
 pub fn run() {
@@ -447,7 +456,7 @@ impl Session {
 
 struct Machine {
     telegram: Telegram,
-    /// Where `klaude send` hears how its upload went.
+    /// Where `klaude send` hears where its file goes.
     answers: UnixDatagram,
     sessions: BTreeMap<String, Session>,
     /// What the chat asked, waiting for the session whose window it opened, by directory.
@@ -461,18 +470,17 @@ impl Machine {
                 self.hook(handoff.pid, handoff.tmux.zip(handoff.pane), &handoff.event);
             }
             Arrival::Chat { message } => self.chat(&message),
-            Arrival::Upload {
+            Arrival::Locate {
                 session,
                 cwd,
-                file,
                 reply,
             } => {
-                let answer = self
-                    .upload(session.as_deref(), &cwd, &file)
-                    .err()
-                    .unwrap_or_default();
-                if let Err(error) = self.answers.send_to(answer.as_bytes(), &reply) {
-                    eprintln!("answer {}: {error}", reply.display());
+                let placement = self.locate(session.as_deref(), &cwd);
+                let answer = serde_json::to_vec(&placement).expect("a placement serializes");
+                let sent = SocketAddr::from_abstract_name(reply.as_bytes())
+                    .and_then(|address| self.answers.send_to_addr(&answer, &address));
+                if let Err(error) = sent {
+                    eprintln!("answer {reply}: {error}");
                 }
             }
         }
@@ -885,15 +893,17 @@ impl Machine {
             .send(thread.chat, &message, sound, thread.prompt);
     }
 
-    /// A file the session asked to show, posted in the thread of its turn below
-    /// everything the turn has said so far. Its caption is the head a message of the
-    /// turn carries, so a reply to the file reaches the session. A file sent from
-    /// outside any session goes bare to the chat of the directory it was sent from.
-    fn upload(&mut self, id: Option<&str>, cwd: &Path, file: &Path) -> Result<(), String> {
+    /// Where a file the session asks to show goes: the thread of its turn, below
+    /// everything the turn has said so far, under the head a message of the turn carries,
+    /// so a reply to the file reaches the session. A file sent from outside any session
+    /// goes bare to the chat of the directory it was sent from.
+    fn locate(&mut self, id: Option<&str>, cwd: &Path) -> Result<Placement, String> {
         let Some(id) = id else {
-            return self
-                .telegram
-                .document(self.telegram.chat(cwd), file, None, None);
+            return Ok(Placement {
+                chat: self.telegram.chat(cwd),
+                reply_to: None,
+                caption: None,
+            });
         };
         if !self.sessions.contains_key(id) {
             return Err(format!("session {id} has not reported to klaude"));
@@ -910,8 +920,11 @@ impl Machine {
             html(&hook::name(&session.dir))
         );
         let thread = self.thread(session);
-        self.telegram
-            .document(thread.chat, file, Some(&caption), thread.prompt)
+        Ok(Placement {
+            chat: thread.chat,
+            reply_to: thread.prompt,
+            caption: Some(caption),
+        })
     }
 
     /// Where a session's messages go: its turn's thread, or its project's chat between

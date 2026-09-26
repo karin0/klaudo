@@ -4,10 +4,11 @@ mod telegram;
 mod tmux;
 
 use std::io::Read;
-use std::os::unix::net::UnixDatagram;
+use std::os::linux::net::SocketAddrExt;
+use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use hook::Event;
@@ -15,10 +16,9 @@ use hook::Event;
 /// The terminal holds back the text a delta carries until this process returns, so a
 /// resident that has gone away must not turn into a stall.
 const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
-/// Outlasts the resident's attempts at an upload, with room for the calls queued ahead
-/// of it.
-const UPLOAD_WAIT: Duration =
-    Duration::from_secs(telegram::UPLOAD_TIMEOUT.as_secs() * telegram::ATTEMPTS as u64 + 60);
+/// Long enough for the Telegram calls queued ahead of the question, one retried after a
+/// rejection included.
+const LOCATE_WAIT: Duration = Duration::from_secs(60);
 
 /// Carries a Claude Code session's turns to Telegram and what is typed there back into
 /// its terminal. Without a command, it reads a hook event on stdin.
@@ -120,10 +120,10 @@ fn forward(raw: &[u8]) -> bool {
     socket.send_to(&handoff, target).is_ok()
 }
 
-/// Hands a file to the resident for the chat of the turn this command runs in, and waits
-/// for how that went, so the exit status says whether the file reached the chat. Claude
-/// Code names the session in the environment of every command it runs, and a command
-/// run anywhere else sends to the chat of the directory it runs in.
+/// Asks the resident where a file goes and uploads it from here, so the upload holds up
+/// nothing but this command, and the exit status says whether the file reached the chat.
+/// Claude Code names the session in the environment of every command it runs, and a
+/// command run anywhere else sends to the chat of the directory it runs in.
 fn send(file: &Path) {
     let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
     let cwd = std::env::current_dir().expect("working directory");
@@ -135,27 +135,95 @@ fn send(file: &Path) {
     let Some(listening) = listen::socket_path() else {
         fail("XDG_RUNTIME_DIR is not set, so there is no resident to reach");
     };
-    // The resident creates the directory the reply socket is bound in.
-    if !listening.exists() {
-        fail(&format!(
-            "the resident at {} is not running",
-            listening.display()
-        ));
+    let placement =
+        locate(&listening, session.as_deref(), &cwd).unwrap_or_else(|error| fail(&error));
+    let telegram = telegram::Telegram::new();
+    let sent = telegram.document(
+        placement.chat,
+        &file,
+        placement.caption.as_deref(),
+        placement.reply_to,
+    );
+    // What Telegram answered is already on stderr.
+    if sent.is_none() {
+        std::process::exit(1);
     }
-    let reply = listening.with_file_name(format!("send-{}.sock", std::process::id()));
-    let socket = UnixDatagram::bind(&reply).expect("bind");
-    socket
-        .set_read_timeout(Some(UPLOAD_WAIT))
-        .expect("read timeout");
-    let request = serde_json::json!({"session": session, "cwd": cwd, "file": file, "reply": reply});
-    let mut answer = vec![0; 4096];
-    let answered = socket
-        .send_to(request.to_string().as_bytes(), &listening)
-        .and_then(|_| socket.recv(&mut answer));
-    let _ = std::fs::remove_file(&reply);
-    let size = answered
-        .unwrap_or_else(|error| fail(&format!("the resident at {}: {error}", listening.display())));
-    if size > 0 {
-        fail(&String::from_utf8_lossy(&answer[..size]));
+}
+
+/// The answer arrives at an abstract address, which vanishes with this process however
+/// it ends. Anyone on the machine can send to such an address, so only an answer from
+/// the resident's own socket counts.
+fn locate(
+    listening: &Path,
+    session: Option<&str>,
+    cwd: &Path,
+) -> Result<listen::Placement, String> {
+    let unreachable = |error: std::io::Error| -> ! {
+        fail(&format!("the resident at {}: {error}", listening.display()))
+    };
+    let name = format!("klaude-send-{}", std::process::id());
+    let socket = SocketAddr::from_abstract_name(&name)
+        .and_then(|address| UnixDatagram::bind_addr(&address))
+        .expect("bind");
+    let request = serde_json::json!({"session": session, "cwd": cwd, "reply": name});
+    if let Err(error) = socket.send_to(request.to_string().as_bytes(), listening) {
+        unreachable(error);
+    }
+    let deadline = Instant::now() + LOCATE_WAIT;
+    let mut answer = vec![0; 64 * 1024];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            fail(&format!(
+                "the resident at {} did not answer within {}s",
+                listening.display(),
+                LOCATE_WAIT.as_secs()
+            ));
+        }
+        socket.set_read_timeout(Some(left)).expect("read timeout");
+        let (size, from) = match socket.recv_from(&mut answer) {
+            Ok(received) => received,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(error) => unreachable(error),
+        };
+        if from.as_pathname() == Some(listening) {
+            return serde_json::from_slice(&answer[..size]).expect("the resident's answer");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An answer from any socket but the resident's is dropped, so a local user who
+    /// guesses the address cannot say where the file goes.
+    #[test]
+    fn only_the_resident_answers_where_a_file_goes() {
+        let directory = tempfile::tempdir().expect("a directory of the test's own");
+        let listening = directory.path().join("listen.sock");
+        let resident = UnixDatagram::bind(&listening).expect("bind the resident");
+        std::thread::spawn(move || {
+            let mut request = vec![0; 4096];
+            let size = resident.recv(&mut request).expect("the question");
+            let request: serde_json::Value =
+                serde_json::from_slice(&request[..size]).expect("a JSON question");
+            let reply =
+                SocketAddr::from_abstract_name(request["reply"].as_str().expect("a reply address"))
+                    .expect("an abstract address");
+            let impostor = UnixDatagram::unbound().expect("socket");
+            impostor
+                .send_to_addr(br#"{"Err": "from someone else"}"#, &reply)
+                .expect("the forged answer");
+            resident
+                .send_to_addr(
+                    br#"{"Ok": {"chat": 7, "reply_to": 3, "caption": null}}"#,
+                    &reply,
+                )
+                .expect("the answer");
+        });
+
+        let placement = locate(&listening, None, Path::new("/")).expect("the resident's answer");
+        assert_eq!((placement.chat, placement.reply_to), (7, Some(3)));
     }
 }
