@@ -194,7 +194,7 @@ window its output appears in belongs to the session that launched it.
 ## Hooks
 
 One command answers every event, so `settings.json` repeats it under `SessionStart`,
-`UserPromptSubmit`, `MessageDisplay`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
+`SessionEnd`, `UserPromptSubmit`, `MessageDisplay`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
 `Stop`, `StopFailure` and `Notification`:
 
 ```json
@@ -280,8 +280,9 @@ The socket has a thread of its own, which moves each datagram into memory as it 
 A Telegram call holds the machine for as long as the call takes, and the socket's buffer
 is a few hundred deltas deep, past which the hooks fall back to posting for themselves.
 
-Per-session state expires on its own. A session is forgotten once `/proc/<pid>` is gone,
-which the resident checks before it routes a message from the chat and, while a turn is
+Per-session state expires on its own. A session is forgotten at its `SessionEnd`, and a
+session killed before it could send one once `/proc/<pid>` is gone, which the resident
+checks before it routes a message from the chat and, while a turn is
 running, every five seconds, so what a session killed mid-turn had already said is in
 the chat within that time.
 
@@ -308,7 +309,8 @@ the hook process itself, so the chat still gets the ask and the answer, each as 
 message of its own with nothing shown before it and no prompt above it to reply to.
 Nothing can be sent back to a session in that state.
 
-`SessionStart`, the three tool events and `MessageDisplay` are dropped instead. Each of
+`SessionStart`, `SessionEnd`, the three tool events and `MessageDisplay` are dropped
+instead. Each of
 them says something only as part of what the resident is assembling, so posted alone it
 would be one Telegram call per tool call and per streamed fragment, and `PreToolUse`
 holds up the call it announces until the hook returns.
@@ -344,5 +346,6 @@ panic; that a
 message replying to nothing reaches the session heard from last in its chat, while a
 session in the other chat stays out of reach, and the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
-the chat it was sent in; and that a reply to a session that exited resumes it in its
-directory, with a second reply waiting for the same window.
+the chat it was sent in; and that a reply to a session that exited, its process gone or
+its `SessionEnd` reported, resumes it in its directory, with a second reply waiting for
+the same window.
