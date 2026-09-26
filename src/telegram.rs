@@ -32,6 +32,7 @@ pub struct Telegram {
     base: String,
     token: String,
     chat_id: i64,
+    user_id: i64,
     agent: ureq::Agent,
 }
 
@@ -40,10 +41,8 @@ impl Telegram {
     /// itself.
     pub fn new() -> Self {
         let token = required("BOT_TOKEN");
-        // Drafts are a private-chat feature, whose chat id is an integer.
-        let chat_id = required("CHAT_ID")
-            .parse()
-            .expect("CHAT_ID is the integer id of a private chat");
+        let chat_id = id(&required("CHAT_ID"), "CHAT_ID");
+        let user_id = user(chat_id, setting("USER_ID").map(|user| id(&user, "USER_ID")));
         // The test stands a recording server in front of the daemon here.
         let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
         let agent = ureq::Agent::config_builder()
@@ -55,15 +54,22 @@ impl Telegram {
             base,
             token,
             chat_id,
+            user_id,
             agent,
         }
     }
 
     /// The id of the message it left in the chat, which is what a later message replies
     /// to.
-    pub fn send(&self, markdown: &str, sound: Sound, reply_to: Option<i64>) -> Option<i64> {
+    pub fn send(
+        &self,
+        chat: i64,
+        markdown: &str,
+        sound: Sound,
+        reply_to: Option<i64>,
+    ) -> Option<i64> {
         let mut body = json!({
-            "chat_id": self.chat_id,
+            "chat_id": chat,
             "disable_notification": matches!(sound, Sound::Silent),
             "rich_message": {"markdown": clamp(markdown)},
         });
@@ -79,11 +85,11 @@ impl Telegram {
 
     /// Rewrites a message klaude posted, for a segment that received more after it went
     /// out.
-    pub fn edit(&self, message_id: i64, markdown: &str) {
+    pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
         self.call(
             "editMessageText",
             &json!({
-                "chat_id": self.chat_id,
+                "chat_id": chat,
                 "message_id": message_id,
                 "rich_message": {"markdown": clamp(markdown)},
             }),
@@ -92,11 +98,11 @@ impl Telegram {
 
     /// Takes back a message klaude posted, which is how the one showing a turn's last
     /// segment goes once the answer repeating it is in the chat.
-    pub fn delete(&self, message_id: i64) {
+    pub fn delete(&self, chat: i64, message_id: i64) {
         self.call(
             "deleteMessage",
             &json!({
-                "chat_id": self.chat_id,
+                "chat_id": chat,
                 "message_id": message_id,
             }),
         );
@@ -104,20 +110,29 @@ impl Telegram {
 
     /// Marks a message klaude typed into a terminal, which is what tells its sender the
     /// prompt was accepted while the turn is still working.
-    pub fn acknowledge(&self, message_id: i64) {
+    pub fn acknowledge(&self, chat: i64, message_id: i64) {
         self.call(
             "setMessageReaction",
             &json!({
-                "chat_id": self.chat_id,
+                "chat_id": chat,
                 "message_id": message_id,
                 "reaction": [{"type": "emoji", "emoji": SEEN}],
             }),
         );
     }
 
-    /// Whose chat this is, which is the only sender a message is accepted from.
+    /// Where a turn goes when nobody asked for it from the chat.
     pub fn chat(&self) -> i64 {
         self.chat_id
+    }
+
+    /// Whether a message is one to act on: the user's own, sent in `CHAT_ID` or in the
+    /// user's private chat with the bot, whose id is the user's.
+    pub fn accepts(&self, message: &Value) -> bool {
+        message["from"]["id"].as_i64() == Some(self.user_id)
+            && message["chat"]["id"]
+                .as_i64()
+                .is_some_and(|chat| chat == self.chat_id || chat == self.user_id)
     }
 
     /// One long poll for what the chat has sent since `offset`. Telegram holds the
@@ -244,6 +259,25 @@ fn required(name: &str) -> String {
     setting(name).unwrap_or_else(|| panic!("{name} is not in {}", env_file().display()))
 }
 
+fn id(value: &str, name: &str) -> i64 {
+    value
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} in {} is not an integer id", env_file().display()))
+}
+
+/// The user a chat without `USER_ID` belongs to, which is the private chat's own id. A
+/// group's id is negative and belongs to nobody, so a group needs `USER_ID`.
+fn user(chat: i64, user: Option<i64>) -> i64 {
+    match user {
+        Some(user) => user,
+        None if chat > 0 => chat,
+        None => panic!(
+            "CHAT_ID in {} is a group, so USER_ID is needed",
+            env_file().display()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,16 +300,30 @@ mod tests {
         let path = std::env::temp_dir().join(format!("klaude-env-{}", std::process::id()));
         std::fs::write(
             &path,
-            "# credentials\nexport BOT_TOKEN=123:abc\nCHAT_ID=42\nAPI_BASE='http://localhost:1'\n",
+            "# credentials\nexport BOT_TOKEN=123:abc\nCHAT_ID=-42\nUSER_ID=7\nAPI_BASE='http://localhost:1'\n",
         )
         .expect("the test writes its own file");
         let stored = read(&path);
         std::fs::remove_file(&path).expect("the file the test wrote");
 
         assert_eq!(stored["BOT_TOKEN"], "123:abc");
-        assert_eq!(stored["CHAT_ID"], "42");
+        assert_eq!(stored["CHAT_ID"], "-42");
+        assert_eq!(stored["USER_ID"], "7");
         assert_eq!(stored["API_BASE"], "http://localhost:1");
-        assert_eq!(stored.len(), 3);
+        assert_eq!(stored.len(), 4);
+    }
+
+    #[test]
+    fn a_private_chat_belongs_to_its_own_id_unless_a_user_is_named() {
+        assert_eq!(user(42, None), 42);
+        assert_eq!(user(-1001, Some(7)), 7);
+        assert_eq!(user(42, Some(7)), 7);
+    }
+
+    #[test]
+    #[should_panic(expected = "USER_ID is needed")]
+    fn a_group_without_a_user_stops_the_process() {
+        user(-1001, None);
     }
 
     #[test]

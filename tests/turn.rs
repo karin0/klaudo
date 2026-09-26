@@ -17,6 +17,11 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// How long a test waits for what follows the call it was watching for, so a rewrite or
 /// a deletion issued right after the answer is part of what it reads.
 const GRACE: Duration = Duration::from_millis(600);
+/// The chat is a group, so the chat and the user klaude answers are two ids. The user's
+/// private chat with the bot has the user's id.
+const GROUP: i64 = -1001;
+const OWNER: i64 = 7;
+const STRANGER: i64 = 8;
 
 #[test]
 fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
@@ -414,9 +419,20 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
             }),
         );
     }
-    chat.says("carry on");
+    // Only the configured user is answered, whoever else shares the group, and the
+    // answer goes back to the chat the message came from.
+    chat.says(GROUP, STRANGER, "carry on");
+    chat.says(GROUP, OWNER, "carry on");
+    chat.says(OWNER, OWNER, "carry on");
 
-    let made = collect(&calls, |call| call.markdown.starts_with("`01234567` "));
+    let answered = |call: &Call| call.markdown.starts_with("`01234567` ");
+    let made = collect(&calls, |call| answered(call) && call.chat == Some(OWNER));
+    let answers: Vec<_> = made.iter().filter(|call| answered(call)).collect();
+    assert_eq!(
+        answers.iter().map(|call| call.chat).collect::<Vec<_>>(),
+        [Some(GROUP), Some(OWNER)],
+        "only the owner's messages are answered, each where it was sent"
+    );
     // The session reports the terminal the test itself was started from, and a build
     // machine may have given it none.
     let answer = made.last().expect("an answer").markdown.clone();
@@ -484,6 +500,7 @@ struct Call {
     reply: serde_json::Value,
     /// The message the call acts on, for a rewrite or a deletion.
     target: Option<i64>,
+    chat: Option<i64>,
     /// What the server answered with, which is what a later message replies to.
     id: i64,
 }
@@ -564,7 +581,7 @@ fn prepare(name: &str, port: u16) -> PathBuf {
     std::fs::create_dir_all(root.join("config/klaude")).expect("configuration directory");
     std::fs::write(
         root.join("config/klaude/env"),
-        format!("BOT_TOKEN=111111:secret\nCHAT_ID=1\nAPI_BASE=http://127.0.0.1:{port}\n"),
+        format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nAPI_BASE=http://127.0.0.1:{port}\n"),
     )
     .expect("credentials");
     root
@@ -648,7 +665,7 @@ struct Chat(Arc<Mutex<Vec<serde_json::Value>>>);
 impl Chat {
     /// A message from the phone, as Telegram delivers it. It carries no
     /// `reply_to_message`, which is what makes it a message to route by itself.
-    fn says(&self, text: &str) {
+    fn says(&self, chat: i64, sender: i64, text: &str) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("a clock after 1970")
@@ -658,8 +675,8 @@ impl Chat {
             "message": {
                 "message_id": 9000,
                 "date": now,
-                "chat": {"id": 1},
-                "from": {"id": 1},
+                "chat": {"id": chat},
+                "from": {"id": sender},
                 "text": text,
             },
         }));
@@ -714,6 +731,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
                     .to_owned(),
                 reply: body["reply_parameters"].clone(),
                 target: body["message_id"].as_i64(),
+                chat: body["chat_id"].as_i64(),
                 id,
             })
             .expect("record");

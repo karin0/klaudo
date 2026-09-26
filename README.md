@@ -1,7 +1,7 @@
 # klaude
 
-Carries a Claude Code session's turns to a Telegram private chat and carries what you
-type there back into the session's terminal, so a long turn can be left alone, picked up
+Carries a Claude Code session's turns to a Telegram private chat or group and carries
+what you type there back into the session's terminal, so a long turn can be left alone, picked up
 from the phone, and answered from there.
 
 ## What lands in the chat
@@ -115,7 +115,8 @@ queued, which is what the terminal does with anything typed then.
 A message whose text reached an input box gets a 👀 reaction once Claude Code reports
 the prompt, so a chat scrolled back shows which asks were accepted.
 
-`/new <directory>` posts an anchor naming that directory and starts nothing. Replying to
+`/new <directory>` posts an anchor naming that directory and starts nothing, and so
+does `/new@<bot> <directory>`, which is how a group's command menu writes it. Replying to
 the anchor opens a window running `claude` there and types the reply as its first
 prompt. Those windows live in a tmux session called `klaude`, one window per
 conversation, so `tmux attach -t klaude` reaches a conversation that began on the phone.
@@ -124,8 +125,13 @@ A session that opens a directory for the first time stops at the dialog asking w
 the folder is trusted, and reports what it is showing to the chat rather than typing
 into a dialog. Answer that once locally and the directory stays trusted.
 
-Only the chat's own owner is answered: a message is acted on when both the chat and the
-sender are `CHAT_ID`.
+Only one person is answered: a message is acted on when `USER_ID` sent it, in `CHAT_ID`
+or in that person's private chat with the bot. A turn a message started is posted in
+the chat the message came from, and so is whatever klaude says back to a message; a
+turn started in the terminal goes to `CHAT_ID`. In a group, a bot in Telegram's default privacy mode receives only commands
+and replies to its own messages, so a message replying to nothing reaches klaude only
+once privacy mode is turned off with BotFather's `/setprivacy` or the bot is made an
+admin. A channel is not supported: a post there carries no sender to check.
 
 ## Why keystrokes
 
@@ -172,12 +178,15 @@ chat knows when to type its first prompt.
 
 ## Configuration
 
-`BOT_TOKEN` and `CHAT_ID` come from `$XDG_CONFIG_HOME/klaude/env`, which defaults to
-`~/.config/klaude/env`. That file is the whole of where they come from, so a token
+`BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` come from
+`$XDG_CONFIG_HOME/klaude/env`, which defaults to `~/.config/klaude/env`. That file is the whole of where they come from, so a token
 changed there is the token every session uses from its next event on, and a value
 exported in a shell reaches nothing. A file that cannot be read, or a name missing from
-it, stops the process and names the file. `CHAT_ID` is the integer id of a private chat,
-and it is the sender every incoming message is checked against.
+it, stops the process and names the file. `CHAT_ID` is the integer id of the chat a
+turn started in the terminal goes to, and `USER_ID` is the integer id of the person
+klaude answers. A private chat's id is its person's id, so `USER_ID` defaults to
+`CHAT_ID`. A group's id is negative, and a group `CHAT_ID` without `USER_ID` stops the
+process.
 
 `dotenvy` reads the file: `NAME=value` lines, `#` opening a comment, an `export` in
 front allowed, and a `$` expanding outside single quotes, so a file written for a shell
@@ -279,4 +288,6 @@ that a call announced ahead of the words introducing it still
 follows them; that a delta landing after its own `Stop` leaves the answer last; that a
 flush and a
 tool outcome arriving after their segment went out rewrite that message; and that a
-message replying to nothing reaches the session heard from last.
+message replying to nothing reaches the session heard from last, while the same message
+from anyone else in the group gets no answer, and the answer to the user's own goes to
+the chat it was sent in.
