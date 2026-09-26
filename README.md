@@ -26,7 +26,9 @@ though the server parses it. It goes up three seconds into the turn, which leave
 nothing to take back. In a group it is rewritten at most every ten seconds, because
 Telegram counts a rewrite against the twenty messages a minute a bot may send a group. The last segment keeps no message of its own: the `Stop` event
 carries its text, so the message that was showing it is taken back once the answer is in
-the chat.
+the chat. That text reaches the resident milliseconds before the `Stop`, and new text
+waits a tenth of a second of quiet before it is shown, so the answer is never written
+into the message that is about to be taken back.
 
 A run of tool calls is posted a line per call: a mark for how it went, the tool, what
 the call says it is doing, and the time it took. A tool whose input describes the call,
@@ -60,12 +62,12 @@ on what happens when the message arrives beside it, from a clean transition to a
 duplicate to a crash. Rewriting a real message costs one extra call at the end of a turn
 and none of that is possible.
 
-An assistant message's last flush reaches the resident after the hook of the tool call
-that message ends with, by tens of milliseconds, so a tool call waits a tenth of a
-second before it is filed. That is long enough for the words introducing it to arrive
-and take their place above it, and far shorter than the wait for anything a turn says
-after a call has run. `PreToolUse` names no message, so the order comes from the clock
-until it does.
+A tool call waits a tenth of a second before it is filed, so words arriving within that
+time take their place above it. Claude Code 2.1.282 fires `MessageDisplay` for the words
+introducing a call about a second after that call's `PreToolUse`, and `PreToolUse` names
+no message, so nothing orders the two. Those words therefore reach the chat below the run
+the call joined. Words Claude Code shows as narration are a thinking block in the
+transcript, fire no `MessageDisplay`, and stay out of the chat.
 
 A flush later than that lands after klaude has posted the message it belongs to, and a
 tool can report once the run holding it is already a message. Both are written into the
@@ -340,7 +342,8 @@ against a server of its own that answers the way Telegram does and a `tmux` that
 records how it was called. It asserts what the chat is left
 holding after a two-segment turn, in order and with the sound each message carried; that
 a segment watched while it ran finishes in the message it was watched in and the last
-one's message is taken back; that a prompt queued during a turn gets a thread of its
+one's message is taken back; that an answer arriving with its `Stop` is shown once;
+that a prompt queued during a turn gets a thread of its
 own; that a run of tool calls is a message between the two halves of what the turn said;
 that a call announced ahead of the words introducing it still
 follows them; that a delta landing after its own `Stop` leaves the answer last; that a
