@@ -5,13 +5,14 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
+use tempfile::TempDir;
 
 const PATIENCE: Duration = Duration::from_secs(20);
 /// How long a test waits for what follows the call it was watching for, so a rewrite or
@@ -27,12 +28,13 @@ const STRANGER: i64 = 8;
 #[test]
 fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("segments", port);
-    let resident = resident(&root);
+    let temporary = prepare("segments", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "0123456789abcdef";
 
     hook(
-        &root,
+        root,
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": session,
@@ -48,7 +50,7 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
         ("m2", 0, "second segment"),
     ] {
         hook(
-            &root,
+            root,
             &json!({
                 "hook_event_name": "MessageDisplay",
                 "session_id": session,
@@ -61,7 +63,7 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     }
 
     hook(
-        &root,
+        root,
         &json!({
             "hook_event_name": "Stop",
             "session_id": session,
@@ -97,7 +99,6 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
         "every message of the turn replies to the prompt"
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A prompt submitted while a turn is running is queued by Claude Code and reported
@@ -106,8 +107,9 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
 #[test]
 fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("queue", port);
-    let resident = resident(&root);
+    let temporary = prepare("queue", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "fedcba9876543210";
     let first = "aaaaaaaa-1111";
     let second = "bbbbbbbb-2222";
@@ -127,7 +129,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
         let streaming = event["hook_event_name"] == json!("MessageDisplay");
-        hook(&root, &event);
+        hook(root, &event);
         if streaming {
             std::thread::sleep(Duration::from_millis(400));
         }
@@ -169,7 +171,6 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         sent[3].markdown
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A turn that has said nothing is already on screen, so the minutes it spends thinking
@@ -177,11 +178,12 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
 #[test]
 fn a_turn_is_on_screen_before_it_has_said_anything() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("waiting", port);
-    let resident = resident(&root);
+    let temporary = prepare("waiting", port);
+    let root = temporary.path();
+    let resident = resident(root);
 
     hook(
-        &root,
+        root,
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "0123456789abcdef",
@@ -193,7 +195,6 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
     let made = collect(&calls, |call| call.markdown.contains('✻'));
     showing(&made.last().expect("a live message").markdown, "");
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A turn long enough to be watched puts a message up and rewrites it as it goes. The
@@ -202,8 +203,9 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
 #[test]
 fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("watched", port);
-    let resident = resident(&root);
+    let temporary = prepare("watched", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -217,7 +219,7 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
     for (step, mut event) in turn.into_iter().enumerate() {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, &event);
+        hook(root, &event);
         if step < last {
             // Longer than the gap the resident leaves between two rewrites, so every
             // step of the turn is one the chat was shown.
@@ -249,7 +251,6 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
         "the last segment's message goes"
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A turn that talked, worked and talked again leaves three messages in order, and the
@@ -257,8 +258,9 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
 #[test]
 fn a_run_of_tool_calls_is_a_message_of_its_own() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("tools", port);
-    let resident = resident(&root);
+    let temporary = prepare("tools", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -278,7 +280,7 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     for mut event in turn {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, &event);
+        hook(root, &event);
         // What a turn says after a run of tool calls arrives once those calls have run,
         // which is far longer than the wait a call is filed after.
         std::thread::sleep(Duration::from_millis(400));
@@ -313,7 +315,6 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
         "the run threads under the prompt"
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// An assistant message's last flush reaches the resident after the hook of the tool
@@ -322,8 +323,9 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
 #[test]
 fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("settling", port);
-    let resident = resident(&root);
+    let temporary = prepare("settling", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -340,7 +342,7 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     for (step, mut event) in turn.into_iter().enumerate() {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, &event);
+        hook(root, &event);
         // The call, its words and its outcome arrive together; the turn ends later.
         if step == last - 1 {
             std::thread::sleep(Duration::from_millis(600));
@@ -358,7 +360,6 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
         ]
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// The three hook processes run at once, so a delta can land after the `Stop` of its own
@@ -367,8 +368,9 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
 #[test]
 fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("straggler", port);
-    let resident = resident(&root);
+    let temporary = prepare("straggler", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "0123456789abcdef";
     let prompt = "aaaaaaaa-1111";
 
@@ -381,7 +383,7 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     for mut event in turn {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, &event);
+        hook(root, &event);
         std::thread::sleep(Duration::from_millis(400));
     }
 
@@ -396,7 +398,6 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
         "the answer is the last thing the turn says"
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A message that replies to nothing still names a session: the one heard from last.
@@ -405,14 +406,15 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
 #[test]
 fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
     let (port, calls, chat) = recorder();
-    let root = prepare("unaddressed", port);
-    let resident = resident(&root);
+    let temporary = prepare("unaddressed", port);
+    let root = temporary.path();
+    let resident = resident(root);
 
     // The later session sorts first, so what answers is the one heard from last
     // rather than the first one klaude happens to hold.
     for session in ["fedcba9876543210", "0123456789abcdef"] {
         hook(
-            &root,
+            root,
             &json!({
                 "hook_event_name": "SessionStart",
                 "session_id": session,
@@ -446,7 +448,6 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
         "the answer reads {answer:?}"
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// What the chat is left holding: every message klaude sent, in the order it sent them,
@@ -577,10 +578,14 @@ fn showing(markdown: &str, text: &str) {
 
 /// A throwaway root holding the runtime directory the resident binds its socket in and
 /// the credentials file every klaude process started from it reads, so a machine's own
-/// credentials stay out of the test.
-fn prepare(name: &str, port: u16) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("klaude-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+/// credentials stay out of the test. It is removed when the test drops it, which a
+/// failing test does too.
+fn prepare(name: &str, port: u16) -> TempDir {
+    let temporary = tempfile::Builder::new()
+        .prefix(&format!("klaude-{name}-"))
+        .tempdir()
+        .expect("throwaway root");
+    let root = temporary.path();
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
     std::fs::create_dir_all(root.join("config/klaude")).expect("configuration directory");
     std::fs::write(
@@ -588,7 +593,7 @@ fn prepare(name: &str, port: u16) -> PathBuf {
         format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nCHAT_PROJECTS={}\nAPI_BASE=http://127.0.0.1:{port}\n", env!("CARGO_MANIFEST_DIR")),
     )
     .expect("credentials");
-    root
+    temporary
 }
 
 /// The resident, killed when the test drops it.
@@ -786,8 +791,9 @@ fn form(body: &str, boundary: &str) -> serde_json::Value {
 /// named, both without a panic.
 #[test]
 fn the_command_line_explains_itself() {
-    let root = prepare("usage", 0);
-    let run = |args: &[&str]| klaude(&root).args(args).output().expect("run klaude");
+    let temporary = prepare("usage", 0);
+    let root = temporary.path();
+    let run = |args: &[&str]| klaude(root).args(args).output().expect("run klaude");
 
     for (asked, usage) in [
         (&["--help"][..], "Usage: klaude [COMMAND]"),
@@ -824,7 +830,6 @@ fn the_command_line_explains_itself() {
     let alone = run(&["send", file.to_str().expect("a UTF-8 path")]);
     assert_eq!(alone.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaude: the resident at "));
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A file a session sends lands in the thread of the turn that sent it, below what the
@@ -832,12 +837,13 @@ fn the_command_line_explains_itself() {
 #[test]
 fn a_file_a_turn_sends_lands_in_its_thread() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("file", port);
-    let resident = resident(&root);
+    let temporary = prepare("file", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "0123456789abcdef";
 
     hook(
-        &root,
+        root,
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": session,
@@ -848,7 +854,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     );
     let file = root.join("build.log");
     std::fs::write(&file, "all green").expect("the file to send");
-    let sent = klaude(&root)
+    let sent = klaude(root)
         .args(["send".as_ref(), file.as_os_str()])
         .env("CLAUDE_CODE_SESSION_ID", session)
         .output()
@@ -870,7 +876,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     );
 
     // A session klaude has never heard from has no thread to post in.
-    let refused = klaude(&root)
+    let refused = klaude(root)
         .args(["send".as_ref(), file.as_os_str()])
         .env("CLAUDE_CODE_SESSION_ID", "ffffffff")
         .output()
@@ -883,9 +889,9 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
 
     // Run outside Claude Code, it names no session, and the directory it runs in is no
     // project listed for the group, so the file goes to the user's private chat.
-    let bare = klaude(&root)
+    let bare = klaude(root)
         .args(["send".as_ref(), file.as_os_str()])
-        .current_dir(&root)
+        .current_dir(root)
         .output()
         .expect("run send");
     assert!(bare.status.success(), "send failed: {bare:?}");
@@ -895,7 +901,6 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert_eq!(document.reply, json!(null));
     assert_eq!(document.markdown, "");
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A message's last flushes race the hook of the tool call that ends it, so a delta can
@@ -905,8 +910,9 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
 #[test]
 fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     let (port, calls, _chat) = recorder();
-    let root = prepare("straggling-flush", port);
-    let resident = resident(&root);
+    let temporary = prepare("straggling-flush", port);
+    let root = temporary.path();
+    let resident = resident(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -923,7 +929,7 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     for mut event in turn {
         event["session_id"] = json!(session);
         event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
-        hook(&root, &event);
+        hook(root, &event);
         std::thread::sleep(Duration::from_millis(300));
     }
 
@@ -941,5 +947,4 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
         .map(|(sound, body)| (sound, body.to_owned()))
     );
     drop(resident);
-    std::fs::remove_dir_all(&root).expect("clean up");
 }

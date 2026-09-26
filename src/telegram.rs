@@ -381,14 +381,13 @@ mod tests {
 
     #[test]
     fn the_file_a_shell_used_to_source_reads_as_it_stands() {
-        let path = std::env::temp_dir().join(format!("klaude-env-{}", std::process::id()));
+        let file = tempfile::NamedTempFile::new().expect("a file of the test's own");
         std::fs::write(
-            &path,
+            file.path(),
             "# credentials\nexport BOT_TOKEN=123:abc\nCHAT_ID=-42\nUSER_ID=7\nAPI_BASE='http://localhost:1'\n",
         )
         .expect("the test writes its own file");
-        let stored = read(&path);
-        std::fs::remove_file(&path).expect("the file the test wrote");
+        let stored = read(file.path());
 
         assert_eq!(stored["BOT_TOKEN"], "123:abc");
         assert_eq!(stored["CHAT_ID"], "-42");
