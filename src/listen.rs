@@ -18,8 +18,9 @@ use crate::hook::{self, Event};
 use crate::telegram::{Sound, Telegram};
 use crate::tmux::{self, Pane};
 
-/// How long the status line keeps one word. The first rewrite after that shows the next.
-const WORD_TIME: Duration = Duration::from_secs(30);
+/// The longest the message showing an open segment goes without its clock advancing,
+/// so a turn that goes quiet inside a long tool call still reads as running.
+const REFRESH: Duration = Duration::from_secs(30);
 /// The shortest gap between two rewrites of that message. It is also how long a turn
 /// runs before the message exists, so a turn answered at once leaves nothing to take
 /// back.
@@ -439,12 +440,12 @@ struct Turn {
 
 impl Turn {
     /// When the message showing the open segment is due to be written next, which is
-    /// never while the chat already shows what the segment says.
+    /// only to move its clock while the chat already shows what the segment says.
     fn due(&self) -> Option<Instant> {
         let segment = self.segment.as_ref()?;
         match &segment.written {
             None => Some(self.started + REWRITE),
-            Some((written, _)) if *written == segment.text() => None,
+            Some((written, at)) if *written == segment.text() => Some(*at + REFRESH),
             Some((_, at)) => Some(*at + rewrite(self.thread.chat)),
         }
     }
@@ -1178,15 +1179,11 @@ impl Machine {
         let head = session.head(id, Some(&turn.prompt_id));
         let live = turn.live;
         let thread = turn.thread;
-        let started = SystemTime::now()
-            .checked_sub(elapsed)
-            .and_then(|started| started.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |since| since.as_secs());
         let shown = hook::compose(
             &head,
+            &took(elapsed),
             "",
-            "",
-            &running(&text, &status(elapsed, turn.seed, started)),
+            &running(&text, &status(elapsed, turn.seed)),
         );
         let message = match live {
             Some(message) => {
@@ -1473,15 +1470,10 @@ fn running(text: &str, status: &str) -> String {
 
 /// The word changes once per refresh, so a turn sitting in a long tool call keeps
 /// showing a line that differs from the last one.
-fn status(elapsed: Duration, seed: u64, started: u64) -> String {
-    let step = seed + elapsed.as_secs() / WORD_TIME.as_secs();
+fn status(elapsed: Duration, seed: u64) -> String {
+    let step = seed + elapsed.as_secs() / REFRESH.as_secs();
     let word = WORDS[usize::try_from(step).expect("a turn's seconds") % WORDS.len()];
-    // Telegram shows the start relative to the reader's clock and keeps it current, so
-    // the line reads true between rewrites. A client without the entity shows the text.
-    format!(
-        "✻ {word}… (started ![{} ago](tg://time?unix={started}&format=r))",
-        took(elapsed).trim()
-    )
+    format!("✻ {word}… ({})", took(elapsed).trim())
 }
 
 /// How long a tool call took, in the units a tool call runs in.
@@ -1529,22 +1521,19 @@ mod tests {
     }
 
     #[test]
-    fn a_status_line_names_when_the_turn_started_and_moves_on_after_a_while() {
+    fn a_status_line_names_the_elapsed_time_and_moves_on_every_refresh() {
         let word = |seconds| {
-            status(Duration::from_secs(seconds), 1, 0)
+            status(Duration::from_secs(seconds), 1)
                 .split('…')
                 .next()
                 .expect("a word")
                 .to_owned()
         };
-        assert!(
-            status(Duration::from_secs(80), 1, 1000)
-                .ends_with("… (started ![1m20s ago](tg://time?unix=1000&format=r))")
-        );
-        assert!(status(Duration::ZERO, 1, 0).starts_with('✻'));
-        assert_eq!(word(0), word(WORD_TIME.as_secs() - 1));
-        assert_ne!(word(0), word(WORD_TIME.as_secs()));
-        assert_ne!(status(Duration::ZERO, 1, 0), status(Duration::ZERO, 2, 0));
+        assert!(status(Duration::from_secs(80), 1).ends_with("… (1m20s)"));
+        assert!(status(Duration::ZERO, 1).starts_with('✻'));
+        assert_eq!(word(0), word(REFRESH.as_secs() - 1));
+        assert_ne!(word(0), word(REFRESH.as_secs()));
+        assert_ne!(status(Duration::ZERO, 1), status(Duration::ZERO, 2));
     }
 
     #[test]
