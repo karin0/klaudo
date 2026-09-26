@@ -96,13 +96,14 @@ const BREAK: &str = "  \n";
 /// glance.
 const WHY_MAX: usize = 60;
 
-pub fn runtime_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_else(|| "/tmp".into());
-    PathBuf::from(base).join("klaude")
+/// Where the resident's socket lives. `$XDG_RUNTIME_DIR` belongs to this user alone, so
+/// without it there is no resident to reach.
+pub fn runtime_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR").map(|base| PathBuf::from(base).join("klaude"))
 }
 
-pub fn socket_path() -> PathBuf {
-    runtime_dir().join("listen.sock")
+pub fn socket_path() -> Option<PathBuf> {
+    Some(runtime_dir()?.join("listen.sock"))
 }
 
 /// An event a hook forwarded, with where the session it came from lives. The server
@@ -136,18 +137,18 @@ enum Arrival {
 }
 
 pub fn run() {
-    let directory = runtime_dir();
+    let directory = runtime_dir().expect("XDG_RUNTIME_DIR");
     fs::create_dir_all(&directory).expect("runtime directory");
     let lock = File::create(directory.join("listen.lock")).expect("lock file");
     if !acquire(&lock) {
         return;
     }
 
-    let path = socket_path();
+    let path = directory.join("listen.sock");
     let _ = fs::remove_file(&path);
     let socket = UnixDatagram::bind(&path).expect("bind");
     let answers = socket.try_clone().expect("socket");
-    std::thread::spawn(|| poll(&socket_path()));
+    std::thread::spawn(move || poll(&path));
     let arrivals = read(socket);
 
     let mut machine = Machine {

@@ -100,7 +100,7 @@ fn hook(event: &Event, raw: &[u8]) {
 /// inherited from that session, and `exec` in the hook command is what makes this
 /// process a child of it, so the parent id is the session to type into.
 fn forward(raw: &[u8]) -> bool {
-    let Ok(socket) = UnixDatagram::unbound() else {
+    let (Some(target), Ok(socket)) = (listen::socket_path(), UnixDatagram::unbound()) else {
         return false;
     };
     let _ = socket.set_write_timeout(Some(HANDOFF_TIMEOUT));
@@ -117,7 +117,7 @@ fn forward(raw: &[u8]) -> bool {
     handoff.extend_from_slice(b",\"event\":");
     handoff.extend_from_slice(raw);
     handoff.push(b'}');
-    socket.send_to(&handoff, listen::socket_path()).is_ok()
+    socket.send_to(&handoff, target).is_ok()
 }
 
 /// Hands a file to the resident for the chat of the turn this command runs in, and waits
@@ -132,7 +132,9 @@ fn send(file: &Path) {
     if !file.is_file() {
         fail(&format!("{} is not a file", file.display()));
     }
-    let listening = listen::socket_path();
+    let Some(listening) = listen::socket_path() else {
+        fail("XDG_RUNTIME_DIR is not set, so there is no resident to reach");
+    };
     // The resident creates the directory the reply socket is bound in.
     if !listening.exists() {
         fail(&format!(
@@ -140,7 +142,7 @@ fn send(file: &Path) {
             listening.display()
         ));
     }
-    let reply = listen::runtime_dir().join(format!("send-{}.sock", std::process::id()));
+    let reply = listening.with_file_name(format!("send-{}.sock", std::process::id()));
     let socket = UnixDatagram::bind(&reply).expect("bind");
     socket
         .set_read_timeout(Some(UPLOAD_WAIT))

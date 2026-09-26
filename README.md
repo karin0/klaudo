@@ -183,7 +183,9 @@ One command answers every event, so `settings.json` repeats it under `SessionSta
 {"type": "command", "command": "exec <path to klaude>"}
 ```
 
-The hook writes the event to a unix datagram socket and exits. Along with the event it
+The hook writes the event to the unix datagram socket `$XDG_RUNTIME_DIR/klaude/listen.sock`
+and exits. `$XDG_RUNTIME_DIR` belongs to the user alone, and a session without it
+reaches no resident: its hooks post for themselves, and the resident refuses to start. Along with the event it
 carries `$TMUX`, `$TMUX_PANE` and its own parent process id, which is where the resident
 learns which terminal a session is on. The parent is the session because of `exec`: it
 hands the shell Claude Code starts the command in over to the binary, which leaves the
