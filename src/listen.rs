@@ -119,7 +119,7 @@ struct Handoff {
 
 /// What reaches the socket, from a hook, from the poller reading the chat, or from
 /// `klaude send`, which waits at `reply` for an empty answer or what went wrong, and names
-/// no session when it ran outside Claude Code.
+/// no session when it ran outside Claude Code, which leaves `cwd` to say where it goes.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Arrival {
@@ -129,6 +129,7 @@ enum Arrival {
     },
     Upload {
         session: Option<String>,
+        cwd: PathBuf,
         file: PathBuf,
         reply: PathBuf,
     },
@@ -363,7 +364,7 @@ fn listing(calls: &[Call]) -> String {
 
 /// The chat a turn is posted in and the message there carrying what was asked, which the
 /// rest of the turn replies to. A turn asked from the phone stays in the chat it was
-/// asked in, and any other goes to `CHAT_ID`.
+/// asked in, and any other goes to the chat of its project.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Thread {
     chat: i64,
@@ -461,11 +462,12 @@ impl Machine {
             Arrival::Chat { message } => self.chat(&message),
             Arrival::Upload {
                 session,
+                cwd,
                 file,
                 reply,
             } => {
                 let answer = self
-                    .upload(session.as_deref(), &file)
+                    .upload(session.as_deref(), &cwd, &file)
                     .err()
                     .unwrap_or_default();
                 if let Err(error) = self.answers.send_to(answer.as_bytes(), &reply) {
@@ -555,7 +557,7 @@ impl Machine {
             };
             let head = session.head(id, prompt);
             let message = hook::message(event, &head, "");
-            let chat = self.telegram.chat();
+            let chat = self.telegram.chat(&session.dir);
             // The phone's owner asked this, so it arrives without a sound.
             Thread {
                 chat,
@@ -600,10 +602,10 @@ impl Machine {
             Some(_) => self.seal(id),
             None => {}
         }
-        let chat = self.telegram.chat();
         let Some(session) = self.sessions.get_mut(id) else {
             return false;
         };
+        let chat = self.telegram.chat(&session.dir);
         session.turn = Some(Turn {
             prompt_id: named.to_owned(),
             seed: seed(named),
@@ -885,12 +887,12 @@ impl Machine {
     /// A file the session asked to show, posted in the thread of its turn below
     /// everything the turn has said so far. Its caption is the head a message of the
     /// turn carries, so a reply to the file reaches the session. A file sent from
-    /// outside any session goes to `CHAT_ID` bare.
-    fn upload(&mut self, id: Option<&str>, file: &Path) -> Result<(), String> {
+    /// outside any session goes bare to the chat of the directory it was sent from.
+    fn upload(&mut self, id: Option<&str>, cwd: &Path, file: &Path) -> Result<(), String> {
         let Some(id) = id else {
             return self
                 .telegram
-                .document(self.telegram.chat(), file, None, None);
+                .document(self.telegram.chat(cwd), file, None, None);
         };
         if !self.sessions.contains_key(id) {
             return Err(format!("session {id} has not reported to klaude"));
@@ -911,11 +913,12 @@ impl Machine {
             .document(thread.chat, file, Some(&caption), thread.prompt)
     }
 
-    /// Where a session's messages go: its turn's thread, or `CHAT_ID` between turns.
+    /// Where a session's messages go: its turn's thread, or its project's chat between
+    /// turns.
     fn thread(&self, session: &Session) -> Thread {
         session.turn.as_ref().map_or(
             Thread {
-                chat: self.telegram.chat(),
+                chat: self.telegram.chat(&session.dir),
                 prompt: None,
             },
             |turn| turn.thread,

@@ -61,7 +61,7 @@ fn hook(event: &Event, raw: &[u8]) {
                 // there is no prompt of its own in the chat for it to reply to.
                 let telegram = telegram::Telegram::new();
                 telegram.send(
-                    telegram.chat(),
+                    telegram.chat(&directory),
                     &hook::message(event, &head, ""),
                     telegram::Sound::Ring,
                     None,
@@ -98,9 +98,10 @@ fn forward(raw: &[u8]) -> bool {
 /// Hands a file to the resident for the chat of the turn this command runs in, and waits
 /// for how that went, so the exit status says whether the file reached the chat. Claude
 /// Code names the session in the environment of every command it runs, and a command
-/// run anywhere else sends to `CHAT_ID`.
+/// run anywhere else sends to the chat of the directory it runs in.
 fn send(file: &str) {
     let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+    let cwd = std::env::current_dir().expect("working directory");
     let file = std::fs::canonicalize(file).unwrap_or_else(|error| panic!("{file}: {error}"));
     assert!(file.is_file(), "{} is not a file", file.display());
     let reply = listen::runtime_dir().join(format!("send-{}.sock", std::process::id()));
@@ -108,7 +109,7 @@ fn send(file: &str) {
     socket
         .set_read_timeout(Some(UPLOAD_WAIT))
         .expect("read timeout");
-    let request = serde_json::json!({"session": session, "file": file, "reply": reply});
+    let request = serde_json::json!({"session": session, "cwd": cwd, "file": file, "reply": reply});
     let mut answer = vec![0; 4096];
     let answered = socket
         .send_to(request.to_string().as_bytes(), listen::socket_path())
