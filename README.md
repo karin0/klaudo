@@ -117,9 +117,10 @@ queued, which is what the terminal does with anything typed then.
 
 Replying to a message from a session that has exited opens a window running
 `claude --resume` on it in the directory it ran in, and types the reply once it is
-ready, the way a reply to a `/new` anchor starts a conversation. The resident keeps
-those directories in memory for as long as it runs, so a session that exited before
-the resident started answers that it is unknown.
+ready, the way a reply to a `/new` anchor starts a conversation. Further replies sent
+before it is ready wait for the same window. The resident keeps the directories of
+the last thousand sessions it saw exit in memory, so a session that exited before the
+resident started, or a thousand sessions ago, answers that it is unknown.
 
 A message whose text reached an input box gets a 👀 reaction once Claude Code reports
 the prompt, so a chat scrolled back shows which asks were accepted.
@@ -340,4 +341,4 @@ message replying to nothing reaches the session heard from last in its chat, whi
 session in the other chat stays out of reach, and the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
 the chat it was sent in; and that a reply to a session that exited resumes it in its
-directory.
+directory, with a second reply waiting for the same window.
