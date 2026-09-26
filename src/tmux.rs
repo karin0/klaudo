@@ -106,27 +106,29 @@ impl Pane {
     }
 }
 
-/// Opens a window running a session in `cwd`. The pane it lands in is learned from that
-/// session's own `SessionStart`, which is also what says the session is ready to type
-/// into, so nothing here waits for it.
-pub fn open(cwd: &Path) -> Result<(), String> {
+/// Opens a window running a session in `cwd`, the one `resume` names or a new one. The
+/// pane it lands in is learned from that session's own `SessionStart`, which is also
+/// what says the session is ready to type into, so nothing here waits for it.
+pub fn open(cwd: &Path, resume: Option<&str>) -> Result<(), String> {
     // Attaches to the session when it is already there, and this process has no
     // terminal to attach with, hence detached.
     run(Command::new("tmux").args(["new-session", "-d", "-A", "-s", OWNED_SESSION]))?;
     let target = format!("{OWNED_SESSION}:");
     let directory = cwd.to_str().ok_or("cwd is not utf-8")?;
-    run(Command::new("tmux").args([
-        "new-window",
-        "-t",
-        &target,
-        "-c",
-        directory,
-        "-n",
-        cwd.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("claude"),
-        "claude",
-    ]))
+    run(Command::new("tmux")
+        .args([
+            "new-window",
+            "-t",
+            &target,
+            "-c",
+            directory,
+            "-n",
+            cwd.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("claude"),
+            "claude",
+        ])
+        .args(resume.map(|id| ["--resume", id]).into_iter().flatten()))
 }
 
 fn run(command: &mut Command) -> Result<(), String> {

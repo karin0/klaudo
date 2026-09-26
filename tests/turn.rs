@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -463,6 +464,73 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     drop(resident);
 }
 
+/// A reply to a session that has exited opens a window resuming it in the directory it
+/// ran in.
+#[test]
+fn a_reply_to_a_session_that_exited_resumes_it() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("resume", port);
+    let root = temporary.path();
+    let resident = resident(root);
+
+    // The hook's parent is the session, and this shell exits once the hook has.
+    let mut passing = within(root, "sh");
+    passing.args(["-c", "\"$0\"; true", env!("CARGO_BIN_EXE_klaude")]);
+    report(
+        passing,
+        &json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "0123456789abcdef",
+            "cwd": root,
+        }),
+    );
+    // Any event after the shell exited is followed by the sweep that finds it gone,
+    // and the reply arrives after this one.
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "fedcba9876543210",
+            "cwd": root,
+        }),
+    );
+    let replied = json!({"rich_message": {"blocks": [
+        {"type": "paragraph", "text": [
+            {"type": "bold", "text": "klaude"}, " ", {"type": "code", "text": "01234567/89abcdef"},
+        ]},
+    ]}});
+    chat.replies(OWNER, OWNER, "pick it up", &replied);
+    chat.replies(
+        OWNER,
+        OWNER,
+        "and this",
+        &json!({"caption": "klaude 77777777", "caption_entities": [
+            {"type": "code", "offset": 7, "length": 8},
+        ]}),
+    );
+
+    let made = collect(&calls, |call| call.chat == Some(OWNER));
+    let said: Vec<_> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage"))
+        .map(|call| call.markdown.as_str())
+        .collect();
+    assert_eq!(said, ["`77777777` is not a session this resident has seen"]);
+    let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
+    assert_eq!(
+        log.lines().last(),
+        Some(
+            format!(
+                "new-window -t klaude: -c {} -n {} claude --resume 0123456789abcdef",
+                root.display(),
+                root.file_name().expect("a name").display()
+            )
+            .as_str()
+        )
+    );
+    drop(resident);
+}
+
 /// What the chat is left holding: every message klaude sent, in the order it sent them,
 /// carrying its last rewrite, without the ones it took back. Each is the sound it
 /// arrived with and its body under the head.
@@ -600,6 +668,17 @@ fn prepare(name: &str, port: u16) -> TempDir {
         .expect("throwaway root");
     let root = temporary.path();
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
+    // A window klaude opens goes to a `tmux` that records how it was called, so a test
+    // never reaches the tmux server of the machine it runs on.
+    std::fs::create_dir_all(root.join("bin")).expect("binary directory");
+    let tmux = root.join("bin/tmux");
+    std::fs::write(
+        &tmux,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/../tmux.log\"\n",
+    )
+    .expect("a recording tmux");
+    std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755))
+        .expect("an executable tmux");
     std::fs::create_dir_all(root.join("config/klaude")).expect("configuration directory");
     std::fs::write(
         root.join("config/klaude/env"),
@@ -629,11 +708,20 @@ fn resident(root: &Path) -> Resident {
     Resident(child)
 }
 
-/// Both directories the binary resolves what it needs from point into the throwaway
-/// root.
 fn klaude(root: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_klaude"));
+    within(root, env!("CARGO_BIN_EXE_klaude"))
+}
+
+/// Both directories the binary resolves what it needs from point into the throwaway
+/// root, and so does the first `tmux` on the path.
+fn within(root: &Path, program: &str) -> Command {
+    let path = std::env::join_paths(std::iter::once(root.join("bin")).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("a path");
+    let mut command = Command::new(program);
     command
+        .env("PATH", path)
         .env("XDG_RUNTIME_DIR", root.join("run"))
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env_remove("TMUX")
@@ -644,7 +732,11 @@ fn klaude(root: &Path) -> Command {
 }
 
 fn hook(root: &Path, event: &serde_json::Value) {
-    let mut client = klaude(root).spawn().expect("run the hook");
+    report(klaude(root), event);
+}
+
+fn report(mut command: Command, event: &serde_json::Value) {
+    let mut client = command.spawn().expect("run the hook");
     client
         .stdin
         .take()
@@ -686,9 +778,14 @@ fn recorder() -> (u16, Receiver<Call>, Chat) {
 struct Chat(Arc<Mutex<Vec<serde_json::Value>>>);
 
 impl Chat {
-    /// A message from the phone, as Telegram delivers it. It carries no
-    /// `reply_to_message`, which is what makes it a message to route by itself.
+    /// A message from the phone, as Telegram delivers it. It replies to nothing, which
+    /// is what makes it a message to route by itself.
     fn says(&self, chat: i64, sender: i64, text: &str) {
+        self.replies(chat, sender, text, &serde_json::Value::Null);
+    }
+
+    /// A reply to `replied`, a message klaude posted as Telegram hands it back.
+    fn replies(&self, chat: i64, sender: i64, text: &str, replied: &serde_json::Value) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("a clock after 1970")
@@ -701,6 +798,7 @@ impl Chat {
                 "chat": {"id": chat},
                 "from": {"id": sender},
                 "text": text,
+                "reply_to_message": replied,
             },
         }));
     }
