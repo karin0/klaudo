@@ -951,6 +951,13 @@ impl Machine {
     /// the session heard from last.
     fn chat(&mut self, message: &Value) {
         if !self.telegram.accepts(message) {
+            // The ids to put in the env file are read from here.
+            eprintln!(
+                "ignored: chat {} {:?} from {}",
+                message["chat"]["id"],
+                message["chat"]["title"].as_str().unwrap_or_default(),
+                message["from"]["id"]
+            );
             return;
         }
         let Some(chat) = message["chat"]["id"].as_i64() else {
