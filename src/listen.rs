@@ -169,6 +169,7 @@ pub fn run() {
         answers,
         sessions: BTreeMap::new(),
         opening: Vec::new(),
+        ended: BTreeMap::new(),
     };
     loop {
         match arrivals.recv_timeout(POLL) {
@@ -465,6 +466,10 @@ struct Machine {
     sessions: BTreeMap<String, Session>,
     /// What the chat asked, waiting for the session whose window it opened, by directory.
     opening: Vec<(PathBuf, Ask)>,
+    /// The directory each exited session ran in, which is where a reply to one resumes
+    /// it. An entry is a few dozen bytes and one is left per session this resident
+    /// outlives.
+    ended: BTreeMap<String, PathBuf>,
 }
 
 impl Machine {
@@ -494,6 +499,7 @@ impl Machine {
         let id = event.session_id.clone();
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
         let directory = event.directory();
+        self.ended.remove(&id);
         let session = self.sessions.entry(id.clone()).or_insert_with(|| Session {
             dir: PathBuf::from(&event.cwd),
             pid,
@@ -961,7 +967,8 @@ impl Machine {
             if let Some((chat, message)) = live {
                 self.telegram.delete(chat, message);
             }
-            self.sessions.remove(&id);
+            let session = self.sessions.remove(&id).expect("a session found gone");
+            self.ended.insert(id, session.dir);
         }
 
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
@@ -1070,7 +1077,7 @@ impl Machine {
         let replied = &message["reply_to_message"];
         match address(replied) {
             Some(address) if address == NEW => match body(replied) {
-                Some(cwd) => self.open(Path::new(&cwd), ask),
+                Some(cwd) => self.open(Path::new(&cwd), None, ask),
                 None => self.say(chat, "that anchor names no directory"),
             },
             Some(address) => self.send(&address, ask),
@@ -1111,22 +1118,32 @@ impl Machine {
         self.telegram.send(chat, &message, Sound::Silent, None);
     }
 
-    /// Opens a window for a conversation and keeps its first prompt until the session
-    /// there reports that it is ready.
-    fn open(&mut self, cwd: &Path, ask: Ask) {
-        if let Err(error) = tmux::open(cwd) {
+    /// Opens a window for a conversation, a new one or the session `resume` names, and
+    /// keeps its first prompt until the session there reports that it is ready.
+    fn open(&mut self, cwd: &Path, resume: Option<&str>, ask: Ask) {
+        if let Err(error) = tmux::open(cwd, resume) {
             self.say(ask.chat, &format!("tmux: {}", hook::prose(&error)));
             return;
         }
         self.opening.push((cwd.to_owned(), ask));
     }
 
-    /// Types into the session whose id starts with `address`.
+    /// Types into the session whose id starts with `address`, resuming it first when it
+    /// has exited.
     fn send(&mut self, address: &str, ask: Ask) {
         let chat = ask.chat;
         let Some((id, session)) = self.sessions.iter().find(|(id, _)| id.starts_with(address))
         else {
-            self.say(chat, &format!("`{address}` is not a session running here"));
+            match self.ended.iter().find(|(id, _)| id.starts_with(address)) {
+                Some((id, dir)) => {
+                    let (id, dir) = (id.clone(), dir.clone());
+                    self.open(&dir, Some(&id), ask);
+                }
+                None => self.say(
+                    chat,
+                    &format!("`{address}` is not a session this resident has seen"),
+                ),
+            }
             return;
         };
         let id = id.clone();

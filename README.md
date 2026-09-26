@@ -115,6 +115,12 @@ and non-ASCII text need no escaping, because the text travels through a tmux pas
 buffer rather than a shell argument. Sending while a turn is running leaves the prompt
 queued, which is what the terminal does with anything typed then.
 
+Replying to a message from a session that has exited opens a window running
+`claude --resume` on it in the directory it ran in, and types the reply once it is
+ready, the way a reply to a `/new` anchor starts a conversation. The resident keeps
+those directories in memory for as long as it runs, so a session that exited before
+the resident started answers that it is unknown.
+
 A message whose text reached an input box gets a 👀 reaction once Claude Code reports
 the prompt, so a chat scrolled back shows which asks were accepted.
 
@@ -315,7 +321,8 @@ resident forwards events the resident has no arm for, which reach the chat as th
 verbatim report an unrecognised event falls back to.
 
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
-against a server of its own that answers the way Telegram does. It asserts what the chat is left
+against a server of its own that answers the way Telegram does and a `tmux` that
+records how it was called. It asserts what the chat is left
 holding after a two-segment turn, in order and with the sound each message carried; that
 a segment watched while it ran finishes in the message it was watched in and the last
 one's message is taken back; that a prompt queued during a turn gets a thread of its
@@ -328,9 +335,9 @@ tool outcome arriving after their segment went out rewrite that message; that a 
 heard from fails the command, and one sent outside Claude Code from a directory not in
 `CHAT_PROJECTS` goes to the private chat; that `--help` and a call the binary cannot
 act on print the usage, and a missing file or a stopped resident is named without a
-panic; and
-that a
+panic; that a
 message replying to nothing reaches the session heard from last in its chat, while a
 session in the other chat stays out of reach, and the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
-the chat it was sent in.
+the chat it was sent in; and that a reply to a session that exited resumes it in its
+directory.
