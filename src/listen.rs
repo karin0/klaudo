@@ -1029,7 +1029,7 @@ impl Machine {
     /// A message from the chat. What it replies to says where it goes: a message from a
     /// session reaches that session, and the message `/new` left behind opens a
     /// conversation in the directory it names. A message replying to nothing goes to
-    /// the session heard from last.
+    /// the session heard from last in its chat.
     fn chat(&mut self, message: &Value) {
         if !self.telegram.accepts(message) {
             // The ids to put in the env file are read from here.
@@ -1074,7 +1074,7 @@ impl Machine {
                 None => self.say(chat, "that anchor names no directory"),
             },
             Some(address) => self.send(&address, ask),
-            None => match self.latest() {
+            None => match self.latest(chat) {
                 Some(address) => self.send(&address, ask),
                 None => self.say(
                     chat,
@@ -1084,11 +1084,13 @@ impl Machine {
         }
     }
 
-    /// The session heard from last, which is where a message that replies to nothing
-    /// goes.
-    fn latest(&self) -> Option<String> {
+    /// The session in `chat` heard from last, which is where a message that replies to
+    /// nothing goes. A session in the other chat stays out of reach, so a project never
+    /// answers in a chat it is not posted to.
+    fn latest(&self, chat: i64) -> Option<String> {
         self.sessions
             .iter()
+            .filter(|(_, session)| self.thread(session).chat == chat)
             .max_by_key(|(_, session)| session.seen)
             .map(|(id, _)| id.clone())
     }

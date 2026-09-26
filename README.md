@@ -104,8 +104,10 @@ message is a few thousand characters of one paragraph.
 ## What you can send
 
 What a message replies to is where it goes. A message replying to nothing goes to the
-session klaude heard from last, and the turn it starts threads under it, whose head
-names the session that took it.
+session klaude heard from last among those in the chat it was sent in, and the turn it
+starts threads under it, whose head names the session that took it. A session is in
+the chat its running turn is posted to, and between turns in its project's chat, so a
+project listed for one chat stays out of reach of an unaddressed message in the other.
 
 Replying to any message from a turn types the text into that session's terminal, as a
 prompt in its input box. Multiple lines arrive as multiple lines, and quotes, backticks
@@ -328,6 +330,7 @@ heard from fails the command, and one sent outside Claude Code from a directory 
 act on print the usage, and a missing file or a stopped resident is named without a
 panic; and
 that a
-message replying to nothing reaches the session heard from last, while the same message
+message replying to nothing reaches the session heard from last in its chat, while a
+session in the other chat stays out of reach, and the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
 the chat it was sent in.

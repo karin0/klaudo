@@ -400,25 +400,31 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     drop(resident);
 }
 
-/// A message that replies to nothing still names a session: the one heard from last.
-/// These sessions run outside tmux, so what klaude says back names where the message
-/// went and the terminal that session is on.
+/// A message that replies to nothing still names a session: the one heard from last in
+/// the chat it was sent in. These sessions run outside tmux, so what klaude says back
+/// names where the message went and the terminal that session is on.
 #[test]
-fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
+fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("unaddressed", port);
     let root = temporary.path();
     let resident = resident(root);
 
     // The later session sorts first, so what answers is the one heard from last
-    // rather than the first one klaude happens to hold.
-    for session in ["fedcba9876543210", "0123456789abcdef"] {
+    // rather than the first one klaude happens to hold. The throwaway root is outside
+    // `CHAT_PROJECTS`, so the session there, heard from last of all, is the private
+    // chat's.
+    for (session, cwd) in [
+        ("fedcba9876543210", Path::new(env!("CARGO_MANIFEST_DIR"))),
+        ("0123456789abcdef", Path::new(env!("CARGO_MANIFEST_DIR"))),
+        ("89abcdef01234567", root),
+    ] {
         hook(
             root,
             &json!({
                 "hook_event_name": "SessionStart",
                 "session_id": session,
-                "cwd": env!("CARGO_MANIFEST_DIR"),
+                "cwd": cwd,
             }),
         );
     }
@@ -428,24 +434,31 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last() {
     chat.says(GROUP, OWNER, "carry on");
     chat.says(OWNER, OWNER, "carry on");
 
-    let answered = |call: &Call| call.markdown.starts_with("`01234567` ");
-    let made = collect(&calls, |call| answered(call) && call.chat == Some(OWNER));
-    let answers: Vec<_> = made.iter().filter(|call| answered(call)).collect();
+    let made = collect(&calls, |call| call.chat == Some(OWNER));
+    let answers: Vec<_> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage"))
+        .map(|call| {
+            let (address, why) = call
+                .markdown
+                .split_once(' ')
+                .expect("an address and a reason");
+            // The session reports the terminal the test itself was started from, and a
+            // build machine may have given it none.
+            assert!(
+                why == "has no terminal to type into"
+                    || (why.starts_with("is on `/dev/pts/")
+                        && why.ends_with("`, which no tmux pane holds")),
+                "the answer reads {:?}",
+                call.markdown
+            );
+            (call.chat, address)
+        })
+        .collect();
     assert_eq!(
-        answers.iter().map(|call| call.chat).collect::<Vec<_>>(),
-        [Some(GROUP), Some(OWNER)],
-        "only the owner's messages are answered, each where it was sent"
-    );
-    // The session reports the terminal the test itself was started from, and a build
-    // machine may have given it none.
-    let answer = made.last().expect("an answer").markdown.clone();
-    let (address, why) = answer.split_once(' ').expect("an address and a reason");
-    assert_eq!(address, "`01234567`");
-    assert!(
-        why == "has no terminal to type into"
-            || (why.starts_with("is on `/dev/pts/")
-                && why.ends_with("`, which no tmux pane holds")),
-        "the answer reads {answer:?}"
+        answers,
+        [(Some(GROUP), "`01234567`"), (Some(OWNER), "`89abcdef`")],
+        "only the owner's messages are answered, each by a session of its own chat"
     );
     drop(resident);
 }
