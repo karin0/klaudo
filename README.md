@@ -315,7 +315,9 @@ flush and a
 tool outcome arriving after their segment went out rewrite that message; that a file
 `klaude send` posts replies to the prompt of its turn, one from a session klaude has not
 heard from fails the command, and one sent outside Claude Code from a directory not in
-`CHAT_PROJECTS` goes to the private chat; and
+`CHAT_PROJECTS` goes to the private chat; that `--help` and a call the binary cannot
+act on print the usage, and a missing file or a stopped resident is named without a
+panic; and
 that a
 message replying to nothing reaches the session heard from last, while the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
