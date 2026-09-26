@@ -358,6 +358,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dotenvy",
+ "libc",
  "serde",
  "serde_json",
  "ureq",

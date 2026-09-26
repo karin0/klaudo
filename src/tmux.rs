@@ -11,6 +11,9 @@ const OWNED_SESSION: &str = "klaude";
 /// Named rather than the default buffer, so a paste klaude issues cannot consume what
 /// the user copied.
 const BUFFER: &str = "klaude";
+/// The kernel registers all 2^20 pseudo-terminals under this one major, so a minor is
+/// the number under `/dev/pts`.
+const PTS_MAJOR: u32 = 136;
 
 /// Where a session's terminal is. `$TMUX` names the server, `$TMUX_PANE` the pane, and
 /// a hook inherits both from the session it reports for.
@@ -142,8 +145,12 @@ fn run(command: &mut Command) -> Result<(), String> {
 pub fn controlling_tty(pid: u32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let fields: Vec<&str> = stat.rsplit_once(") ")?.1.split(' ').collect();
-    let device: u32 = fields.get(4)?.parse().ok()?;
-    Some(format!("/dev/pts/{}", device & 0xff))
+    pts(fields.get(4)?.parse().ok()?)
+}
+
+/// A tmux pane is always a pseudo-terminal, so any other terminal names none.
+fn pts(device: libc::dev_t) -> Option<String> {
+    (libc::major(device) == PTS_MAJOR).then(|| format!("/dev/pts/{}", libc::minor(device)))
 }
 
 #[cfg(test)]
@@ -164,6 +171,18 @@ mod tests {
             own.as_ref().is_none_or(|tty| tty.starts_with("/dev/pts/")),
             "controlling terminal reads {own:?}"
         );
+    }
+
+    #[test]
+    fn a_device_number_decodes_past_the_first_256_terminals() {
+        // The encoding `/proc` uses: the minor's low byte, the major, then the minor's
+        // remaining bits.
+        let encode =
+            |major: u64, minor: u64| (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12);
+        assert_eq!(pts(encode(136, 5)).as_deref(), Some("/dev/pts/5"));
+        assert_eq!(pts(encode(136, 300)).as_deref(), Some("/dev/pts/300"));
+        // The first virtual console.
+        assert_eq!(pts(encode(4, 1)), None);
     }
 
     #[test]
