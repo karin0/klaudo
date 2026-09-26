@@ -465,7 +465,7 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
 }
 
 /// A reply to a session that has exited opens a window resuming it in the directory it
-/// ran in.
+/// ran in, and a second reply before that session starts waits for the same window.
 #[test]
 fn a_reply_to_a_session_that_exited_resumes_it() {
     let (port, calls, chat) = recorder();
@@ -500,6 +500,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         ]},
     ]}});
     chat.replies(OWNER, OWNER, "pick it up", &replied);
+    chat.replies(OWNER, OWNER, "and then", &replied);
     chat.replies(
         OWNER,
         OWNER,
@@ -517,17 +518,35 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         .collect();
     assert_eq!(said, ["`77777777` is not a session this resident has seen"]);
     let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
+    let windows: Vec<_> = log
+        .lines()
+        .filter(|line| line.starts_with("new-window"))
+        .collect();
     assert_eq!(
-        log.lines().last(),
-        Some(
-            format!(
-                "new-window -t klaude: -c {} -n {} claude --resume 0123456789abcdef",
-                root.display(),
-                root.file_name().expect("a name").display()
-            )
-            .as_str()
-        )
+        windows,
+        [format!(
+            "new-window -t klaude: -c {} -n {} claude --resume 0123456789abcdef",
+            root.display(),
+            root.file_name().expect("a name").display()
+        )]
     );
+
+    // The resumed session starts outside tmux, so each reply it takes is answered with
+    // why it could not be typed.
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "0123456789abcdef",
+            "cwd": root,
+        }),
+    );
+    let made = collect(&calls, |call| call.markdown.starts_with("`01234567` "));
+    let taken = made
+        .iter()
+        .filter(|call| call.markdown.starts_with("`01234567` "))
+        .count();
+    assert_eq!(taken, 2, "both replies wait for the resumed session");
     drop(resident);
 }
 

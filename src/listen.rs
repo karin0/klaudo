@@ -86,6 +86,9 @@ const DATAGRAM_MAX: usize = 200 * 1024;
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
 const NEW: &str = "new";
+/// How many exited sessions a reply can still resume, oldest forgotten first. An entry is
+/// an id and a directory, so the list stays under a hundred kilobytes.
+const ENDED_MAX: usize = 1000;
 /// How many calls a run lists before the oldest are counted instead.
 const RUN_MAX: usize = 30;
 /// The mark a call opens its line with, for how it went. Geometric shapes, which every
@@ -169,7 +172,7 @@ pub fn run() {
         answers,
         sessions: BTreeMap::new(),
         opening: Vec::new(),
-        ended: BTreeMap::new(),
+        ended: VecDeque::new(),
     };
     loop {
         match arrivals.recv_timeout(POLL) {
@@ -464,12 +467,19 @@ struct Machine {
     /// Where `klaude send` hears where its file goes.
     answers: UnixDatagram,
     sessions: BTreeMap<String, Session>,
-    /// What the chat asked, waiting for the session whose window it opened, by directory.
-    opening: Vec<(PathBuf, Ask)>,
+    opening: Vec<Opening>,
     /// The directory each exited session ran in, which is where a reply to one resumes
-    /// it. An entry is a few dozen bytes and one is left per session this resident
-    /// outlives.
-    ended: BTreeMap<String, PathBuf>,
+    /// it, oldest first.
+    ended: VecDeque<(String, PathBuf)>,
+}
+
+/// What the chat asked, waiting for the session of the window klaude opened for it.
+struct Opening {
+    dir: PathBuf,
+    /// The session the window resumes, which is what the ask waits for. A new
+    /// conversation waits for the next session to start in `dir`.
+    resume: Option<String>,
+    ask: Ask,
 }
 
 impl Machine {
@@ -499,7 +509,9 @@ impl Machine {
         let id = event.session_id.clone();
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
         let directory = event.directory();
-        self.ended.remove(&id);
+        if !self.sessions.contains_key(&id) {
+            self.ended.retain(|(ended, _)| *ended != id);
+        }
         let session = self.sessions.entry(id.clone()).or_insert_with(|| Session {
             dir: PathBuf::from(&event.cwd),
             pid,
@@ -532,16 +544,29 @@ impl Machine {
 
     /// A session is ready for input once it says so, which is after the dialog that
     /// asks whether its folder is trusted. A conversation opened from the chat is
-    /// waiting for exactly this to type its first prompt.
+    /// waiting for exactly this to type its first prompt. A resumed session takes every
+    /// ask that waited for it, while each ask that opened a new conversation had a
+    /// window of its own.
     fn started(&mut self, id: &str) {
-        let Some(session) = self.sessions.get(id) else {
+        let Some(dir) = self.sessions.get(id).map(|session| session.dir.clone()) else {
             return;
         };
-        let Some(index) = self.opening.iter().position(|(cwd, _)| *cwd == session.dir) else {
-            return;
-        };
-        let (_, ask) = self.opening.remove(index);
-        self.send(id, ask);
+        let mut asks: Vec<Ask> = self
+            .opening
+            .extract_if(.., |opening| opening.resume.as_deref() == Some(id))
+            .map(|opening| opening.ask)
+            .collect();
+        if asks.is_empty()
+            && let Some(index) = self
+                .opening
+                .iter()
+                .position(|opening| opening.resume.is_none() && opening.dir == dir)
+        {
+            asks.push(self.opening.remove(index).ask);
+        }
+        for ask in asks {
+            self.send(id, ask);
+        }
     }
 
     fn submitted(&mut self, id: &str, event: &Event) {
@@ -968,7 +993,10 @@ impl Machine {
                 self.telegram.delete(chat, message);
             }
             let session = self.sessions.remove(&id).expect("a session found gone");
-            self.ended.insert(id, session.dir);
+            self.ended.push_back((id, session.dir));
+            if self.ended.len() > ENDED_MAX {
+                self.ended.pop_front();
+            }
         }
 
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
@@ -1077,7 +1105,7 @@ impl Machine {
         let replied = &message["reply_to_message"];
         match address(replied) {
             Some(address) if address == NEW => match body(replied) {
-                Some(cwd) => self.open(Path::new(&cwd), None, ask),
+                Some(cwd) => self.open(PathBuf::from(cwd), None, ask),
                 None => self.say(chat, "that anchor names no directory"),
             },
             Some(address) => self.send(&address, ask),
@@ -1119,13 +1147,16 @@ impl Machine {
     }
 
     /// Opens a window for a conversation, a new one or the session `resume` names, and
-    /// keeps its first prompt until the session there reports that it is ready.
-    fn open(&mut self, cwd: &Path, resume: Option<&str>, ask: Ask) {
-        if let Err(error) = tmux::open(cwd, resume) {
+    /// keeps its first prompt until the session there reports that it is ready. A
+    /// session already being resumed gets no second window, which would run it twice.
+    fn open(&mut self, dir: PathBuf, resume: Option<String>, ask: Ask) {
+        let resuming =
+            resume.is_some() && self.opening.iter().any(|opening| opening.resume == resume);
+        if !resuming && let Err(error) = tmux::open(&dir, resume.as_deref()) {
             self.say(ask.chat, &format!("tmux: {}", hook::prose(&error)));
             return;
         }
-        self.opening.push((cwd.to_owned(), ask));
+        self.opening.push(Opening { dir, resume, ask });
     }
 
     /// Types into the session whose id starts with `address`, resuming it first when it
@@ -1135,10 +1166,7 @@ impl Machine {
         let Some((id, session)) = self.sessions.iter().find(|(id, _)| id.starts_with(address))
         else {
             match self.ended.iter().find(|(id, _)| id.starts_with(address)) {
-                Some((id, dir)) => {
-                    let (id, dir) = (id.clone(), dir.clone());
-                    self.open(&dir, Some(&id), ask);
-                }
+                Some((id, dir)) => self.open(dir.clone(), Some(id.clone()), ask),
                 None => self.say(
                     chat,
                     &format!("`{address}` is not a session this resident has seen"),
