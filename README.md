@@ -18,11 +18,11 @@ it or the run of tool calls between two of those. One message stands at the foot
 turn showing the segment that is open, rewritten as that segment grows, and the segment
 takes it once the next one starts. So the message the chat ends up holding is the one it
 was watched in. Under what the open segment has said, that message carries a status
-line, a word from Claude Code's own vocabulary and when the turn started. Telegram shows
-that start relative to the reader's clock and keeps it current, so the minutes a turn
-spends thinking are on screen as they pass while the message stays as it is; the word
-steps on at the first rewrite thirty seconds after the last. It goes up three seconds
-into the turn, which leaves a turn answered at once
+line, a word from Claude Code's own vocabulary and the turn's elapsed time, stepping to
+the next word on every refresh, so the minutes a turn spends thinking are on screen as
+they pass. A `date_time` entity in relative format would keep that time current without
+a rewrite, but Telegram's clients show one inside a rich message as its fallback text,
+though the server parses it. It goes up three seconds into the turn, which leaves a turn answered at once
 nothing to take back. In a group it is rewritten at most every ten seconds, because
 Telegram counts a rewrite against the twenty messages a minute a bot may send a group. The last segment keeps no message of its own: the `Stop` event
 carries its text, so the message that was showing it is taken back once the answer is in
@@ -256,11 +256,12 @@ klaude was written for, the shell scripts it replaced cost 9.4 ms per invocation
 against 0.5 ms for the same handoff.
 
 The process at the other end runs for as long as the machine does, one per machine.
-Two constraints put it there. The answer must not race a rewrite still in flight, and
-the replies all carry the id Telegram gave the prompt message; both are free once one
-process issues every call in order.
+Three constraints put it there. The message a turn is watched in has to keep its clock
+moving while nothing else happens. The answer must not race a rewrite still in flight,
+and the replies all carry the id Telegram gave the prompt message; both are free once
+one process issues every call in order.
 
-The other constraint is the chat. Telegram hands updates to one reader per bot, and a
+The third constraint is the chat. Telegram hands updates to one reader per bot, and a
 message from the phone has to be answerable when no turn is running, which is exactly
 when a per-turn process would not exist. So the reader is machine-wide and permanent,
 and it is the same process that posts, because routing a reply needs to know which
