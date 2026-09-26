@@ -17,20 +17,34 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
 /// of it.
 const UPLOAD_WAIT: Duration =
     Duration::from_secs(telegram::UPLOAD_TIMEOUT.as_secs() * telegram::ATTEMPTS as u64 + 60);
+const USAGE: &str = "\
+usage: klaude              read a Claude Code hook event on stdin
+       klaude listen       run the resident that owns the chat
+       klaude send <file>  post a file in the thread of this session's turn";
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("listen") => listen::run(),
-        Some("send") => send(&args.next().expect("usage: klaude send <file>")),
-        Some(unknown) => panic!("unknown argument {unknown}"),
-        None => {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["-h" | "--help"] => println!("{USAGE}"),
+        ["listen"] => listen::run(),
+        ["send", file] => send(file),
+        [] => {
             let mut raw = Vec::new();
             std::io::stdin().read_to_end(&mut raw).expect("hook input");
             let event: Event = serde_json::from_slice(&raw).expect("hook input is JSON");
             hook(&event, &raw);
         }
+        _ => {
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        }
     }
+}
+
+/// A mistake in how the command was called, which is reported without a backtrace.
+fn fail(message: &str) -> ! {
+    eprintln!("klaude: {message}");
+    std::process::exit(1);
 }
 
 fn hook(event: &Event, raw: &[u8]) {
@@ -102,8 +116,19 @@ fn forward(raw: &[u8]) -> bool {
 fn send(file: &str) {
     let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
     let cwd = std::env::current_dir().expect("working directory");
-    let file = std::fs::canonicalize(file).unwrap_or_else(|error| panic!("{file}: {error}"));
-    assert!(file.is_file(), "{} is not a file", file.display());
+    let file =
+        std::fs::canonicalize(file).unwrap_or_else(|error| fail(&format!("{file}: {error}")));
+    if !file.is_file() {
+        fail(&format!("{} is not a file", file.display()));
+    }
+    let listening = listen::socket_path();
+    // The resident creates the directory the reply socket is bound in.
+    if !listening.exists() {
+        fail(&format!(
+            "the resident at {} is not running",
+            listening.display()
+        ));
+    }
     let reply = listen::runtime_dir().join(format!("send-{}.sock", std::process::id()));
     let socket = UnixDatagram::bind(&reply).expect("bind");
     socket
@@ -112,12 +137,12 @@ fn send(file: &str) {
     let request = serde_json::json!({"session": session, "cwd": cwd, "file": file, "reply": reply});
     let mut answer = vec![0; 4096];
     let answered = socket
-        .send_to(request.to_string().as_bytes(), listen::socket_path())
+        .send_to(request.to_string().as_bytes(), &listening)
         .and_then(|_| socket.recv(&mut answer));
     let _ = std::fs::remove_file(&reply);
-    let size = answered.expect("the resident");
+    let size = answered
+        .unwrap_or_else(|error| fail(&format!("the resident at {}: {error}", listening.display())));
     if size > 0 {
-        eprintln!("{}", String::from_utf8_lossy(&answer[..size]));
-        std::process::exit(1);
+        fail(&String::from_utf8_lossy(&answer[..size]));
     }
 }

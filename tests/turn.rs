@@ -782,6 +782,39 @@ fn form(body: &str, boundary: &str) -> serde_json::Value {
     fields.into()
 }
 
+/// A call the binary cannot act on says how to call it, and a file that is not there is
+/// named, both without a panic.
+#[test]
+fn the_command_line_explains_itself() {
+    let root = prepare("usage", 0);
+    let run = |args: &[&str]| klaude(&root).args(args).output().expect("run klaude");
+
+    let help = run(&["--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("klaude send <file>"));
+
+    for wrong in [&["send"][..], &["send", "a", "b"], &["sned", "a"]] {
+        let misused = run(wrong);
+        assert_eq!(misused.status.code(), Some(2), "{wrong:?}");
+        assert!(String::from_utf8_lossy(&misused.stderr).starts_with("usage: klaude"));
+    }
+
+    let missing = run(&["send", "/definitely/not/here"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&missing.stderr),
+        "klaude: /definitely/not/here: No such file or directory (os error 2)\n"
+    );
+
+    // Nothing is listening in this root, which is what a stopped resident looks like.
+    let file = root.join("build.log");
+    std::fs::write(&file, "all green").expect("the file to send");
+    let alone = run(&["send", file.to_str().expect("a UTF-8 path")]);
+    assert_eq!(alone.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaude: the resident at "));
+    std::fs::remove_dir_all(&root).expect("clean up");
+}
+
 /// A file a session sends lands in the thread of the turn that sent it, below what the
 /// turn has said, and `klaude send` exits with how the upload went.
 #[test]
@@ -833,7 +866,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert!(!refused.status.success(), "send to nowhere succeeded");
     assert_eq!(
         String::from_utf8_lossy(&refused.stderr),
-        "session ffffffff has not reported to klaude\n"
+        "klaude: session ffffffff has not reported to klaude\n"
     );
 
     // Run outside Claude Code, it names no session, and the directory it runs in is no
