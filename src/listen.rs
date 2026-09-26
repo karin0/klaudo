@@ -29,10 +29,10 @@ const REWRITE: Duration = Duration::from_secs(3);
 /// messages a minute and counts a rewrite as one, so this leaves room for the rest of the
 /// turn and for other sessions posting there.
 const GROUP_REWRITE: Duration = Duration::from_secs(10);
-/// How long a tool call waits before it is filed. An assistant message's last flush
-/// reaches the resident tens of milliseconds after the hook of the tool call that
-/// message ends with, so a call filed as it is announced stands above the words that
-/// introduce it.
+/// How long a tool call waits before it is filed, so words arriving within that time
+/// stand above it, and how long an open segment's text stays quiet before the message
+/// showing it is rewritten, so a `Stop` arriving milliseconds behind its answer takes
+/// over and the answer does not stand in the chat twice.
 const SETTLE: Duration = Duration::from_millis(100);
 /// How long a session killed mid-turn keeps its message showing the turn as running.
 /// A session that exits on its own says so, and a message from the chat checks every
@@ -371,6 +371,8 @@ struct Segment {
     /// The message this segment finished in and the elapsed time stamped on it, which
     /// is what a flush or an outcome arriving later rewrites.
     posted: Option<(i64, Duration)>,
+    /// When the segment last received text.
+    heard: Instant,
 }
 
 impl Segment {
@@ -380,6 +382,7 @@ impl Segment {
             body,
             written: None,
             posted: None,
+            heard: Instant::now(),
         }
     }
 
@@ -443,10 +446,11 @@ impl Turn {
     /// only to move its clock while the chat already shows what the segment says.
     fn due(&self) -> Option<Instant> {
         let segment = self.segment.as_ref()?;
+        let quiet = segment.heard + SETTLE;
         match &segment.written {
-            None => Some(self.started + REWRITE),
+            None => Some((self.started + REWRITE).max(quiet)),
             Some((written, at)) if *written == segment.text() => Some(*at + REFRESH),
-            Some((_, at)) => Some(*at + rewrite(self.thread.chat)),
+            Some((_, at)) => Some((*at + rewrite(self.thread.chat)).max(quiet)),
         }
     }
 
@@ -823,16 +827,18 @@ impl Machine {
             };
             turn.segment = Some(Segment::new(message_id, Body::Text(BTreeMap::new())));
         }
-        let Some(Body::Text(chunks)) = self
+        let Some(segment) = self
             .sessions
             .get_mut(id)
             .and_then(|s| s.turn.as_mut())
             .and_then(|t| t.segment.as_mut())
-            .map(|segment| &mut segment.body)
         else {
             return;
         };
-        chunks.insert(index, delta.clone());
+        if let Body::Text(chunks) = &mut segment.body {
+            chunks.insert(index, delta.clone());
+            segment.heard = Instant::now();
+        }
     }
 
     /// A tool call waits out `SETTLE` before it is filed, so the words its own message

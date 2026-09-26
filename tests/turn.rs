@@ -254,6 +254,48 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
     drop(resident);
 }
 
+/// A final message arrives milliseconds before its `Stop`, so the message showing the
+/// turn keeps its status line until the answer replaces it.
+#[test]
+fn an_answer_arriving_with_its_stop_is_shown_once() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("answered", port);
+    let root = temporary.path();
+    let resident = resident(root);
+    let session = "0123456789abcdef";
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "think"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "done"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+    ];
+    for (step, mut event) in turn.into_iter().enumerate() {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        hook(root, &event);
+        if step == 0 {
+            // Long enough for the message showing the turn to be up.
+            std::thread::sleep(Duration::from_millis(3200));
+        }
+    }
+
+    let made = collect(&calls, |call| call.label == "deleteMessage");
+    let rewrites: Vec<_> = made
+        .iter()
+        .filter(|call| call.label == "editMessageText")
+        .map(|call| &call.markdown)
+        .collect();
+    assert!(
+        rewrites.is_empty(),
+        "the live message was rewritten with {rewrites:?}"
+    );
+    assert_eq!(
+        holding(&made),
+        [("silent", ">think".to_owned()), ("ring", "done".to_owned())]
+    );
+    drop(resident);
+}
+
 /// A turn that talked, worked and talked again leaves three messages in order, and the
 /// run of tool calls is the middle one.
 #[test]
