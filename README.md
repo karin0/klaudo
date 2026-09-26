@@ -143,9 +143,15 @@ command it runs, which is how the command finds its session. Run anywhere else, 
 command sends the file without a caption to the chat of the directory it runs in. Claude learns the command from whatever instructions
 it reads, such as a line in `~/.claude/CLAUDE.md`.
 
-The command hands the path to the resident and waits for the upload to finish, so its
-exit status says whether the file reached the chat, and a failure prints what Telegram
-answered. A bot uploads files of up to 50 MB.
+The command asks the resident where the file goes and uploads it itself, so its exit
+status says whether the file reached the chat, a failure prints what Telegram answered,
+and a long upload holds up nothing else. The resident answers once the turn's open
+segment is a message, so the file lands below it, while what the turn says during the
+upload can land above the file. A bot uploads files of up to 50 MB.
+
+The answer arrives at an abstract socket address, which vanishes with the command
+however it ends. Any local user can send to such an address, so the command takes only
+an answer sent from the resident's own socket.
 
 A document carries no rich message, so its caption is the head in Telegram's HTML, and a
 reply to the file reaches the session like a reply to any message of the turn.

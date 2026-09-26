@@ -9,7 +9,7 @@ use ureq::unversioned::multipart::{Form, Part};
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// An upload is as large as the 50 MB Telegram accepts from a bot, over whatever uplink
 /// the machine has.
-pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long Telegram holds a poll open with nothing to report.
 const POLL_SECONDS: u64 = 50;
 /// Telegram rejects a rich message past 32768 characters of rendered text, and a
@@ -20,7 +20,7 @@ const MAX_CHARS: usize = 32768;
 /// about again this many times. A retry can post a message twice when the answer to the
 /// first was lost, which is the smaller harm, because the message a turn's thread hangs
 /// from cannot be recovered once it is gone.
-pub const ATTEMPTS: u32 = 3;
+const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = Duration::from_secs(1);
 /// What klaude leaves on a message whose text reached a session's input box.
 const SEEN: &str = "👀";
@@ -89,15 +89,14 @@ impl Telegram {
     }
 
     /// Posts a file without a sound, under an HTML caption where one is given, since a
-    /// document takes no rich message. What went wrong is handed back for whoever asked
-    /// for the upload.
+    /// document takes no rich message.
     pub fn document(
         &self,
         chat: i64,
         path: &Path,
         caption: Option<&str>,
         reply_to: Option<i64>,
-    ) -> Result<(), String> {
+    ) -> Option<()> {
         let chat = chat.to_string();
         let reply = reply_to.map(|message_id| replying(message_id).to_string());
         self.attempt("sendDocument", UPLOAD_TIMEOUT, |request| {
@@ -191,11 +190,9 @@ impl Telegram {
         // attempt is bounded by that wait plus the patience every call gets.
         let held = Duration::from_secs(body["timeout"].as_u64().unwrap_or_default());
         self.attempt(method, TIMEOUT + held, |request| request.send_json(body))
-            .ok()
     }
 
-    /// Makes a request up to `ATTEMPTS` times, each bounded by `timeout`, and hands back
-    /// Telegram's answer or the last failure.
+    /// Makes a request up to `ATTEMPTS` times, each bounded by `timeout`.
     fn attempt(
         &self,
         method: &str,
@@ -203,9 +200,8 @@ impl Telegram {
         send: impl Fn(
             ureq::RequestBuilder<ureq::typestate::WithBody>,
         ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-    ) -> Result<Value, String> {
+    ) -> Option<Value> {
         let url = format!("{}/bot{}/{method}", self.base, self.token);
-        let mut failure = String::new();
         for attempt in 1..=ATTEMPTS {
             let request = self
                 .agent
@@ -216,17 +212,14 @@ impl Telegram {
             let outcome =
                 send(request).and_then(|mut response| response.body_mut().read_json::<Value>());
             let wait = match outcome {
-                Ok(answer) if answer["ok"] == Value::Bool(true) => return Ok(answer),
+                Ok(answer) if answer["ok"] == Value::Bool(true) => return Some(answer),
                 Ok(answer) => {
-                    failure = self.report(method, &answer.to_string());
+                    self.report(method, &answer.to_string());
                     // A rejection of the request itself ends the call.
-                    match retry_after(&answer, attempt) {
-                        Some(wait) => wait,
-                        None => return Err(failure),
-                    }
+                    retry_after(&answer, attempt)?
                 }
                 Err(error) => {
-                    failure = self.report(method, &error.to_string());
+                    self.report(method, &error.to_string());
                     backoff(attempt)
                 }
             };
@@ -234,15 +227,13 @@ impl Telegram {
                 std::thread::sleep(wait);
             }
         }
-        Err(failure)
+        None
     }
 
     /// The bot token rides in every request URL, and ureq quotes the URL back in its
-    /// errors, so it is masked before anything reaches the log or leaves the process.
-    fn report(&self, method: &str, detail: &str) -> String {
-        let masked = format!("{method}: {}", detail.replace(&self.token, "***"));
-        eprintln!("{masked}");
-        masked
+    /// errors, so it is masked before anything reaches the log.
+    fn report(&self, method: &str, detail: &str) {
+        eprintln!("{method}: {}", detail.replace(&self.token, "***"));
     }
 }
 
