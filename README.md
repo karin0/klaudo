@@ -80,6 +80,16 @@ because a session stopped at a dialog is the other thing worth coming back to. E
 message carries the elapsed time it was posted at; only the last carries the `#claude`
 tag, which therefore counts turns rather than segments.
 
+`/compact` runs no turn and fires neither `UserPromptSubmit` nor `Stop`, so its
+`PostCompact` is the answer to it: tagged `#claude #compact`, with a sound, and replying
+to the message that asked for it when that came from the chat. A compaction Claude Code
+starts on its own happens inside a turn and is a silent `#compact` message in that
+turn's thread. Both quote the summary Claude Code keeps and, below it, the reasoning
+the model wrote ahead of it, each in a quotation folded until tapped. The summary takes
+what room the message has, and the reasoning at most four thousand characters of what
+is left. A quotation cut short ends in an ellipsis, since the tag closing it must
+survive the cut Telegram's length limit would otherwise make.
+
 Every message opens with the same line: the directory Claude Code files the session's
 transcript under, then `session/prompt` shortened to eight characters each. That
 directory is where the session was opened, so it stays put across a `cd` inside a turn.
@@ -197,7 +207,7 @@ window its output appears in belongs to the session that launched it.
 
 One command answers every event, so `settings.json` repeats it under `SessionStart`,
 `SessionEnd`, `UserPromptSubmit`, `MessageDisplay`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
-`Stop`, `StopFailure` and `Notification`:
+`Stop`, `StopFailure`, `Notification` and `PostCompact`:
 
 ```json
 {"type": "command", "command": "exec <path to klaude>"}
@@ -315,7 +325,7 @@ the pairing after that is by position and can attach a turn to the wrong prompt.
 ## When the resident is not there
 
 A machine without the unit installed, or a resident that died, leaves the socket
-unanswered. `UserPromptSubmit`, `Stop`, `StopFailure` and `Notification` then send from
+unanswered. `UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` and `PostCompact` then send from
 the hook process itself, so the chat still gets the ask and the answer, each as a
 message of its own with nothing shown before it and no prompt above it to reply to.
 Nothing can be sent back to a session in that state.
@@ -343,6 +353,8 @@ records how it was called. It asserts what the chat is left
 holding after a two-segment turn, in order and with the sound each message carried; that
 a segment watched while it ran finishes in the message it was watched in and the last
 one's message is taken back; that an answer arriving with its `Stop` is shown once;
+that a compaction, started by Claude Code or by `/compact`, quotes its summary and its
+reasoning;
 that a prompt queued during a turn gets a thread of its
 own; that a run of tool calls is a message between the two halves of what the turn said;
 that a call announced ahead of the words introducing it still

@@ -629,6 +629,7 @@ impl Machine {
             "PreToolUse" => self.calling(&id, event),
             "PostToolUse" | "PostToolUseFailure" => self.called(&id, event),
             "Stop" | "StopFailure" => self.finish(&id, event),
+            "PostCompact" if event.manual() => self.compacted(&id, event),
             // A session waiting on a dialog is the other thing worth coming back to.
             "Notification" => self.aside(&id, event, Sound::Ring),
             _ => self.aside(&id, event, Sound::Silent),
@@ -1044,6 +1045,36 @@ impl Machine {
         }
     }
 
+    /// `/compact` runs no turn, so its end is the answer to it and rings like one. A
+    /// `/compact` klaude typed is paired with the message that asked for it here, since
+    /// it never reports as a prompt.
+    fn compacted(&mut self, id: &str, event: &Event) {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        let asked = session
+            .asked
+            .iter()
+            .map(|ask| ask.text.clone())
+            .find(|text| {
+                text.strip_prefix("/compact")
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            });
+        let typed = asked.and_then(|text| pair(&mut session.asked, &text));
+        let head = session.head(id, event.prompt_id.as_deref());
+        let session = &self.sessions[id];
+        let thread = typed.unwrap_or_else(|| self.thread(session));
+        if let Some(prompt) = typed.and_then(|thread| thread.prompt) {
+            self.telegram.acknowledge(thread.chat, prompt);
+        }
+        self.telegram.send(
+            thread.chat,
+            &hook::message(event, &head, ""),
+            Sound::Ring,
+            thread.prompt,
+        );
+    }
+
     /// Anything else a session reports lands in the thread of the turn it happened in.
     fn aside(&mut self, id: &str, event: &Event, sound: Sound) {
         let Some(session) = self.sessions.get(id) else {
@@ -1081,7 +1112,7 @@ impl Machine {
             .unwrap_or_default();
         let caption = format!(
             "<b>{}</b> <code>{address}</code>{took}",
-            html(&hook::name(&session.dir))
+            hook::html(&hook::name(&session.dir))
         );
         let thread = self.thread(session);
         Ok(Placement {
@@ -1405,13 +1436,6 @@ fn captioned(message: &Value) -> Option<String> {
     let start = usize::try_from(code["offset"].as_u64()?).ok()?;
     let end = start + usize::try_from(code["length"].as_u64()?).ok()?;
     String::from_utf16(caption.get(start..end)?).ok()
-}
-
-/// The characters Telegram's HTML captions reserve.
-fn html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn body(message: &Value) -> Option<String> {
