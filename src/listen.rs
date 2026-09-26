@@ -117,12 +117,21 @@ struct Handoff {
     event: Event,
 }
 
-/// What reaches the socket, from a hook or from the poller reading the chat.
+/// What reaches the socket, from a hook, from the poller reading the chat, or from
+/// `klaude send`, which waits at `reply` for an empty answer or what went wrong, and names
+/// no session when it ran outside Claude Code.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Arrival {
     Hook(Box<Handoff>),
-    Chat { message: Value },
+    Chat {
+        message: Value,
+    },
+    Upload {
+        session: Option<String>,
+        file: PathBuf,
+        reply: PathBuf,
+    },
 }
 
 pub fn run() {
@@ -136,11 +145,13 @@ pub fn run() {
     let path = socket_path();
     let _ = fs::remove_file(&path);
     let socket = UnixDatagram::bind(&path).expect("bind");
+    let answers = socket.try_clone().expect("socket");
     std::thread::spawn(|| poll(&socket_path()));
     let arrivals = read(socket);
 
     let mut machine = Machine {
         telegram: Telegram::new(),
+        answers,
         sessions: BTreeMap::new(),
         opening: Vec::new(),
     };
@@ -434,6 +445,8 @@ impl Session {
 
 struct Machine {
     telegram: Telegram,
+    /// Where `klaude send` hears how its upload went.
+    answers: UnixDatagram,
     sessions: BTreeMap<String, Session>,
     /// What the chat asked, waiting for the session whose window it opened, by directory.
     opening: Vec<(PathBuf, Ask)>,
@@ -446,6 +459,19 @@ impl Machine {
                 self.hook(handoff.pid, handoff.tmux.zip(handoff.pane), &handoff.event);
             }
             Arrival::Chat { message } => self.chat(&message),
+            Arrival::Upload {
+                session,
+                file,
+                reply,
+            } => {
+                let answer = self
+                    .upload(session.as_deref(), &file)
+                    .err()
+                    .unwrap_or_default();
+                if let Err(error) = self.answers.send_to(answer.as_bytes(), &reply) {
+                    eprintln!("answer {}: {error}", reply.display());
+                }
+            }
         }
     }
 
@@ -850,16 +876,50 @@ impl Machine {
         };
         let prompt = session.turn.as_ref().map(|turn| turn.prompt_id.clone());
         let head = session.head(id, prompt.as_deref());
-        let thread = session.turn.as_ref().map_or(
+        let thread = self.thread(session);
+        let message = hook::message(event, &head, "");
+        self.telegram
+            .send(thread.chat, &message, sound, thread.prompt);
+    }
+
+    /// A file the session asked to show, posted in the thread of its turn below
+    /// everything the turn has said so far. Its caption is the head a message of the
+    /// turn carries, so a reply to the file reaches the session. A file sent from
+    /// outside any session goes to `CHAT_ID` bare.
+    fn upload(&mut self, id: Option<&str>, file: &Path) -> Result<(), String> {
+        let Some(id) = id else {
+            return self
+                .telegram
+                .document(self.telegram.chat(), file, None, None);
+        };
+        if !self.sessions.contains_key(id) {
+            return Err(format!("session {id} has not reported to klaude"));
+        }
+        self.seal(id);
+        let session = &self.sessions[id];
+        let turn = session.turn.as_ref();
+        let address = hook::address(id, turn.map(|turn| turn.prompt_id.as_str()));
+        let took = turn
+            .map(|turn| took(turn.started.elapsed()))
+            .unwrap_or_default();
+        let caption = format!(
+            "<b>{}</b> <code>{address}</code>{took}",
+            html(&hook::name(&session.dir))
+        );
+        let thread = self.thread(session);
+        self.telegram
+            .document(thread.chat, file, Some(&caption), thread.prompt)
+    }
+
+    /// Where a session's messages go: its turn's thread, or `CHAT_ID` between turns.
+    fn thread(&self, session: &Session) -> Thread {
+        session.turn.as_ref().map_or(
             Thread {
                 chat: self.telegram.chat(),
                 prompt: None,
             },
             |turn| turn.thread,
-        );
-        let message = hook::message(event, &head, "");
-        self.telegram
-            .send(thread.chat, &message, sound, thread.prompt);
+        )
     }
 
     fn tick(&mut self) {
@@ -1103,11 +1163,35 @@ fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
 /// The address in the head of a message klaude posted, which is the session it belongs
 /// to or the anchor of a conversation that has not started.
 fn address(message: &Value) -> Option<String> {
+    let code = headed(message).or_else(|| captioned(message))?;
+    let session = code.split('/').next()?;
+    (!session.is_empty()).then(|| session.to_owned())
+}
+
+fn headed(message: &Value) -> Option<String> {
     let spans = paragraph(message, 0)?.as_array()?;
     let code = spans.iter().find(|span| span["type"] == "code")?;
-    let session = plain(&code["text"]);
-    let session = session.split('/').next()?;
-    (!session.is_empty()).then(|| session.to_owned())
+    Some(plain(&code["text"]))
+}
+
+/// A file klaude posted carries its head as a caption, whose entities count UTF-16 code
+/// units.
+fn captioned(message: &Value) -> Option<String> {
+    let caption: Vec<u16> = message["caption"].as_str()?.encode_utf16().collect();
+    let code = message["caption_entities"]
+        .as_array()?
+        .iter()
+        .find(|entity| entity["type"] == "code")?;
+    let start = usize::try_from(code["offset"].as_u64()?).ok()?;
+    let end = start + usize::try_from(code["length"].as_u64()?).ok()?;
+    String::from_utf16(caption.get(start..end)?).ok()
+}
+
+/// The characters Telegram's HTML captions reserve.
+fn html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn body(message: &Value) -> Option<String> {
@@ -1398,6 +1482,14 @@ mod tests {
         let anchor = posted(&[head_of(NEW), "/home/u/p".into()]);
         assert_eq!(address(&anchor).as_deref(), Some(NEW));
         assert_eq!(address(&posted(&["plain".into()])), None);
+        let document = serde_json::json!({
+            "caption": "🐱 01234567/fedcba98 5s",
+            "caption_entities": [
+                {"type": "bold", "offset": 0, "length": 2},
+                {"type": "code", "offset": 3, "length": 17},
+            ],
+        });
+        assert_eq!(address(&document).as_deref(), Some("01234567"));
         assert_eq!(
             address(&serde_json::json!({"text": "from the phone"})),
             None

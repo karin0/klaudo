@@ -13,10 +13,16 @@ use hook::Event;
 /// The terminal holds back the text a delta carries until this process returns, so a
 /// resident that has gone away must not turn into a stall.
 const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
+/// Outlasts the resident's attempts at an upload, with room for the calls queued ahead
+/// of it.
+const UPLOAD_WAIT: Duration =
+    Duration::from_secs(telegram::UPLOAD_TIMEOUT.as_secs() * telegram::ATTEMPTS as u64 + 60);
 
 fn main() {
-    match std::env::args().nth(1).as_deref() {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
         Some("listen") => listen::run(),
+        Some("send") => send(&args.next().expect("usage: klaude send <file>")),
         Some(unknown) => panic!("unknown argument {unknown}"),
         None => {
             let mut raw = Vec::new();
@@ -87,4 +93,30 @@ fn forward(raw: &[u8]) -> bool {
     handoff.extend_from_slice(raw);
     handoff.push(b'}');
     socket.send_to(&handoff, listen::socket_path()).is_ok()
+}
+
+/// Hands a file to the resident for the chat of the turn this command runs in, and waits
+/// for how that went, so the exit status says whether the file reached the chat. Claude
+/// Code names the session in the environment of every command it runs, and a command
+/// run anywhere else sends to `CHAT_ID`.
+fn send(file: &str) {
+    let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+    let file = std::fs::canonicalize(file).unwrap_or_else(|error| panic!("{file}: {error}"));
+    assert!(file.is_file(), "{} is not a file", file.display());
+    let reply = listen::runtime_dir().join(format!("send-{}.sock", std::process::id()));
+    let socket = UnixDatagram::bind(&reply).expect("bind");
+    socket
+        .set_read_timeout(Some(UPLOAD_WAIT))
+        .expect("read timeout");
+    let request = serde_json::json!({"session": session, "file": file, "reply": reply});
+    let mut answer = vec![0; 4096];
+    let answered = socket
+        .send_to(request.to_string().as_bytes(), listen::socket_path())
+        .and_then(|_| socket.recv(&mut answer));
+    let _ = std::fs::remove_file(&reply);
+    let size = answered.expect("the resident");
+    if size > 0 {
+        eprintln!("{}", String::from_utf8_lossy(&answer[..size]));
+        std::process::exit(1);
+    }
 }

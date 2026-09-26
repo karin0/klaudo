@@ -200,21 +200,29 @@ fn quote(text: &str) -> String {
 
 /// Where the work is happening.
 pub fn project(dir: &Path) -> String {
-    format!(
-        "**{}**",
-        prose(&dir.file_name().unwrap_or(dir.as_os_str()).to_string_lossy())
-    )
+    format!("**{}**", prose(&name(dir)))
 }
 
-/// The line every message opens with: where the work is, which session, and which turn
-/// of that session. The prompt id is what tells one turn from the next.
+pub fn name(dir: &Path) -> String {
+    dir.file_name()
+        .unwrap_or(dir.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The line every message opens with: where the work is, then its address.
 pub fn head(project: &str, session: &str, prompt: Option<&str>) -> String {
+    format!("{project} `{}`", address(session, prompt))
+}
+
+/// Which session, and which turn of that session. The prompt id is what tells one turn
+/// from the next.
+pub fn address(session: &str, prompt: Option<&str>) -> String {
     let short = |id: &str| id.chars().take(8).collect::<String>();
-    let address = match prompt {
+    match prompt {
         Some(prompt) => format!("{}/{}", short(session), short(prompt)),
         None => short(session),
-    };
-    format!("{project} `{address}`")
+    }
 }
 
 /// An untagged title is what a message in the middle of a turn carries.

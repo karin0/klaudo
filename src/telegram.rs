@@ -4,8 +4,12 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use ureq::unversioned::multipart::{Form, Part};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// An upload is as large as the 50 MB Telegram accepts from a bot, over whatever uplink
+/// the machine has.
+pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long Telegram holds a poll open with nothing to report.
 const POLL_SECONDS: u64 = 50;
 /// Telegram rejects a rich message past 32768 characters of rendered text, and a
@@ -16,7 +20,7 @@ const MAX_CHARS: usize = 32768;
 /// about again this many times. A retry can post a message twice when the answer to the
 /// first was lost, which is the smaller harm, because the message a turn's thread hangs
 /// from cannot be recovered once it is gone.
-const ATTEMPTS: u32 = 3;
+pub const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = Duration::from_secs(1);
 /// What klaude leaves on a message whose text reached a session's input box.
 const SEEN: &str = "👀";
@@ -74,13 +78,37 @@ impl Telegram {
             "rich_message": {"markdown": clamp(markdown)},
         });
         if let Some(message_id) = reply_to {
-            // A prompt the user deleted must not take the answer to it down as well.
-            body["reply_parameters"] = json!({
-                "message_id": message_id,
-                "allow_sending_without_reply": true,
-            });
+            body["reply_parameters"] = replying(message_id);
         }
         self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
+    }
+
+    /// Posts a file without a sound, under an HTML caption where one is given, since a
+    /// document takes no rich message. What went wrong is handed back for whoever asked
+    /// for the upload.
+    pub fn document(
+        &self,
+        chat: i64,
+        path: &Path,
+        caption: Option<&str>,
+        reply_to: Option<i64>,
+    ) -> Result<(), String> {
+        let chat = chat.to_string();
+        let reply = reply_to.map(|message_id| replying(message_id).to_string());
+        self.attempt("sendDocument", UPLOAD_TIMEOUT, |request| {
+            let mut form = Form::new()
+                .text("chat_id", &chat)
+                .text("disable_notification", "true")
+                .part("document", Part::file(path)?);
+            if let Some(caption) = caption {
+                form = form.text("caption", caption).text("parse_mode", "HTML");
+            }
+            if let Some(reply) = &reply {
+                form = form.text("reply_parameters", reply);
+            }
+            request.send(form)
+        })
+        .map(drop)
     }
 
     /// Rewrites a message klaude posted, for a segment that received more after it went
@@ -150,28 +178,46 @@ impl Telegram {
     }
 
     fn call(&self, method: &str, body: &Value) -> Option<Value> {
-        let url = format!("{}/bot{}/{method}", self.base, self.token);
         // Telegram holds a poll open for the wait the request itself names, so one
         // attempt is bounded by that wait plus the patience every call gets.
         let held = Duration::from_secs(body["timeout"].as_u64().unwrap_or_default());
+        self.attempt(method, TIMEOUT + held, |request| request.send_json(body))
+            .ok()
+    }
+
+    /// Makes a request up to `ATTEMPTS` times, each bounded by `timeout`, and hands back
+    /// Telegram's answer or the last failure.
+    fn attempt(
+        &self,
+        method: &str,
+        timeout: Duration,
+        send: impl Fn(
+            ureq::RequestBuilder<ureq::typestate::WithBody>,
+        ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+    ) -> Result<Value, String> {
+        let url = format!("{}/bot{}/{method}", self.base, self.token);
+        let mut failure = String::new();
         for attempt in 1..=ATTEMPTS {
-            let outcome = self
+            let request = self
                 .agent
                 .post(&url)
                 .config()
-                .timeout_global(Some(TIMEOUT + held))
-                .build()
-                .send_json(body)
-                .and_then(|mut response| response.body_mut().read_json::<Value>());
+                .timeout_global(Some(timeout))
+                .build();
+            let outcome =
+                send(request).and_then(|mut response| response.body_mut().read_json::<Value>());
             let wait = match outcome {
-                Ok(answer) if answer["ok"] == Value::Bool(true) => return Some(answer),
+                Ok(answer) if answer["ok"] == Value::Bool(true) => return Ok(answer),
                 Ok(answer) => {
-                    self.report(method, &answer.to_string());
+                    failure = self.report(method, &answer.to_string());
                     // A rejection of the request itself ends the call.
-                    retry_after(&answer, attempt)?
+                    match retry_after(&answer, attempt) {
+                        Some(wait) => wait,
+                        None => return Err(failure),
+                    }
                 }
                 Err(error) => {
-                    self.report(method, &error.to_string());
+                    failure = self.report(method, &error.to_string());
                     backoff(attempt)
                 }
             };
@@ -179,14 +225,24 @@ impl Telegram {
                 std::thread::sleep(wait);
             }
         }
-        None
+        Err(failure)
     }
 
     /// The bot token rides in every request URL, and ureq quotes the URL back in its
-    /// errors, so it is masked before anything reaches the log.
-    fn report(&self, method: &str, detail: &str) {
-        eprintln!("{method}: {}", detail.replace(&self.token, "***"));
+    /// errors, so it is masked before anything reaches the log or leaves the process.
+    fn report(&self, method: &str, detail: &str) -> String {
+        let masked = format!("{method}: {}", detail.replace(&self.token, "***"));
+        eprintln!("{masked}");
+        masked
     }
+}
+
+/// A prompt the user deleted must not take the answer to it down as well.
+fn replying(message_id: i64) -> Value {
+    json!({
+        "message_id": message_id,
+        "allow_sending_without_reply": true,
+    })
 }
 
 /// How long before asking again, for a rejection that asking again can answer
