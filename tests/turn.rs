@@ -18,7 +18,8 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// a deletion issued right after the answer is part of what it reads.
 const GRACE: Duration = Duration::from_millis(600);
 /// The chat is a group, so the chat and the user klaude answers are two ids. The user's
-/// private chat with the bot has the user's id.
+/// private chat with the bot has the user's id. This repository is the project listed
+/// for the group, so a session opened here posts there.
 const GROUP: i64 = -1001;
 const OWNER: i64 = 7;
 const STRANGER: i64 = 8;
@@ -584,7 +585,7 @@ fn prepare(name: &str, port: u16) -> PathBuf {
     std::fs::create_dir_all(root.join("config/klaude")).expect("configuration directory");
     std::fs::write(
         root.join("config/klaude/env"),
-        format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nAPI_BASE=http://127.0.0.1:{port}\n"),
+        format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nCHAT_PROJECTS={}\nAPI_BASE=http://127.0.0.1:{port}\n", env!("CARGO_MANIFEST_DIR")),
     )
     .expect("credentials");
     root
@@ -835,15 +836,17 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
         "session ffffffff has not reported to klaude\n"
     );
 
-    // Run outside Claude Code, it names no session and the file goes to `CHAT_ID`.
+    // Run outside Claude Code, it names no session, and the directory it runs in is no
+    // project listed for the group, so the file goes to the user's private chat.
     let bare = klaude(&root)
         .args(["send".as_ref(), file.as_os_str()])
+        .current_dir(&root)
         .output()
         .expect("run send");
     assert!(bare.status.success(), "send failed: {bare:?}");
     let made = collect(&calls, |call| call.label.starts_with("sendDocument"));
     let document = made.last().expect("the file");
-    assert_eq!(document.chat, Some(GROUP));
+    assert_eq!(document.chat, Some(OWNER));
     assert_eq!(document.reply, json!(null));
     assert_eq!(document.markdown, "");
     drop(resident);

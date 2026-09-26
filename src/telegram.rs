@@ -37,6 +37,9 @@ pub struct Telegram {
     token: String,
     chat_id: i64,
     user_id: i64,
+    /// The directories whose sessions post in `CHAT_ID`; every other goes to the user's
+    /// private chat.
+    projects: Vec<PathBuf>,
     agent: ureq::Agent,
 }
 
@@ -47,6 +50,7 @@ impl Telegram {
         let token = required("BOT_TOKEN");
         let chat_id = id(&required("CHAT_ID"), "CHAT_ID");
         let user_id = user(chat_id, setting("USER_ID").map(|user| id(&user, "USER_ID")));
+        let projects = setting("CHAT_PROJECTS").map_or_else(Vec::new, |value| projects(&value));
         // The test stands a recording server in front of the daemon here.
         let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
         let agent = ureq::Agent::config_builder()
@@ -59,6 +63,7 @@ impl Telegram {
             token,
             chat_id,
             user_id,
+            projects,
             agent,
         }
     }
@@ -149,9 +154,13 @@ impl Telegram {
         );
     }
 
-    /// Where a turn goes when nobody asked for it from the chat.
-    pub fn chat(&self) -> i64 {
-        self.chat_id
+    /// Where a turn of the project at `dir` goes when nobody asked for it from the chat.
+    pub fn chat(&self, dir: &Path) -> i64 {
+        if listed(&self.projects, dir) {
+            self.chat_id
+        } else {
+            self.user_id
+        }
     }
 
     /// Whether a message is one to act on: the user's own, sent in `CHAT_ID` or in the
@@ -321,6 +330,25 @@ fn id(value: &str, name: &str) -> i64 {
         .unwrap_or_else(|_| panic!("{name} in {} is not an integer id", env_file().display()))
 }
 
+/// `CHAT_PROJECTS` as `PATH` spells a list, each an absolute directory.
+fn projects(value: &str) -> Vec<PathBuf> {
+    std::env::split_paths(value)
+        .inspect(|project| {
+            assert!(
+                project.is_absolute(),
+                "CHAT_PROJECTS in {} holds {}, which is not an absolute directory",
+                env_file().display(),
+                project.display()
+            );
+        })
+        .collect()
+}
+
+/// Whether `dir` is one of `projects` or inside one, compared by whole components.
+fn listed(projects: &[PathBuf], dir: &Path) -> bool {
+    projects.iter().any(|project| dir.starts_with(project))
+}
+
 /// The user a chat without `USER_ID` belongs to, which is the private chat's own id. A
 /// group's id is negative and belongs to nobody, so a group needs `USER_ID`.
 fn user(chat: i64, user: Option<i64>) -> i64 {
@@ -374,6 +402,23 @@ mod tests {
         assert_eq!(user(42, None), 42);
         assert_eq!(user(-1001, Some(7)), 7);
         assert_eq!(user(42, Some(7)), 7);
+    }
+
+    #[test]
+    fn a_project_is_listed_with_everything_under_it() {
+        let projects = projects("/home/u/work:/srv/bot/");
+        assert!(listed(&projects, Path::new("/home/u/work")));
+        assert!(listed(&projects, Path::new("/home/u/work/api")));
+        assert!(listed(&projects, Path::new("/srv/bot")));
+        assert!(!listed(&projects, Path::new("/home/u/workshop")));
+        assert!(!listed(&projects, Path::new("/home/u")));
+        assert!(!listed(&[], Path::new("/home/u/work")));
+    }
+
+    #[test]
+    #[should_panic(expected = "not an absolute directory")]
+    fn a_relative_project_stops_the_process() {
+        projects("/home/u/work:work");
     }
 
     #[test]

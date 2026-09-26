@@ -128,7 +128,8 @@ into a dialog. Answer that once locally and the directory stays trusted.
 Only one person is answered: a message is acted on when `USER_ID` sent it, in `CHAT_ID`
 or in that person's private chat with the bot. A turn a message started is posted in
 the chat the message came from, and so is whatever klaude says back to a message; a
-turn started in the terminal goes to `CHAT_ID`. In a group, a bot in Telegram's default privacy mode receives only commands
+turn started in the terminal goes to `CHAT_ID` when its project is listed in
+`CHAT_PROJECTS`, and to the private chat otherwise. In a group, a bot in Telegram's default privacy mode receives only commands
 and replies to its own messages, so a message replying to nothing reaches klaude only
 once privacy mode is turned off with BotFather's `/setprivacy` or the bot is made an
 admin. A channel is not supported: a post there carries no sender to check.
@@ -136,10 +137,10 @@ admin. A channel is not supported: a post there carries no sender to check.
 ## Sending a file
 
 `klaude send <file>` posts a file as a document in the thread of the turn that ran the
-command, below what the turn has said so far, and in `CHAT_ID` between turns. Claude
-Code puts `CLAUDE_CODE_SESSION_ID` in the environment of every command it runs, which is
-how the command finds its session. Run anywhere else, the command sends the file to
-`CHAT_ID` without a caption. Claude learns the command from whatever instructions
+command, below what the turn has said so far, and in the chat of the session's project
+between turns. Claude Code puts `CLAUDE_CODE_SESSION_ID` in the environment of every
+command it runs, which is how the command finds its session. Run anywhere else, the
+command sends the file without a caption to the chat of the directory it runs in. Claude learns the command from whatever instructions
 it reads, such as a line in `~/.claude/CLAUDE.md`.
 
 The command hands the path to the resident and waits for the upload to finish, so its
@@ -194,17 +195,23 @@ chat knows when to type its first prompt.
 
 ## Configuration
 
-`BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` come from
+`BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` and `CHAT_PROJECTS` come from
 `$XDG_CONFIG_HOME/klaude/env`, which defaults to `~/.config/klaude/env`. That file is the whole of where they come from, so a token
 changed there is the token every session uses from its next event on, and a value
 exported in a shell reaches nothing. A file that cannot be read, or a name missing from
-it, stops the process and names the file. `CHAT_ID` is the integer id of the chat a
-turn started in the terminal goes to, and `USER_ID` is the integer id of the person
-klaude answers. A private chat's id is its person's id, so `USER_ID` defaults to
+it, stops the process and names the file. `CHAT_ID` is the integer id of the chat, and
+`USER_ID` is the integer id of the person klaude answers. A private chat's id is its person's id, so `USER_ID` defaults to
 `CHAT_ID`. A group's id is negative, and a group `CHAT_ID` without `USER_ID` stops the
 process. A message klaude ignores is logged with its chat's id and title
 and its sender's id, so `journalctl --user -u klaude` after a message sent in a group
 shows the ids to write here.
+
+`CHAT_PROJECTS` lists the projects whose turns started in the terminal go to `CHAT_ID`,
+as absolute directories separated by `:` the way `PATH` is written. A project is the
+directory a session was opened in, the one its messages are headed with, and it is
+listed when it is one of those directories or inside one. Every other project goes to
+the private chat, which is all of them when the name is absent. A relative directory
+in the list stops the process.
 
 `dotenvy` reads the file: `NAME=value` lines, `#` opening a comment, an `export` in
 front allowed, and a `$` expanding outside single quotes, so a file written for a shell
@@ -307,7 +314,8 @@ follows them; that a delta landing after its own `Stop` leaves the answer last; 
 flush and a
 tool outcome arriving after their segment went out rewrite that message; that a file
 `klaude send` posts replies to the prompt of its turn, one from a session klaude has not
-heard from fails the command, and one sent outside Claude Code goes to `CHAT_ID`; and
+heard from fails the command, and one sent outside Claude Code from a directory not in
+`CHAT_PROJECTS` goes to the private chat; and
 that a
 message replying to nothing reaches the session heard from last, while the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
