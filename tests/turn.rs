@@ -296,6 +296,46 @@ fn an_answer_arriving_with_its_stop_is_shown_once() {
     drop(resident);
 }
 
+/// A compaction Claude Code started mid-turn is a quiet note in that turn, and a
+/// `/compact` rings as the answer to it, both quoting the summary and its reasoning.
+#[test]
+fn a_compaction_reports_its_summary() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("compacted", port);
+    let root = temporary.path();
+    let resident = resident(root);
+    let summary = "<analysis>\nwhy\n</analysis>\n\n<summary>\nall of it\n</summary>";
+
+    let events = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "work"}),
+        json!({"hook_event_name": "PostCompact", "trigger": "auto", "compact_summary": summary}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+        json!({"hook_event_name": "PostCompact", "trigger": "manual", "compact_summary": summary}),
+    ];
+    for mut event in events {
+        event["session_id"] = json!("0123456789abcdef");
+        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        hook(root, &event);
+    }
+
+    let made = collect(&calls, |call| {
+        call.label == "sendRichMessage ring" && call.markdown.contains("#compact")
+    });
+    let quoted = "<blockquote expandable>all of it<cite>summary</cite></blockquote>\n\n\
+                  <blockquote expandable>why<cite>analysis</cite></blockquote>"
+        .to_owned();
+    assert_eq!(
+        holding(&made),
+        [
+            ("silent", ">work".to_owned()),
+            ("silent", quoted.clone()),
+            ("ring", "done".to_owned()),
+            ("ring", quoted),
+        ]
+    );
+    drop(resident);
+}
+
 /// A turn that talked, worked and talked again leaves three messages in order, and the
 /// run of tool calls is the middle one.
 #[test]

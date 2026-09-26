@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::telegram::MAX_CHARS;
+
 /// Fields that identify the invocation rather than describe it, dropped from the
 /// verbatim report an unrecognised event falls back to.
 const BOILERPLATE: [&str; 2] = ["permission_mode", "effort"];
@@ -24,6 +26,10 @@ const SUBJECT: [&str; 7] = [
 /// glance. Three lines of a phone's screen, which a command fills before a reader has
 /// stopped taking it in.
 const SUBJECT_MAX: usize = 120;
+
+/// How much of the reasoning a compaction's model writes ahead of its summary the
+/// message carries, since that reasoning is the part of the message a reader skips.
+const ANALYSIS_MAX: usize = 4000;
 
 /// Marks the end of a turn, so a chat holding several projects can be filtered down to
 /// the replies that finished a piece of work.
@@ -68,6 +74,11 @@ pub struct Event {
     pub error: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    /// What started a compaction: `manual` for `/compact`, `auto` for a full context.
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub compact_summary: Option<String>,
     #[serde(flatten)]
     rest: Map<String, Value>,
 }
@@ -122,11 +133,17 @@ impl Event {
             "Stop" => TAG.to_owned(),
             "StopFailure" => format!("{TAG} #failed"),
             "Notification" => format!("{TAG} #input"),
+            // A compaction asked for is the whole of what that request did, while one
+            // Claude Code started happens inside a turn whose `Stop` is still to come.
+            "PostCompact" if self.manual() => format!("{TAG} #compact"),
+            "PostCompact" => "#compact".to_owned(),
             other => format!("{TAG} #{other}"),
         }
     }
 
-    fn body(&self) -> String {
+    /// What the message says under its title, in at most `room` characters where the
+    /// event carries more than a message holds.
+    fn body(&self, room: usize) -> String {
         match self.hook_event_name.as_str() {
             // What was asked is quoted, so a chat scrolled through tells the asks from
             // the answers at a glance.
@@ -135,8 +152,13 @@ impl Event {
             "Stop" => self.last_assistant_message.clone().unwrap_or_default(),
             "StopFailure" => prose(&self.error.clone().unwrap_or_else(|| self.residue())),
             "Notification" => prose(&self.message.clone().unwrap_or_else(|| self.residue())),
+            "PostCompact" => compaction(self.compact_summary.as_deref().unwrap_or_default(), room),
             _ => prose(&self.residue()),
         }
+    }
+
+    pub fn manual(&self) -> bool {
+        self.trigger.as_deref() == Some("manual")
     }
 
     fn residue(&self) -> String {
@@ -189,6 +211,56 @@ pub fn prose(text: &str) -> String {
     written
 }
 
+/// The characters Telegram's HTML reserves.
+pub fn html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// A compaction's summary and the reasoning its model wrote ahead of it, each folded into
+/// a quotation that opens on a tap. The summary is what Claude Code keeps, so it comes
+/// first and takes the room it needs, and the reasoning gets what is left of the rest.
+fn compaction(raw: &str, room: usize) -> String {
+    let within = |tag: &str| {
+        let (_, rest) = raw.split_once(&format!("<{tag}>"))?;
+        let (inner, _) = rest.split_once(&format!("</{tag}>"))?;
+        Some(inner.trim())
+    };
+    let summary = fold(within("summary").unwrap_or(raw.trim()), "summary", room);
+    let left = room.saturating_sub(summary.chars().count() + 2);
+    match within("analysis").map(|analysis| fold(analysis, "analysis", left.min(ANALYSIS_MAX))) {
+        Some(analysis) if !analysis.is_empty() => format!("{summary}\n\n{analysis}"),
+        _ => summary,
+    }
+}
+
+/// Text in a quotation that opens on a tap, credited with what it is, cut to `room`
+/// characters of markup. Markdown is not parsed inside a block HTML tag, so the text
+/// travels as HTML. Empty when not even the markup fits.
+fn fold(text: &str, credit: &str, room: usize) -> String {
+    let open = "<blockquote expandable>";
+    let close = format!("<cite>{credit}</cite></blockquote>");
+    let Some(mut left) = room.checked_sub(open.len() + close.len() + 1) else {
+        return String::new();
+    };
+    let mut folded = String::from(open);
+    for character in text.chars() {
+        let escaped = match character {
+            '\n' => "<br>".to_owned(),
+            other => html(&other.to_string()),
+        };
+        let Some(rest) = left.checked_sub(escaped.chars().count()) else {
+            folded.push('\u{2026}');
+            break;
+        };
+        left = rest;
+        folded.push_str(&escaped);
+    }
+    folded.push_str(&close);
+    folded
+}
+
 /// A block quotation, which every line carries its own marker of because a line without
 /// one ends the quote.
 fn quote(text: &str) -> String {
@@ -232,7 +304,9 @@ pub fn compose(head: &str, took: &str, tag: &str, body: &str) -> String {
 }
 
 pub fn message(event: &Event, head: &str, took: &str) -> String {
-    compose(head, took, &event.tag(), &event.body())
+    let tag = event.tag();
+    let title = compose(head, took, &tag, "").chars().count();
+    compose(head, took, &tag, &event.body(MAX_CHARS - title))
 }
 
 #[cfg(test)]
@@ -369,12 +443,57 @@ mod tests {
             "hook_event_name": "PreCompact",
             "session_id": "s",
             "transcript_path": "/tmp/t.jsonl",
-            "trigger": "auto",
+            "reason": "clear",
         }));
         assert_eq!(
             message(&odd, "**p**", ""),
-            "**p**  #claude #PreCompact\n\n\\{\"trigger\":\"auto\"\\}"
+            "**p**  #claude #PreCompact\n\n\\{\"reason\":\"clear\"\\}"
         );
+    }
+
+    #[test]
+    fn a_compaction_quotes_its_summary_folded_and_clipped() {
+        let compacted = |trigger: &str, summary: &str| {
+            message(
+                &event(serde_json::json!({
+                    "hook_event_name": "PostCompact",
+                    "session_id": "s",
+                    "trigger": trigger,
+                    "compact_summary": summary,
+                })),
+                "**p**",
+                "",
+            )
+        };
+        assert_eq!(
+            compacted(
+                "manual",
+                "<analysis>\nwhy\n</analysis>\n\n<summary>\n1. a < b\n\n2. done\n</summary>"
+            ),
+            "**p**  #claude #compact\n\n\
+             <blockquote expandable>1. a &lt; b<br><br>2. done<cite>summary</cite></blockquote>\n\n\
+             <blockquote expandable>why<cite>analysis</cite></blockquote>"
+        );
+        // The summary fills the message, up to an escape that would overrun it, so the
+        // reasoning is left out.
+        let long = compacted(
+            "auto",
+            &format!(
+                "<analysis>why</analysis><summary>{}</summary>",
+                "<".repeat(MAX_CHARS)
+            ),
+        );
+        assert!((MAX_CHARS - 3..=MAX_CHARS).contains(&long.chars().count()));
+        assert!(long.ends_with("&lt;\u{2026}<cite>summary</cite></blockquote>"));
+        let reasoned = compacted(
+            "auto",
+            &format!(
+                "<analysis>{}</analysis><summary>s</summary>",
+                "x".repeat(MAX_CHARS)
+            ),
+        );
+        let analysis = reasoned.split("\n\n").last().expect("the reasoning");
+        assert_eq!(analysis.chars().count(), ANALYSIS_MAX);
     }
 
     #[test]
