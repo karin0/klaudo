@@ -496,7 +496,10 @@ fn replying_to(message_id: i64) -> serde_json::Value {
 /// One call the resident made, as the server saw it.
 struct Call {
     label: String,
+    /// A message's markdown, or the caption of a file.
     markdown: String,
+    /// What an uploaded file holds.
+    document: Option<String>,
     reply: serde_json::Value,
     /// The message the call acts on, for a rewrite or a deletion.
     target: Option<i64>,
@@ -616,6 +619,7 @@ fn klaude(root: &Path) -> Command {
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .stdin(Stdio::piped());
     command
 }
@@ -699,27 +703,37 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         .to_owned();
 
     let mut length = 0;
+    let mut boundary = None;
     loop {
         let mut header = String::new();
         request.read_line(&mut header).expect("header");
         if header.trim().is_empty() {
             break;
         }
+        let header = header.trim().to_owned();
         if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
             length = value.trim().parse().expect("content length");
+        }
+        if let Some((_, value)) = header.split_once("boundary=") {
+            boundary = Some(value.to_owned());
         }
     }
     let mut body = vec![0; length];
     request.read_exact(&mut body).expect("body");
-    let body: serde_json::Value = serde_json::from_slice(&body).expect("a JSON body");
+    let body = match boundary {
+        Some(boundary) => form(&String::from_utf8(body).expect("a text form"), &boundary),
+        None => serde_json::from_slice(&body).expect("a JSON body"),
+    };
 
     // The poll that asks what the chat said is not a call the turn made.
     let sent = if method == "getUpdates" {
         json!({"ok": true, "result": chat.drain()}).to_string()
     } else {
         let sound = match method.as_str() {
-            "sendRichMessage" if body["disable_notification"] == json!(true) => " silent",
-            "sendRichMessage" => " ring",
+            "sendRichMessage" | "sendDocument" if body["disable_notification"] == json!(true) => {
+                " silent"
+            }
+            "sendRichMessage" | "sendDocument" => " ring",
             _ => "",
         };
         calls
@@ -727,8 +741,10 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
                 label: format!("{method}{sound}"),
                 markdown: body["rich_message"]["markdown"]
                     .as_str()
+                    .or(body["caption"].as_str())
                     .unwrap_or_default()
                     .to_owned(),
+                document: body["document"].as_str().map(str::to_owned),
                 reply: body["reply_parameters"].clone(),
                 target: body["message_id"].as_i64(),
                 chat: body["chat_id"].as_i64(),
@@ -743,6 +759,95 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         sent.len()
     )
     .expect("answer");
+}
+
+/// A multipart form as the JSON body the same call would carry otherwise: a field that
+/// reads as JSON is that value, and anything else is its text.
+fn form(body: &str, boundary: &str) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    for part in body.split(&format!("--{boundary}")) {
+        let Some((headers, value)) = part.split_once("\r\n\r\n") else {
+            continue;
+        };
+        let name = headers
+            .split("name=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("a field name");
+        let value = value.strip_suffix("\r\n").unwrap_or(value);
+        let value = serde_json::from_str(value).unwrap_or_else(|_| json!(value));
+        fields.insert(name.to_owned(), value);
+    }
+    fields.into()
+}
+
+/// A file a session sends lands in the thread of the turn that sent it, below what the
+/// turn has said, and `klaude send` exits with how the upload went.
+#[test]
+fn a_file_a_turn_sends_lands_in_its_thread() {
+    let (port, calls, _chat) = recorder();
+    let root = prepare("file", port);
+    let resident = resident(&root);
+    let session = "0123456789abcdef";
+
+    hook(
+        &root,
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session,
+            "prompt_id": "aaaaaaaa-1111",
+            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "prompt": "show me the log",
+        }),
+    );
+    let file = root.join("build.log");
+    std::fs::write(&file, "all green").expect("the file to send");
+    let sent = klaude(&root)
+        .args(["send".as_ref(), file.as_os_str()])
+        .env("CLAUDE_CODE_SESSION_ID", session)
+        .output()
+        .expect("run send");
+    assert!(sent.status.success(), "send failed: {sent:?}");
+
+    let made = collect(&calls, |call| call.label.starts_with("sendDocument"));
+    let document = made.last().expect("the file");
+    assert_eq!(document.label, "sendDocument silent");
+    assert_eq!(document.document.as_deref(), Some("all green"));
+    assert_eq!(document.chat, Some(GROUP));
+    assert_eq!(document.reply, replying_to(made[0].id));
+    assert!(
+        document
+            .markdown
+            .starts_with("<b>klaude</b> <code>01234567/aaaaaaaa</code> "),
+        "the caption reads {:?}",
+        document.markdown
+    );
+
+    // A session klaude has never heard from has no thread to post in.
+    let refused = klaude(&root)
+        .args(["send".as_ref(), file.as_os_str()])
+        .env("CLAUDE_CODE_SESSION_ID", "ffffffff")
+        .output()
+        .expect("run send");
+    assert!(!refused.status.success(), "send to nowhere succeeded");
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "session ffffffff has not reported to klaude\n"
+    );
+
+    // Run outside Claude Code, it names no session and the file goes to `CHAT_ID`.
+    let bare = klaude(&root)
+        .args(["send".as_ref(), file.as_os_str()])
+        .output()
+        .expect("run send");
+    assert!(bare.status.success(), "send failed: {bare:?}");
+    let made = collect(&calls, |call| call.label.starts_with("sendDocument"));
+    let document = made.last().expect("the file");
+    assert_eq!(document.chat, Some(GROUP));
+    assert_eq!(document.reply, json!(null));
+    assert_eq!(document.markdown, "");
+    drop(resident);
+    std::fs::remove_dir_all(&root).expect("clean up");
 }
 
 /// A message's last flushes race the hook of the tool call that ends it, so a delta can

@@ -133,6 +133,22 @@ and replies to its own messages, so a message replying to nothing reaches klaude
 once privacy mode is turned off with BotFather's `/setprivacy` or the bot is made an
 admin. A channel is not supported: a post there carries no sender to check.
 
+## Sending a file
+
+`klaude send <file>` posts a file as a document in the thread of the turn that ran the
+command, below what the turn has said so far, and in `CHAT_ID` between turns. Claude
+Code puts `CLAUDE_CODE_SESSION_ID` in the environment of every command it runs, which is
+how the command finds its session. Run anywhere else, the command sends the file to
+`CHAT_ID` without a caption. Claude learns the command from whatever instructions
+it reads, such as a line in `~/.claude/CLAUDE.md`.
+
+The command hands the path to the resident and waits for the upload to finish, so its
+exit status says whether the file reached the chat, and a failure prints what Telegram
+answered. A bot uploads files of up to 50 MB.
+
+A document carries no rich message, so its caption is the head in Telegram's HTML, and a
+reply to the file reaches the session like a reply to any message of the turn.
+
 ## Why keystrokes
 
 Claude Code's own local messaging socket delivers text to a running session too, and
@@ -289,7 +305,10 @@ own; that a run of tool calls is a message between the two halves of what the tu
 that a call announced ahead of the words introducing it still
 follows them; that a delta landing after its own `Stop` leaves the answer last; that a
 flush and a
-tool outcome arriving after their segment went out rewrite that message; and that a
+tool outcome arriving after their segment went out rewrite that message; that a file
+`klaude send` posts replies to the prompt of its turn, one from a session klaude has not
+heard from fails the command, and one sent outside Claude Code goes to `CHAT_ID`; and
+that a
 message replying to nothing reaches the session heard from last, while the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
 the chat it was sent in.
