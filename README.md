@@ -189,6 +189,12 @@ resident keeps the reports in memory, so after a restart they come back with the
 redraw of a status line. Claude Code draws `/usage` as a dialog that takes every key
 until it is dismissed, which is why the resident answers it instead of typing it.
 
+The answer that closes a turn ends with the same figures as one line of code: how full
+the context is, then how much of the five-hour and seven-day limits is used and how
+long until each resets, as in `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`. They are what the
+resident holds when the `Stop` arrives, so a status line redrawn after it leaves the
+context one call behind.
+
 The resident lists `/new`, `/resume`, `/usage` and `/compact` in the command menu when it starts, for the user alone: in the private chat, and in `CHAT_ID` for that
 member only. `/compact` goes to a session like any other message, with the `@<bot>` a
 group's command menu appends taken off.

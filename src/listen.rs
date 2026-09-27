@@ -1173,7 +1173,12 @@ impl Machine {
         };
         session.done = Some(turn.prompt_id.clone());
         let head = session.head(id, Some(&turn.prompt_id));
-        let message = hook::message(event, &head, &took(turn.started.elapsed()));
+        let mut message = hook::message(event, &head, &took(turn.started.elapsed()));
+        if event.hook_event_name == "Stop"
+            && let Some(line) = status_line(session.window.as_ref(), self.limits.as_ref())
+        {
+            message = format!("{message}\n\n{line}");
+        }
         // The one sound of the turn: the reply is complete and worth coming back to.
         let thread = turn.thread;
         let answer = self
@@ -1785,7 +1790,7 @@ impl Machine {
                             "{}{name} {:.0}%, resets in {}\n{UNDER}{}",
                             gauge(limit.used_percentage),
                             limit.used_percentage,
-                            until(left),
+                            until(left, " "),
                             moment(limit.resets_at, &utc(limit.resets_at)),
                         ));
                     }
@@ -1947,14 +1952,40 @@ fn ago_since(now: u64, then: u64) -> String {
     ago(Duration::from_secs(now.saturating_sub(then)))
 }
 
-/// How long until a limit resets, to the minute.
-fn until(left: Duration) -> String {
+/// How long until a limit resets, to the minute, with `gap` between the two units.
+fn until(left: Duration, gap: &str) -> String {
     let minutes = left.as_secs().div_ceil(60);
     match minutes {
         0..60 => format!("{minutes}m"),
-        60..1440 => format!("{}h {}m", minutes / 60, minutes % 60),
-        _ => format!("{}d {}h", minutes / 1440, minutes % 1440 / 60),
+        60..1440 => format!("{}h{gap}{}m", minutes / 60, minutes % 60),
+        _ => format!("{}d{gap}{}h", minutes / 1440, minutes % 1440 / 60),
     }
+}
+
+/// The figures `/usage` answers with, as one line of code under the answer that closes
+/// a turn: how full the context is, then how much of each limit is used and how long
+/// until it resets.
+fn status_line(window: Option<&(Window, u64)>, limits: Option<&(Limits, u64)>) -> Option<String> {
+    let now = unix_millis(SystemTime::now()) / 1000;
+    let context = window.and_then(|(window, _)| {
+        let usage = window.current_usage.as_ref()?;
+        Some(format!(
+            "{:.0}% {}/{}",
+            window.used_percentage?,
+            tokens(usage.uncached + usage.cache_written + usage.cache_read),
+            tokens(window.context_window_size),
+        ))
+    });
+    let limits = limits
+        .into_iter()
+        .flat_map(|(limits, _)| [&limits.five_hour, &limits.seven_day])
+        .flatten()
+        .map(|limit| {
+            let left = Duration::from_secs(limit.resets_at.saturating_sub(now));
+            format!("{:.0}% {}", limit.used_percentage, until(left, ""))
+        });
+    let figures: Vec<String> = context.into_iter().chain(limits).collect();
+    (!figures.is_empty()).then(|| format!("`{}`", figures.join(" · ")))
 }
 
 /// A token count the way Claude Code writes one, as `45.6k` or `1m`.
@@ -2392,9 +2423,9 @@ mod tests {
 
     #[test]
     fn a_reset_reads_to_the_minute() {
-        assert_eq!(until(Duration::from_secs(59)), "1m");
-        assert_eq!(until(Duration::from_mins(209)), "3h 29m");
-        assert_eq!(until(Duration::from_hours(62)), "2d 14h");
+        assert_eq!(until(Duration::from_secs(59), " "), "1m");
+        assert_eq!(until(Duration::from_mins(209), " "), "3h 29m");
+        assert_eq!(until(Duration::from_hours(62), " "), "2d 14h");
     }
 
     #[test]

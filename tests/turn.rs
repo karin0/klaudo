@@ -1649,6 +1649,68 @@ fn usage_is_answered_from_the_status_lines() {
             bar("▌░░░░░░░░░")
         )
     );
+
+    drop(resident);
+}
+
+/// The answer that closes a turn ends with what `/usage` answers, in one line of the
+/// figures the status lines reported so far.
+#[test]
+fn a_turn_ends_with_a_status_line() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("line", port);
+    let root = temporary.path();
+    let resident = resident(root);
+    let turn = |prompt: &str, line: &str| {
+        for mut event in [
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+            json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+        ] {
+            event["prompt_id"] = json!(prompt);
+            event["session_id"] = json!("aaaaaaaa");
+            event["cwd"] = json!(root);
+            hook(root, &event);
+        }
+        let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+        let answer = &made.last().expect("the answer").markdown;
+        assert!(answer.ends_with(line), "{answer}");
+    };
+
+    turn("p1", "done");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs();
+    status(
+        root,
+        &json!({
+            "session_id": "aaaaaaaa",
+            "context_window": {"context_window_size": 200_000, "current_usage": null, "used_percentage": null},
+            "rate_limits": {
+                "five_hour": {"used_percentage": 1, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
+                "seven_day": {"used_percentage": 56.4, "resets_at": now + 62 * 3600 + 30},
+            },
+        }),
+    );
+    turn("p2", "done\n\n`1% 3h30m · 56% 2d14h`");
+    status(
+        root,
+        &json!({
+            "session_id": "aaaaaaaa",
+            "context_window": {
+                "context_window_size": 1_000_000,
+                "current_usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 126,
+                    "cache_creation_input_tokens": 19957,
+                    "cache_read_input_tokens": 25597,
+                },
+                "used_percentage": 5,
+            },
+        }),
+    );
+    // Limits a later status line leaves out are still the ones reported last.
+    turn("p3", "done\n\n`5% 45.6k/1m · 1% 3h30m · 56% 2d14h`");
     drop(resident);
 }
 
