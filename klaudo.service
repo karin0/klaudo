@@ -1,9 +1,8 @@
 [Unit]
-Description=klaudo
+Description=Klaŭdo, Telegram integration for Claude Code
 After=default.target
 
 [Service]
-Type=simple
 ExecStart=/usr/local/bin/klaudo listen
 Restart=always
 RestartSec=2
