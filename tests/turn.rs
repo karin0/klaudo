@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -39,7 +39,7 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": session,
-            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "cwd": project(root),
             "prompt": "what does it do",
         }),
     );
@@ -90,7 +90,7 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
         .collect();
     assert_eq!(
         sent[0].markdown,
-        "**klaude** `01234567`\n\n>what does it do"
+        "**project** `01234567`\n\n>what does it do"
     );
     assert_eq!(sent[0].reply, json!(null), "the prompt opens the thread");
     // A prompt deleted from the chat leaves the answer to it a message of its own.
@@ -128,7 +128,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
     ];
     for mut event in turn {
         event["session_id"] = json!(session);
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         let streaming = event["hook_event_name"] == json!("MessageDisplay");
         hook(root, &event);
         if streaming {
@@ -153,7 +153,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         .filter(|call| call.label.starts_with("sendRichMessage "))
         .collect();
     // A queued prompt has no turn yet, so its head addresses the session alone.
-    assert_eq!(sent[1].markdown, "**klaude** `fedcba98`\n\n>second ask");
+    assert_eq!(sent[1].markdown, "**project** `fedcba98`\n\n>second ask");
     assert_eq!(
         sent[2].reply,
         replying_to(sent[0].id),
@@ -167,7 +167,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
     assert!(
         sent[3]
             .markdown
-            .starts_with("**klaude** `fedcba98/bbbbbbbb`"),
+            .starts_with("**project** `fedcba98/bbbbbbbb`"),
         "the queued turn's head reads {:?}",
         sent[3].markdown
     );
@@ -188,7 +188,7 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "0123456789abcdef",
-            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "cwd": project(root),
             "prompt": "what does it do",
         }),
     );
@@ -219,7 +219,7 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
     let last = turn.len() - 1;
     for (step, mut event) in turn.into_iter().enumerate() {
         event["session_id"] = json!(session);
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         hook(root, &event);
         if step < last {
             // Longer than the gap the resident leaves between two rewrites, so every
@@ -271,7 +271,7 @@ fn an_answer_arriving_with_its_stop_is_shown_once() {
     ];
     for (step, mut event) in turn.into_iter().enumerate() {
         event["session_id"] = json!(session);
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         hook(root, &event);
         if step == 0 {
             // Long enough for the message showing the turn to be up.
@@ -314,7 +314,7 @@ fn a_compaction_reports_its_summary() {
     ];
     for mut event in events {
         event["session_id"] = json!("0123456789abcdef");
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         hook(root, &event);
     }
 
@@ -362,7 +362,7 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     ];
     for mut event in turn {
         event["session_id"] = json!(session);
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         hook(root, &event);
         // What a turn says after a run of tool calls arrives once those calls have run,
         // which is far longer than the wait a call is filed after.
@@ -388,7 +388,7 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
         .filter(|call| call.label.starts_with("sendRichMessage "))
         .collect();
     assert!(
-        sent[2].markdown.starts_with("**klaude** `01234567/"),
+        sent[2].markdown.starts_with("**project** `01234567/"),
         "the run's head reads {:?}",
         sent[2].markdown
     );
@@ -424,7 +424,7 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     let last = turn.len() - 1;
     for (step, mut event) in turn.into_iter().enumerate() {
         event["session_id"] = json!(session);
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         hook(root, &event);
         // The call, its words and its outcome arrive together; the turn ends later.
         if step == last - 1 {
@@ -465,7 +465,7 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     ];
     for mut event in turn {
         event["session_id"] = json!(session);
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         hook(root, &event);
         std::thread::sleep(Duration::from_millis(400));
     }
@@ -499,8 +499,8 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     // `CHAT_PROJECTS`, so the session there, heard from last of all, is the private
     // chat's.
     for (session, cwd) in [
-        ("fedcba9876543210", Path::new(env!("CARGO_MANIFEST_DIR"))),
-        ("0123456789abcdef", Path::new(env!("CARGO_MANIFEST_DIR"))),
+        ("fedcba9876543210", project(root).as_path()),
+        ("0123456789abcdef", project(root).as_path()),
         ("89abcdef01234567", root),
     ] {
         hook(
@@ -583,7 +583,7 @@ fn a_topic_holds_its_own_conversations() {
         json!({
             "sessions": [{
                 "id": session,
-                "dir": env!("CARGO_MANIFEST_DIR"),
+                "dir": project(root),
                 "pid": std::process::id(),
                 "pane": null,
                 "seen": seen,
@@ -620,7 +620,7 @@ fn a_topic_holds_its_own_conversations() {
         &json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": session,
-            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "cwd": project(root),
             "prompt": "from the terminal",
         }),
     );
@@ -666,7 +666,7 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
         json!({
             "sessions": [{
                 "id": "0123456789abcdef",
-                "dir": env!("CARGO_MANIFEST_DIR"),
+                "dir": project(root),
                 "pid": std::process::id(),
                 "pane": null,
                 "seen": seen,
@@ -711,7 +711,7 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
         json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "0123456789abcdef",
-            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "cwd": project(root),
             "prompt": "what does it do",
         }),
         json!({
@@ -753,11 +753,7 @@ fn what_the_resident_knows_outlives_a_restart() {
     let resident = resident(root);
 
     for (event, session, cwd) in [
-        (
-            "SessionStart",
-            "0123456789abcdef",
-            Path::new(env!("CARGO_MANIFEST_DIR")),
-        ),
+        ("SessionStart", "0123456789abcdef", project(root).as_path()),
         ("SessionStart", "fedcba9876543210", root),
         ("SessionEnd", "fedcba9876543210", root),
     ] {
@@ -833,7 +829,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
     }
     let replied = json!({"rich_message": {"blocks": [
         {"type": "paragraph", "text": [
-            {"type": "bold", "text": "klaude"}, " ", {"type": "code", "text": "01234567/89abcdef"},
+            {"type": "bold", "text": "project"}, " ", {"type": "code", "text": "01234567/89abcdef"},
         ]},
     ]}});
     chat.replies(OWNER, OWNER, "pick it up", &replied);
@@ -850,8 +846,8 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         OWNER,
         OWNER,
         "and this",
-        &json!({"caption": "klaude 77777777", "caption_entities": [
-            {"type": "code", "offset": 7, "length": 8},
+        &json!({"caption": "project 77777777", "caption_entities": [
+            {"type": "code", "offset": 8, "length": 8},
         ]}),
     );
 
@@ -917,11 +913,7 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     for (event, session, cwd) in [
         ("SessionStart", "aaaaaaaa", root.join("a")),
         ("SessionStart", "bbbbbbbb", root.join("b")),
-        (
-            "SessionStart",
-            "cccccccc",
-            env!("CARGO_MANIFEST_DIR").into(),
-        ),
+        ("SessionStart", "cccccccc", project(root)),
         ("SessionEnd", "aaaaaaaa", root.join("a")),
     ] {
         hook(
@@ -1169,7 +1161,7 @@ fn collect(calls: &Receiver<Call>, done: impl Fn(&Call) -> bool) -> Vec<Call> {
 /// elapsed time.
 fn showing(markdown: &str, text: &str) {
     let (title, body) = markdown.split_once("\n\n").expect("a head and a body");
-    assert!(title.starts_with("**klaude**"), "head reads {title:?}");
+    assert!(title.starts_with("**project**"), "head reads {title:?}");
     let status = if text.is_empty() {
         body
     } else {
@@ -1213,13 +1205,20 @@ fn prepare(name: &str, port: u16) -> TempDir {
     .expect("a recording tmux");
     std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755))
         .expect("an executable tmux");
+    std::fs::create_dir(project(root)).expect("the project");
     std::fs::create_dir_all(root.join("config/klaudo")).expect("configuration directory");
     std::fs::write(
         root.join("config/klaudo/env"),
-        format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nCHAT_PROJECTS={}\nAPI_BASE=http://127.0.0.1:{port}\n", env!("CARGO_MANIFEST_DIR")),
+        format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nCHAT_PROJECTS={}\nAPI_BASE=http://127.0.0.1:{port}\n", project(root).display()),
     )
     .expect("credentials");
     temporary
+}
+
+/// The directory the sessions of a test run in, listed in `CHAT_PROJECTS`, so their
+/// turns go to the group and their heads read `project`.
+fn project(root: &Path) -> PathBuf {
+    root.join("project")
 }
 
 /// The resident, killed when the test drops it.
@@ -1822,7 +1821,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
             "hook_event_name": "UserPromptSubmit",
             "session_id": session,
             "prompt_id": "aaaaaaaa-1111",
-            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "cwd": project(root),
             "prompt": "show me the log",
         }),
     );
@@ -1859,7 +1858,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     );
     let caption = media[0]["caption"].as_str().expect("a caption");
     assert!(
-        caption.starts_with("<b>klaude</b> <code>01234567/aaaaaaaa</code> "),
+        caption.starts_with("<b>project</b> <code>01234567/aaaaaaaa</code> "),
         "the caption reads {caption:?}"
     );
     assert_eq!(media[0]["parse_mode"], json!("HTML"));
@@ -1919,7 +1918,7 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     ];
     for mut event in turn {
         event["session_id"] = json!(session);
-        event["cwd"] = json!(env!("CARGO_MANIFEST_DIR"));
+        event["cwd"] = json!(project(root));
         hook(root, &event);
         std::thread::sleep(Duration::from_millis(300));
     }

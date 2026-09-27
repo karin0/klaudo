@@ -2308,7 +2308,7 @@ mod tests {
 
     fn head_of(address: &str) -> Value {
         serde_json::json!([
-            {"type": "bold", "text": "klaude"},
+            {"type": "bold", "text": "project"},
             " ",
             {"type": "code", "text": address},
             " 12s ",
