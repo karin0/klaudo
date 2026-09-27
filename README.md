@@ -1,47 +1,33 @@
 # Klaŭdo
 
 Carries a Claude Code session's turns to a Telegram private chat or group and carries
-what you type there back into the session's terminal, so a long turn can be left alone, picked up
-from the phone, and answered from there.
+what you type there back into the session's terminal, so a long turn can be left alone,
+picked up from the phone, and answered from there.
 
 Klaŭdo is Esperanto for Claude. Its commands, paths and names in the system are spelled
 `klaudo`, the Esperanto h-system's spelling of ŭ as u.
 
 ## What lands in the chat
 
-A turn opens with the prompt, quoted and without a sound, so a chat scrolled through
-tells the asks from the answers by their shape alone. Every message the turn sends
-afterwards is a Telegram reply to that one, so a chat that collects many turns reads as
-a thread per turn. A prompt klaudo typed is already in the chat as the message that
-asked for it, and its turn threads under that message. A prompt deleted from the chat
-leaves the rest of its turn arriving as messages of their own.
+A turn opens with its prompt, quoted and silent, and every later message of the turn
+replies to it, so the chat reads as a thread per turn. A prompt klaudo typed is already
+in the chat as the message that asked for it, and its turn threads under that one.
 
-A turn is a sequence of segments. A segment is either an assistant message with text in
-it or the run of tool calls between two of those. One message stands at the foot of the
-turn showing the segment that is open, rewritten as that segment grows, and the segment
-takes it once the next one starts. So the message the chat ends up holding is the one it
-was watched in. Under what the open segment has said, that message carries a status
-line, a word from Claude Code's own vocabulary and the turn's elapsed time, stepping to
-the next word on every refresh, so the minutes a turn spends thinking are on screen as
-they pass. A `date_time` entity in relative format would keep that time current without
-a rewrite, but Telegram's clients show one inside a rich message as its fallback text,
-though the server parses it. It goes up three seconds into the turn, which leaves a turn answered at once
-nothing to take back. In a group it is rewritten at most every ten seconds, because
-Telegram counts a rewrite against the twenty messages a minute a bot may send a group. The last segment keeps no message of its own: the `Stop` event
-carries its text, so the message that was showing it is taken back once the answer is in
-the chat. That text reaches the resident milliseconds before the `Stop`, and new text
-waits a tenth of a second of quiet before it is shown, so the answer is never written
-into the message that is about to be taken back.
+A turn is a sequence of segments, each either an assistant message with text or the run
+of tool calls between two of those. The open segment is shown in one message at the
+foot of the turn, rewritten as it grows, with a status line of a word from Claude Code's
+vocabulary and the elapsed time. In a group it is rewritten at most every ten seconds,
+because Telegram counts a rewrite against the twenty messages a minute a bot may send
+there. A `date_time` entity would keep the time current without rewrites, but clients
+show one inside a rich message as its fallback text.
 
-A run of tool calls is posted a line per call: a mark for how it went, the tool, what
-the call says it is doing, and the time it took. A tool whose input describes the call,
-as Bash's does, gives that line its words and carries what the call works on, the
-command, on a line under it; where nothing describes the call, that field stands on the
-line itself. What a failed tool reported goes under those, its first sixty characters. A
-call a subagent made carries that agent's type in brackets, and one still running is
-marked as such and shows no time, so a run reads as the terminal does, and a run whose
-message went out with a call still running is rewritten once that call reports. A run
-past thirty calls lists the newest thirty and counts the rest.
+The last segment keeps no message of its own: `Stop` carries its text, and the message
+showing it is taken back once the answer is posted. That text reaches the resident
+milliseconds before `Stop`, so new text waits a tenth of a second of quiet before it is
+shown. Only the answer and a `Notification` make a sound, and only the answer carries
+the `#claude` tag.
+
+A run of tool calls is a line per call:
 
 ● **Bash**  run the tests **4s**
 ⎿ `cargo test`
@@ -50,301 +36,172 @@ past thirty calls lists the newest thirty and counts the rest.
 ⎿ Exit code 1
 ○ [Explore] **Grep**  `fn seal`
 
-The tool and the time are bold, which is what the eye follows down a run whose middles
-are of every length. The lines are ordinary text, so a long command wraps where a
-preformatted block would have asked the reader to scroll sideways. What a call works on
-travels in a code span, which is what keeps a command carrying markdown from being read
-as markdown. A description reads as the sentence it is, and so does every other sentence
-a person or a tool wrote, its markdown characters escaped on the way out. What Claude
-Code answered is markdown and reads as markdown.
+What a call works on travels in a code span, so a command carrying markdown is not read
+as markdown, and every other sentence a person or a tool wrote has its markdown escaped.
+What Claude Code answered is markdown and reads as markdown.
 
-Telegram's message drafts do the same job in one call, and klaudo was built on them
-first. A draft is ephemeral: it expires thirty seconds after its last frame, no method
-retires it, and sending the message it was previewing leaves it standing. Clients differ
-on what happens when the message arrives beside it, from a clean transition to a
-duplicate to a crash. Rewriting a real message costs one extra call at the end of a turn
-and none of that is possible.
+Telegram's message drafts would do the open segment's job in one call, and klaudo was
+built on them first. A draft expires thirty seconds after its last frame, no method
+retires it, and clients differ on what they do when the real message arrives beside it,
+from a clean transition to a duplicate to a crash.
 
-A tool call waits a tenth of a second before it is filed, so words arriving within that
-time take their place above it. Claude Code 2.1.282 fires `MessageDisplay` for the words
-introducing a call about a second after that call's `PreToolUse`, and `PreToolUse` names
-no message, so nothing orders the two. Those words therefore reach the chat below the run
-the call joined. Words Claude Code shows as narration are a thinking block in the
-transcript, fire no `MessageDisplay`, and stay out of the chat.
+Claude Code fires `MessageDisplay` for the words introducing a tool call about a second
+after that call's `PreToolUse`, and `PreToolUse` names no message, so nothing orders the
+two. A call therefore waits a tenth of a second before it is filed. A flush or a tool
+outcome arriving later than that is written into the message its segment became, which
+is why a turn keeps its segments until it ends. Narration Claude Code shows is a
+thinking block in the transcript, fires no `MessageDisplay`, and stays out of the chat.
 
-A flush later than that lands after klaudo has posted the message it belongs to, and a
-tool can report once the run holding it is already a message. Both are written into the
-message their segment became, which is why a turn keeps its segments and the message
-each of them turned into until it ends.
+`/compact` runs no turn, so its `PostCompact` is the answer to it, tagged
+`#claude #compact`. A compaction Claude Code starts itself is a silent `#compact` message
+in its turn's thread. Both quote the summary and the reasoning ahead of it, folded.
 
-So a turn that talked, worked and talked again leaves those three in the chat, in order,
-and the last message is the only one that makes a sound. A `Notification` sounds too,
-because a session stopped at a dialog is the other thing worth coming back to. Each
-message carries the elapsed time it was posted at; only the last carries the `#claude`
-tag, which therefore counts turns rather than segments.
-
-`/compact` runs no turn and fires neither `UserPromptSubmit` nor `Stop`, so its
-`PostCompact` is the answer to it: tagged `#claude #compact`, with a sound, and replying
-to the message that asked for it when that came from the chat. A compaction Claude Code
-starts on its own happens inside a turn and is a silent `#compact` message in that
-turn's thread. Both quote the summary Claude Code keeps and, below it, the reasoning
-the model wrote ahead of it, each in a quotation folded until tapped. The summary takes
-what room the message has, and the reasoning at most four thousand characters of what
-is left. A quotation cut short ends in an ellipsis, since the tag closing it must
-survive the cut Telegram's length limit would otherwise make.
-
-Every message opens with the same line: the directory Claude Code files the session's
-transcript under, then `session/prompt` shortened to eight characters each. That
-directory is where the session was opened, so it stays put across a `cd` inside a turn.
-The line is also the address a reply is routed by.
+Every message opens with the directory Claude Code files the session's transcript under,
+then `session/prompt` shortened to eight characters each. That line is the address a
+reply is routed by.
 
 ## Rich messages
 
 A message is posted with `sendRichMessage` and rewritten with `editMessageText`, both
-carrying the body in the `markdown` field of a `rich_message` parameter. Bot API 10.1
-added the method in June 2026, and its markdown is a dialect of its own, documented at
-<https://core.telegram.org/bots/api#rich-message-formatting-options>. Headings, tables,
-footnotes, `==marked==`, `||spoiler||` and `$formula$` belong to it along with the
-emphasis every markdown has, where `**text**` is bold and `*text*` is italic as
-CommonMark has them; the `parse_mode` markdown of the older methods gives `*text*` to
-bold.
+carrying the body in `rich_message.markdown`. Bot API 10.1 added the method in June 2026,
+and its markdown is a dialect of its own, documented at
+<https://core.telegram.org/bots/api#rich-message-formatting-options>. `**text**` is bold
+and `*text*` italic, as in CommonMark.
 
-A backslash in front of a character the dialect owns is consumed and the character
-stands. In front of any other character it stays, and a client copying the message out
-hands back the backslash with it, which is why `hook::prose` escapes against that set
-alone. HTML tags are parsed inside this markdown, so the characters HTML owns travel as
-entities.
-
-A rich message holds 32768 characters and 500 blocks, against which a turn's longest
-message is a few thousand characters of one paragraph.
+A backslash in front of a character the dialect owns is consumed. In front of any other
+character it stays, and a client copying the message hands it back, which is why
+`hook::prose` escapes against that set alone. HTML tags are parsed inside this markdown,
+so the characters HTML owns travel as entities.
 
 ## What you can send
 
-What a message replies to is where it goes. A message replying to nothing goes to the
-session klaudo heard from last among those in the chat and topic it was sent in, and the
-turn it starts threads under it, whose head names the session that took it. A session is
-where its running turn is posted, and between turns in its project's chat, in the topic
-its last message there went to. So a project listed for one chat stays out of reach of
-an unaddressed message in the other, and a topic keeps its conversations, including the
-turns started in their terminals.
-A reply to a message that names no session, such as a later file of an album, is
-answered with that and reaches no session.
+A reply to any message from a turn is typed into that session's terminal as a prompt. A
+message replying to nothing goes to the session klaudo heard from last in the chat and
+topic it was sent in. A session is where its running turn is posted, and between turns
+in its project's chat, in the topic its last message went to.
 
-Replying to any message from a turn types the text into that session's terminal, as a
-prompt in its input box. Multiple lines arrive as multiple lines, and quotes, backticks
-and non-ASCII text need no escaping, because the text travels through a tmux paste
-buffer rather than a shell argument. The text is pasted in pieces of at most three
-lines and 700 UTF-16 units, since Claude Code folds a longer paste into a
-`[Pasted text #N]` placeholder and submits it wrapped in `<pasted_content>` tags, as
-text the user did not write. Sending while a turn is running leaves the prompt
-queued, which is what the terminal does with anything typed then.
+The text travels through a tmux paste buffer, so newlines, quotes and non-ASCII arrive
+as typed. It is pasted in pieces of at most three lines and 700 UTF-16 units, because
+Claude Code folds a longer paste into a `[Pasted text #N]` placeholder and submits it
+wrapped as text the user did not write. A message whose text reached an input box gets
+a 👀 reaction once Claude Code reports the prompt.
 
-Replying to a message from a session that has exited opens a window running
-`claude --resume` on it in the directory it ran in, and types the reply once it is
-ready, the way a reply to a `/new` anchor starts a conversation. Further replies sent
-before it is ready wait for the same window. The resident keeps the directories of
-the last thousand sessions it saw exit, so a session that exited a thousand sessions
-ago, or one no resident ever heard from, answers that it is unknown.
+A reply to a session that has exited opens a window running `claude --resume` in the
+directory it ran in and types the reply once it is ready. The resident remembers the
+directories of the last thousand exited sessions.
 
-A message whose text reached an input box gets a 👀 reaction once Claude Code reports
-the prompt, or for a `/compact`, once its `PreCompact` reports the compaction started,
-so a chat scrolled back shows which asks were accepted.
+`/new <directory>` posts an anchor, and replying to it opens a window running `claude`
+there with the reply as its first prompt. `/new` alone offers a menu of the chat's
+projects. The windows live in the tmux session `klaudo`, so `tmux attach -t klaudo`
+reaches a conversation that began on the phone. An anchor carries `ForceReply`, which
+Telegram attaches only to a message being sent, so an anchor is always a message of its
+own.
 
-`/new <directory>` posts an anchor naming that directory and starts nothing, and so
-does `/new@<bot> <directory>`, which is how a group's command menu writes it. Replying to
-the anchor opens a window running `claude` there and types the reply as its first
-prompt. Those windows live in a tmux session called `klaudo`, one window per
-conversation, so `tmux attach -t klaudo` reaches a conversation that began on the phone.
-tmux runs `claude` there through its `default-shell` as a non-interactive shell, with
-the tmux server's environment, so `claude` has to be on the `PATH` that shell ends up
-with. A directory added to `PATH` only by an interactive shell's startup file, as the
-native installer's `~/.local/bin` often is, leaves the window to exit at once. The
-resident looks for a window it opened every five seconds until its session starts, and
-answers each message waiting for a window that has closed by then with the directory
-it was opened in, so the next reply opens another.
+tmux runs `claude` through its `default-shell` as a non-interactive shell with the tmux
+server's environment, so `claude` has to be on the `PATH` that shell ends up with. A
+directory added only by an interactive shell's startup file, as the native installer's
+`~/.local/bin` often is, makes the window exit at once, and the resident answers that the
+window closed before its session started.
 
-Every anchor carries Telegram's `ForceReply`, so a client opens the reply box on it as it
-arrives, with where the reply goes as the placeholder, and the next message typed
-replies to the anchor rather than going to whichever session was heard from last. A
-reply box closed first leaves that message replying to nothing. Telegram attaches
-`ForceReply` only to a message being sent, so an anchor is always a message of its own,
-and a menu it came from is taken back once it is posted.
+A session that opens a directory for the first time stops at the trust dialog and
+reports what it shows to the chat. Answer it once locally and the directory stays
+trusted.
 
-`/new` alone offers a menu of the projects whose sessions post in the chat it was sent
-in, the one heard from last first, eight at most, counting the exited sessions the
-resident remembers. Pressing one posts that project's anchor.
-The menu is a plain message, and a button's label is the directory it picks, so a menu
-still works after the resident restarts.
+`/resume` offers the same menu, then that project's sessions. The anchor it posts
+replies to the last message the session left, since a private chat has no link to a
+single message.
 
-`/resume` offers the same menu, and pressing a project rewrites it into that project's
-sessions, the one heard from last first, each labelled with its address, how long ago it
-was heard from and the first forty characters of its latest prompt. Pressing a session
-posts an anchor headed with its address, and a reply to the anchor reaches the session
-like a reply to any of its messages, resuming it first when it has exited. The anchor
-replies to the last message the session left in that chat and topic, so a tap on its quotation
-scrolls back to where the conversation stopped. A
-private chat has no link to a single message, which is why the way back is a reply
-rather than a link in the menu.
+`/usage` answers with the plan's limits and the context of the session a message would
+reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as
+a dialog that takes every key until dismissed, which is why the resident answers it. The
+answer closing each turn ends with the same figures, as in
+`5% 45.6k/1m · 1% 3h30m · 56% 2d14h`.
 
-`/usage` answers with how much of the plan's five-hour and seven-day limits is used and
-when each resets, and with how full the context is of the session the message would
-reach. With such a session the answer goes under its head, so a reply to the answer
-reaches the session too. Each figure is a bar and the numbers, and they are what the
-sessions' status lines last reported, with how long ago that was. The resident writes
-how long ago a figure was reported and how long until a limit resets, to the minute,
-since a client writes a relative `tg-time` in coarser units. When a limit resets is a
-`tg-time` each reader's client writes in their own zone, which only a plain message in
-Telegram's HTML can carry, so the answer is one. A session reports nothing before its first call returns, and the
-resident keeps the reports in memory, so after a restart they come back with the next
-redraw of a status line. Claude Code draws `/usage` as a dialog that takes every key
-until it is dismissed, which is why the resident answers it instead of typing it.
+`/compact` goes to a session like any other message. The resident lists these commands
+in the command menu for the user alone.
 
-The answer that closes a turn ends with the same figures as one line of code: how full
-the context is, then how much of the five-hour and seven-day limits is used and how
-long until each resets, as in `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`. They are what the
-resident holds when the `Stop` arrives, so a status line redrawn after it leaves the
-context one call behind.
-
-The resident lists `/new`, `/resume`, `/usage` and `/compact` in the command menu when it starts, for the user alone: in the private chat, and in `CHAT_ID` for that
-member only. `/compact` goes to a session like any other message, with the `@<bot>` a
-group's command menu appends taken off.
-
-A session that opens a directory for the first time stops at the dialog asking whether
-the folder is trusted, and reports what it is showing to the chat rather than typing
-into a dialog. Answer that once locally and the directory stays trusted.
-
-Only one person is answered: a message is acted on when `USER_ID` sent it, in `CHAT_ID`
-or in that person's private chat with the bot. A turn a message started is posted in
-the chat and topic the message came from, and so is whatever klaudo says back to a message; a
-turn started in the terminal goes to `CHAT_ID` when its project is listed in
-`CHAT_PROJECTS`, and to the private chat otherwise. In a group, a bot in Telegram's default privacy mode receives only commands
-and replies to its own messages, so a message replying to nothing reaches klaudo only
-once privacy mode is turned off with BotFather's `/setprivacy` or the bot is made an
-admin. A channel is not supported: a post there carries no sender to check.
+Only `USER_ID` is answered, in `CHAT_ID` or in that person's private chat with the bot.
+A turn a message started is posted where the message came from. A turn started in the
+terminal goes to `CHAT_ID` when its project is in `CHAT_PROJECTS`, and to the private
+chat otherwise. In a group, a bot in Telegram's default privacy mode receives only
+commands and replies to its own messages, so an unaddressed message reaches klaudo only
+once privacy mode is off in BotFather's `/setprivacy` or the bot is an admin. A channel
+is unsupported, since a post there carries no sender to check.
 
 ## Topics
 
-A private chat with the bot is split into topics once topic mode is on for the bot in
-BotFather, and a group is when it is a forum. The user creates the topics. Every message klaudo sends names the topic of
-the message it answers or of the session it comes from, because Telegram puts a message
-naming no topic outside every topic, even one replying to a message inside a topic, and
-drops the reply from a message that replies into another topic. A message in a forum's
-topic that replies to nothing arrives replying to the service message that opened the
-topic, which klaudo reads as replying to nothing. A private chat in topic mode takes no
-message outside every topic: one sent there opens a topic of its own, and the service
-message opening it marks the name as implicit. A message replying to nothing in such a
-topic, when no session is there, goes to the session heard from last outside every
-topic of the chat, which is where a turn started in the terminal is posted until its
-session posts in a topic, and the turn it starts moves that session into the topic. A
-topic the user created and named reaches only its own sessions. `/new` and `/resume` list the projects
-of the whole chat, and the anchor they lead to is posted in the topic they were sent in,
-so the conversation it starts stays there.
+A private chat is split into topics once topic mode is on for the bot in BotFather, and
+a group is when it is a forum. Every message klaudo sends names its topic, because
+Telegram puts a message naming none outside every topic, even a reply to a message
+inside one. A message in a forum's topic replying to nothing arrives replying to the
+service message that opened the topic, which klaudo reads as replying to nothing.
+
+A private chat in topic mode takes no message outside every topic: one sent there opens
+a topic whose name the service message marks as implicit. A message replying to nothing
+in such a topic, when no session is there, goes to the session heard from last outside
+every topic, which is where a turn started in the terminal is posted until its session
+posts in a topic. A topic the user named reaches only its own sessions.
 
 ## Sending a file
 
 `klaudo send <file>...` posts the files as documents in the thread of the turn that ran
-the command, below what the turn has said so far, and where the session is between
-turns. Up to ten files form one album, whose first document alone
-carries the caption, so a reply to that one reaches the session. Claude Code puts
-`CLAUDE_CODE_SESSION_ID` in the environment of every command it runs, which is how the
-command finds its session. Run anywhere else, the command sends the files without a
-caption to the chat of the directory it runs in. It is the one command run by hand,
-so `klaudo --help` says so and ends with its usage, and a line in
-`~/.claude/CLAUDE.md` pointing at `klaudo --help` is enough for Claude to learn it.
+it, up to ten per album, the first captioned with the head so a reply to it reaches the
+session. Claude Code puts `CLAUDE_CODE_SESSION_ID` in the environment of every command
+it runs, which is how the command finds its session. Run elsewhere, it sends to the chat
+of the directory it runs in. A line in `~/.claude/CLAUDE.md` pointing at `klaudo --help`
+is enough for Claude to learn it.
 
-The command checks every path, asks the resident once where the files go and uploads
-them itself, so a mistyped path posts nothing, the exit status says whether every file
-reached the chat, a failure names the files and prints what Telegram answered, and a
-long upload holds up nothing else. The resident answers once the turn's open segment is
-a message, so the files land below it, while what the turn says during the uploads can
-land among the albums. A bot uploads files of up to 50 MB.
-
-The answer arrives at an abstract socket address, which vanishes with the command
-however it ends. Any local user can send to such an address, so the command takes only
-an answer sent from the resident's own socket.
-
-A document carries no rich message, so its caption is the head in Telegram's HTML, and a
-reply to the captioned file reaches the session like a reply to any message of the turn.
+The command asks the resident where the files go and uploads them itself, so its exit
+status says whether every file arrived. The answer comes to an abstract socket address,
+which any local user can send to, so the command takes only an answer sent from the
+resident's own socket.
 
 ## Why keystrokes
 
-Claude Code's own local messaging socket delivers text to a running session too, and
-what arrives there is labelled as coming from another Claude session, carrying the
-instruction to treat it as a peer's request and never as the user's approval. That is a
-deliberate guardrail against permission laundering, so klaudo does not go through it.
-`send-keys` reaches the input box, which is the path a person's own typing takes, so the
-prompt is the user's because the keystrokes are.
+Claude Code's own local messaging socket delivers text to a running session too, but
+labels it as coming from another Claude session, to be treated as a peer's request and
+never as the user's approval. That guardrail against permission laundering is why klaudo
+types through `send-keys`, the path a person's own typing takes.
 
-The pane a session lives in is checked before every delivery: `/proc/<pid>/stat` names
-the terminal the session process is on, and it has to be the one tmux reports for that
-pane. A session that exited leaves its pane to a shell, where the same text would run as
-a command.
+Before every delivery, the terminal `/proc/<pid>/stat` names for the session has to be
+the one tmux reports for its pane, since a session that exited leaves the pane to a
+shell, where the text would run as a command. Delivery first leaves copy mode, which
+would otherwise take the Enter and leave the text sitting in the box.
 
-Delivery ends whatever mode the pane is in first, which brings a pane scrolled up back
-to the bottom. A paste reaches the input box from copy mode, while the Enter after it
-goes to that mode's own key table and leaves the text sitting in the box.
-
-A session running outside tmux has no pane to type into, and a reply aimed at one is
-answered in the chat with the terminal it is on instead. A session started as a
-background job is one of those: Claude Code gives it a pty of its own, so the tmux
-window its output appears in belongs to the session that launched it.
+A session outside tmux, including one started as a background job, which Claude Code
+gives a pty of its own, has no pane, and a reply to it is answered with the terminal it
+is on.
 
 ## Hooks
 
-One command, `exec klaudo`, answers every event. `settings.json` runs it under each event
-klaudo handles and runs `klaudo status` as the status line, to be merged into
-`~/.claude/settings.json`. The command finds the binary on `PATH`, so klaudo is
-installed as `/usr/local/bin/klaudo`, a directory on the `PATH` Claude Code runs hooks
-with. The `Notification` matcher names the notifications that ask for you; an idle
-prompt or a finished auth is left out.
+`exec klaudo` answers every event, and `klaudo status` is the status line; `settings.json`
+holds both, to be merged into `~/.claude/settings.json`. The binary is installed as
+`/usr/local/bin/klaudo`, on the `PATH` Claude Code runs hooks with.
 
-The hook writes the event to the unix datagram socket `$XDG_RUNTIME_DIR/klaudo/listen.sock`
-and exits. `$XDG_RUNTIME_DIR` belongs to the user alone, and a session without it
-reaches no resident: its hooks post for themselves, and the resident refuses to start. Along with the event it
-carries `$TMUX`, `$TMUX_PANE` and its own parent process id, which is where the resident
-learns which terminal a session is on. The parent is the session because of `exec`: it
-hands the shell Claude Code starts the command in over to the binary, which leaves the
-session as the parent the binary reports.
+The hook writes the event to the datagram socket `$XDG_RUNTIME_DIR/klaudo/listen.sock`
+with `$TMUX`, `$TMUX_PANE` and its parent's pid, and exits. Because of `exec`, that
+parent is the session itself. The status line is the one place Claude Code reports the
+context and the plan's limits, so `klaudo status` forwards it and prints nothing.
 
-The status line is the one place Claude Code reports a session's context and the plan's
-limits. `klaudo status` forwards its input to the same socket and prints nothing, so the
-line under the input box stays empty.
-
-`SessionStart` fires once the session is ready for input, after the trust dialog, so it
-is both how a session announces where it lives and how a conversation opened from the
-chat knows when to type its first prompt.
+`SessionStart` fires once the session is ready for input, after the trust dialog, which
+is how a window opened from the chat knows when to type its first prompt.
 
 ## Configuration
 
 `BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` and `CHAT_PROJECTS` come from
-`$XDG_CONFIG_HOME/klaudo/env`, which defaults to `~/.config/klaudo/env`. That file is the whole of where they come from, so a token
-changed there is the token every session uses from its next event on, and a value
-exported in a shell reaches nothing. A file that cannot be read, or a name missing from
-it, stops the process and names the file. `CHAT_ID` is the integer id of the chat, and
-`USER_ID` is the integer id of the person klaudo answers. A private chat's id is its person's id, so `USER_ID` defaults to
-`CHAT_ID`. A group's id is negative, and a group `CHAT_ID` without `USER_ID` stops the
-process. A message klaudo ignores is logged with its chat's id and title
-and its sender's id, so `journalctl --user -u klaudo` after a message sent in a group
-shows the ids to write here.
+`$XDG_CONFIG_HOME/klaudo/env` alone, read with `dotenvy` on every event, so a changed
+token applies from the next event and an exported variable reaches nothing. A private
+chat's id is its person's, so `USER_ID` defaults to `CHAT_ID`, and a group, whose id is
+negative, needs it set. A message klaudo ignores
+is logged with its chat's and sender's ids, so `journalctl --user -u klaudo` shows what to
+write here.
 
-`CHAT_PROJECTS` lists the projects whose turns started in the terminal go to `CHAT_ID`,
-as absolute directories separated by `:` the way `PATH` is written. A project is the
-directory a session was opened in, the one its messages are headed with, and it is
-listed when it is one of those directories or inside one. Every other project goes to
-the private chat, which is all of them when the name is absent. A relative directory
-in the list stops the process.
+`CHAT_PROJECTS` lists absolute directories separated by `:`. A project inside one of
+them posts its terminal-started turns to `CHAT_ID`.
 
-`dotenvy` reads the file: `NAME=value` lines, `#` opening a comment, an `export` in
-front allowed, and a `$` expanding outside single quotes, so a file written for a shell
-to source reads the same way here.
-
-`TRACE_UPDATES`, when present with any value, has the resident log every update it polls
-as Telegram sent it, which shows the fields a message carries.
-
-`API_BASE` is optional and defaults to `https://api.telegram.org`; the test writes it
-into a file of its own, pointing at a server of its own.
-
-`klaudo.service` runs the resident and reads the same file:
+`TRACE_UPDATES`, set to anything, logs every polled update as Telegram sent it.
+`API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own
+server.
 
 ```sh
 sudo ln -s "$PWD/target/release/klaudo" /usr/local/bin/klaudo
@@ -352,133 +209,53 @@ mkdir -p ~/.config/klaudo && ln -s <secrets file> ~/.config/klaudo/env
 systemctl --user enable --now "$PWD/klaudo.service"
 ```
 
-The link points at the release build, so rebuilding updates what the hooks and the
-unit run.
+The link points at the release build, so a rebuild updates what the hooks run, and
+`systemctl --user restart klaudo` updates the resident. A hook newer than the resident
+forwards events it has no arm for, which reach the chat verbatim.
 
 ## Why one resident owns everything
 
-The `MessageDisplay` hook runs on every flush of streamed text and the terminal draws
-that text only once the hook returns, so nothing that touches the network can happen in
-the hook process. That budget is why the hook is a compiled binary: on the machine
-klaudo was written for, the shell scripts it replaced cost 9.4 ms per invocation,
-against 0.5 ms for the same handoff.
+The terminal draws streamed text only once the `MessageDisplay` hook returns, so the
+hook cannot touch the network. That is why the hook is a compiled binary: shell scripts
+cost 9.4 ms per invocation against 0.5 ms for the same handoff.
 
-The process at the other end runs for as long as the machine does, one per machine.
-Three constraints put it there. The message a turn is watched in has to keep its clock
-moving while nothing else happens. The answer must not race a rewrite still in flight,
-and the replies all carry the id Telegram gave the prompt message; both are free once
-one process issues every call in order.
+A resident process per machine does the rest. The open segment's clock has to move while
+nothing happens, the answer must not race a rewrite still in flight, and Telegram hands
+updates to one reader per bot, who has to answer when no turn is running. Routing a
+reply needs to know which session a message belongs to, so the reader is the process
+that posts.
 
-The third constraint is the chat. Telegram hands updates to one reader per bot, and a
-message from the phone has to be answerable when no turn is running, which is exactly
-when a per-turn process would not exist. So the reader is machine-wide and permanent,
-and it is the same process that posts, because routing a reply needs to know which
-session a message belongs to. A second process holding that would be a second copy of
-the first one's state.
+A reply is routed by the address read back out of the message it replies to, so a
+restarted resident still routes replies to messages it never posted. Where each session
+is, and where each exited one ran, is written to `$XDG_RUNTIME_DIR/klaudo/state.json` as
+it changes, so an idle session stays reachable across a restart. A turn in flight is
+lost.
 
-Which session a reply belongs to is read back out of the message being replied to. A
-reply carries that message as Telegram rendered it, a list of paragraphs made of spans,
-so the address is the code span of its first paragraph. A file's caption and a plain
-message carry text and entities instead, and there the address is the first code entity.
-A restarted resident therefore
-still routes replies to messages it never posted.
+A session is forgotten at its `SessionEnd`, or once `/proc/<pid>` is gone for one that
+was killed first.
 
-A call Telegram rejects with a rate limit or a failure of its own is asked again up to
-three times, waiting the time Telegram names or a doubling one, so a message can arrive
-late or, when the answer to an attempt was lost, twice.
-
-The socket has a thread of its own, which moves each datagram into memory as it lands.
-A Telegram call holds the machine for as long as the call takes, and the socket's buffer
-is a few hundred deltas deep, past which the hooks fall back to posting for themselves.
-
-Per-session state expires on its own. A session is forgotten at its `SessionEnd`, and a
-session killed before it could send one once `/proc/<pid>` is gone, which the resident
-checks before it routes a message from the chat and, while a turn is
-running, every five seconds, so what a session killed mid-turn had already said is in
-the chat within that time.
-
-Where each session is, when it was last heard from, and where and when each exited one ran,
-along with the latest prompt of each and the last message it left in the chat with its topic, are
-written to `$XDG_RUNTIME_DIR/klaudo/state.json` after every event but streamed text and
-tool calls, and read back when the resident starts. A session idle through a restart
-sends nothing until its next prompt, so without this file a message from the chat would
-find no session until then. Writing as the state changes keeps it through a crash, and
-a file that no longer parses is reported and replaced. A turn in flight is left behind,
-and so is a first prompt waiting for its window.
+A call Telegram rejects with a rate limit or its own failure is retried up to three
+times, so a message can arrive late, or twice when the answer to an attempt was lost.
 
 ## Queued prompts
 
-Claude Code fires `UserPromptSubmit` when a prompt is submitted, including one submitted
-while a turn is running, and reports that one under the running turn's `prompt_id`. The
-queued turn's own id first appears on its own events, once it begins.
-
-So a prompt submitted with a turn open is posted to the chat and its message is queued;
-a turn opens when an event names an id that is not the open turn's, and takes the oldest
-queued message as the one it replies to. A prompt submitted with nothing running starts
-its turn at once, which is why anything still queued at that moment was cleared in the
-terminal and is dropped.
-
-Editing a queued message in the terminal changes what runs without telling any hook, so
-the pairing after that is by position and can attach a turn to the wrong prompt.
+`UserPromptSubmit` for a prompt submitted during a turn carries the running turn's
+`prompt_id`, and the queued turn's own id appears only once it begins. So such a prompt
+is posted and queued, and a turn with a new id takes the oldest queued message. A prompt
+submitted with nothing running drops the queue, which the terminal has cleared. Editing
+a queued message in the terminal tells no hook, so the pairing is by position and can
+attach a turn to the wrong prompt.
 
 ## When the resident is not there
 
-A machine without the unit installed, or a resident that died, leaves the socket
-unanswered. `UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` and `PostCompact` then send from
-the hook process itself, so the chat still gets the ask and the answer, each as a
-message of its own with nothing shown before it and no prompt above it to reply to.
-Nothing can be sent back to a session in that state.
-
-`SessionStart`, `SessionEnd`, the three tool events and `MessageDisplay` are dropped
-instead. Each of
-them says something only as part of what the resident is assembling, so posted alone it
-would be one Telegram call per tool call and per streamed fragment, and `PreToolUse`
-holds up the call it announces until the hook returns.
+`UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` and `PostCompact` then send from
+the hook process itself, each as a message of its own, and nothing can be sent back.
+Every other event is dropped, since posted alone it would be one call per tool call or
+streamed fragment, and `PreToolUse` holds up its call until the hook returns.
 
 ## Checks
 
-`./check.sh` runs shellcheck, formatting, clippy, the tests and a release build. The
-lint levels live in `Cargo.toml`, so a bare `cargo clippy` and whatever an editor runs
-in the background enforce the same set rather than only this script.
-
-The release build is what the hook runs, so `systemctl --user restart klaudo` belongs
-after it: the resident keeps the image it started with, and a hook newer than the
-resident forwards events the resident has no arm for, which reach the chat as the
-verbatim report an unrecognised event falls back to.
-
+`./check.sh` runs shellcheck, formatting, clippy, the tests and a release build. The lint
+levels live in `Cargo.toml`, so a bare `cargo clippy` enforces the same set.
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
-against a server of its own that answers the way Telegram does and a `tmux` that
-records how it was called. It asserts what the chat is left
-holding after a two-segment turn, in order and with the sound each message carried; that
-a segment watched while it ran finishes in the message it was watched in and the last
-one's message is taken back; that an answer arriving with its `Stop` is shown once;
-that a compaction, started by Claude Code or by `/compact`, quotes its summary and its
-reasoning;
-that `/new` alone offers the projects of its chat most recent first and a press
-posts the anchor of the one picked, which opens the reply box, and takes the menu back; that `/resume` leads from a project to its sessions and a press
-posts an anchor replying to the last message the session left; that `/usage`
-answers from the status lines with the context of the session a message would reach;
-that a prompt queued during a turn gets a thread of its
-own; that a run of tool calls is a message between the two halves of what the turn said;
-that a call announced ahead of the words introducing it still
-follows them; that a delta landing after its own `Stop` leaves the answer last; that a
-flush and a
-tool outcome arriving after their segment went out rewrite that message; that a turn
-whose session was killed stops reading as running with no further event; that a file
-`klaudo send` posts the files it names as an album in order, replying to the prompt of its turn, one from a session klaudo has not
-heard from fails the command, and one sent outside Claude Code from a directory not in
-`CHAT_PROJECTS` goes to the private chat; that the commands are listed for the user in both chats; that `--help` and a call the binary cannot
-act on print the usage, `klaudo --help` ending with how `klaudo send` is called, and a missing file or a stopped resident is named without a
-panic; that an idle session and an exited one stay reachable after the resident is
-killed and started again; that a message in a topic reaches only a session posting
-there, is answered in that topic, and in a topic with an implicit name that holds no
-session reaches the session outside every topic, and that a turn started in the terminal follows its
-session to the topic it last posted in; that a
-message replying to nothing reaches the session heard from last in its chat, and one
-replying to a message that names no session reaches none, while a
-session in the other chat stays out of reach, and the same message
-from anyone else in the group gets no answer, and the answer to the user's own goes to
-the chat it was sent in; and that a reply to a session that exited, its process gone or
-its `SessionEnd` reported, resumes it in its directory, with a second reply waiting for
-the same window, and that a window closed before its session started is answered and
-leaves the next reply to open another.
+against a server answering as Telegram does and a `tmux` that records how it was called.
