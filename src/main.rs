@@ -14,7 +14,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use hook::Event;
 
 /// The terminal holds back the text a delta carries until this process returns, so a
-/// resident that has gone away must not turn into a stall.
+/// daemon that has gone away must not turn into a stall.
 const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
 /// Long enough for the Telegram calls queued ahead of the question, one retried after a
 /// rejection included.
@@ -31,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the resident process that sends and receives every Telegram message
+    /// Run the daemon that sends and receives every Telegram message
     Listen,
     /// Send files to the user, the one command to run by hand
     ///
@@ -42,7 +42,7 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
-    /// Forward the status line's input on stdin to the resident
+    /// Forward the status line's input on stdin to the daemon
     Status,
 }
 
@@ -52,7 +52,7 @@ fn main() {
         Some(Command::Send { files }) => send(&files),
         Some(Command::Status) => {
             if !hand_over(&wrapped("{\"status\":", &stdin())) {
-                eprintln!("klaudo: no resident is listening");
+                eprintln!("klaudo: no daemon is listening");
             }
         }
         None => {
@@ -103,15 +103,15 @@ fn hook(event: &Event, raw: &[u8]) {
         // Nothing here is a message on its own. `SessionStart` says the session is
         // ready for input, which is what a conversation opened from the chat waits for,
         // `SessionEnd` that a reply to it now resumes it, a tool call is a line of the
-        // run the resident is drafting, and a delta is a fragment of the message the
-        // resident assembles from them, and `PreCompact` that a `/compact` the resident
+        // run the daemon is drafting, and a delta is a fragment of the message the
+        // daemon assembles from them, and `PreCompact` that a `/compact` the daemon
         // typed was accepted. `PreToolUse` also holds up the call it announces, so it
         // must never reach the network.
         "SessionStart" | "SessionEnd" | "MessageDisplay" | "PreToolUse" | "PostToolUse"
         | "PostToolUseFailure" | "PreCompact" => {
             forward(raw);
         }
-        // Every other event ends up in the chat either way: through the resident, which
+        // Every other event ends up in the chat either way: through the daemon, which
         // orders it against the draft, or from here when nothing is listening.
         _ => {
             if !forward(raw) {
@@ -123,7 +123,7 @@ fn hook(event: &Event, raw: &[u8]) {
                     &event.session_id,
                     event.prompt_id.as_deref(),
                 );
-                // No resident reported this turn, so this message is all of it, and
+                // No daemon reported this turn, so this message is all of it, and
                 // there is no prompt of its own in the chat for it to reply to.
                 let telegram = telegram::Telegram::new();
                 let place = telegram::Place {
@@ -174,7 +174,7 @@ fn hand_over(datagram: &[u8]) -> bool {
     socket.send_to(datagram, target).is_ok()
 }
 
-/// Asks the resident where the files go and uploads them from here, so the uploads hold
+/// Asks the daemon where the files go and uploads them from here, so the uploads hold
 /// up nothing but this command, and the exit status says whether they reached the chat.
 /// Claude Code names the session in the environment of every command it runs, and a
 /// command run anywhere else sends to the chat of the directory it runs in. Every path is
@@ -194,7 +194,7 @@ fn send(files: &[PathBuf]) {
         })
         .collect();
     let Some(listening) = listen::socket_path() else {
-        fail("XDG_RUNTIME_DIR is not set, so there is no resident to reach");
+        fail("XDG_RUNTIME_DIR is not set, so there is no daemon to reach");
     };
     let placement =
         locate(&listening, session.as_deref(), &cwd).unwrap_or_else(|error| fail(&error));
@@ -222,14 +222,14 @@ fn send(files: &[PathBuf]) {
 
 /// The answer arrives at an abstract address, which vanishes with this process however
 /// it ends. Anyone on the machine can send to such an address, so only an answer from
-/// the resident's own socket counts.
+/// the daemon's own socket counts.
 fn locate(
     listening: &Path,
     session: Option<&str>,
     cwd: &Path,
 ) -> Result<listen::Placement, String> {
     let unreachable = |error: std::io::Error| -> ! {
-        fail(&format!("the resident at {}: {error}", listening.display()))
+        fail(&format!("the daemon at {}: {error}", listening.display()))
     };
     let name = format!("klaudo-send-{}", std::process::id());
     let socket = SocketAddr::from_abstract_name(&name)
@@ -245,7 +245,7 @@ fn locate(
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             fail(&format!(
-                "the resident at {} did not answer within {}s",
+                "the daemon at {} did not answer within {}s",
                 listening.display(),
                 LOCATE_WAIT.as_secs()
             ));
@@ -257,7 +257,7 @@ fn locate(
             Err(error) => unreachable(error),
         };
         if from.as_pathname() == Some(listening) {
-            return serde_json::from_slice(&answer[..size]).expect("the resident's answer");
+            return serde_json::from_slice(&answer[..size]).expect("the daemon's answer");
         }
     }
 }
@@ -266,16 +266,16 @@ fn locate(
 mod tests {
     use super::*;
 
-    /// An answer from any socket but the resident's is dropped, so a local user who
+    /// An answer from any socket but the daemon's is dropped, so a local user who
     /// guesses the address cannot say where the file goes.
     #[test]
-    fn only_the_resident_answers_where_a_file_goes() {
+    fn only_the_daemon_answers_where_a_file_goes() {
         let directory = tempfile::tempdir().expect("a directory of the test's own");
         let listening = directory.path().join("listen.sock");
-        let resident = UnixDatagram::bind(&listening).expect("bind the resident");
+        let daemon = UnixDatagram::bind(&listening).expect("bind the daemon");
         std::thread::spawn(move || {
             let mut request = vec![0; 4096];
-            let size = resident.recv(&mut request).expect("the question");
+            let size = daemon.recv(&mut request).expect("the question");
             let request: serde_json::Value =
                 serde_json::from_slice(&request[..size]).expect("a JSON question");
             let reply =
@@ -285,7 +285,7 @@ mod tests {
             impostor
                 .send_to_addr(br#"{"Err": "from someone else"}"#, &reply)
                 .expect("the forged answer");
-            resident
+            daemon
                 .send_to_addr(
                     br#"{"Ok": {"place": {"chat": 7, "topic": 5}, "reply_to": 3, "caption": null}}"#,
                     &reply,
@@ -293,7 +293,7 @@ mod tests {
                 .expect("the answer");
         });
 
-        let placement = locate(&listening, None, Path::new("/")).expect("the resident's answer");
+        let placement = locate(&listening, None, Path::new("/")).expect("the daemon's answer");
         assert_eq!(
             (
                 placement.place.chat,

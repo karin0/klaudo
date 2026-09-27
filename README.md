@@ -22,7 +22,7 @@ there. A `date_time` entity would keep the time current without rewrites, but cl
 show one inside a rich message as its fallback text.
 
 The last segment keeps no message of its own: `Stop` carries its text, and the message
-showing it is taken back once the answer is posted. That text reaches the resident
+showing it is taken back once the answer is posted. That text reaches the daemon
 milliseconds before `Stop`, so new text waits a tenth of a second of quiet before it is
 shown. Only the answer and a `Notification` make a sound, and only the answer carries
 the `#claude` tag.
@@ -87,7 +87,7 @@ wrapped as text the user did not write. A message whose text reached an input bo
 a 👀 reaction once Claude Code reports the prompt.
 
 A reply to a session that has exited opens a window running `claude --resume` in the
-directory it ran in and types the reply once it is ready. The resident remembers the
+directory it ran in and types the reply once it is ready. The daemon remembers the
 directories of the last thousand exited sessions.
 
 `/new <directory>` posts an anchor, and replying to it opens a window running `claude`
@@ -100,7 +100,7 @@ own.
 tmux runs `claude` through its `default-shell` as a non-interactive shell with the tmux
 server's environment, so `claude` has to be on the `PATH` that shell ends up with. A
 directory added only by an interactive shell's startup file, as the native installer's
-`~/.local/bin` often is, makes the window exit at once, and the resident answers that the
+`~/.local/bin` often is, makes the window exit at once, and the daemon answers that the
 window closed before its session started.
 
 A session that opens a directory for the first time stops at the trust dialog and
@@ -113,11 +113,11 @@ single message.
 
 `/usage` answers with the plan's limits and the context of the session a message would
 reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as
-a dialog that takes every key until dismissed, which is why the resident answers it. The
+a dialog that takes every key until dismissed, which is why the daemon answers it. The
 answer closing each turn ends with the same figures, as in
 `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`.
 
-`/compact` goes to a session like any other message. The resident lists these commands
+`/compact` goes to a session like any other message. The daemon lists these commands
 in the command menu for the user alone.
 
 Only `USER_ID` is answered, in `CHAT_ID` or in that person's private chat with the bot.
@@ -151,10 +151,10 @@ it runs, which is how the command finds its session. Run elsewhere, it sends to 
 of the directory it runs in. A line in `~/.claude/CLAUDE.md` pointing at `klaudo --help`
 is enough for Claude to learn it.
 
-The command asks the resident where the files go and uploads them itself, so its exit
+The command asks the daemon where the files go and uploads them itself, so its exit
 status says whether every file arrived. The answer comes to an abstract socket address,
 which any local user can send to, so the command takes only an answer sent from the
-resident's own socket.
+daemon's own socket.
 
 ## Keystroke delivery
 
@@ -210,23 +210,23 @@ systemctl --user enable --now "$PWD/klaudo.service"
 ```
 
 The link points at the release build, so a rebuild updates what the hooks run, and
-`systemctl --user restart klaudo` updates the resident. A hook newer than the resident
+`systemctl --user restart klaudo` updates the daemon. A hook newer than the daemon
 forwards events it has no arm for, which reach the chat verbatim.
 
-## The resident process
+## The daemon
 
 The terminal draws streamed text only once the `MessageDisplay` hook returns, so the
 hook cannot touch the network. That is why the hook is a compiled binary: shell scripts
 cost 9.4 ms per invocation against 0.5 ms for the same handoff.
 
-A resident process per machine does the rest. The open segment's clock has to move while
+A daemon per machine does the rest. The open segment's clock has to move while
 nothing happens, the answer must not race a rewrite still in flight, and Telegram hands
 updates to one reader per bot, who has to answer when no turn is running. Routing a
 reply needs to know which session a message belongs to, so the reader is the process
 that posts.
 
 A reply is routed by the address read back out of the message it replies to, so a
-restarted resident still routes replies to messages it never posted. The resident writes
+restarted daemon still routes replies to messages it never posted. The daemon writes
 the pane of each session and the directory of each exited one to
 `$XDG_RUNTIME_DIR/klaudo/state.json` as they change, so an idle session stays reachable
 across a restart. A turn in flight is lost.
@@ -246,9 +246,9 @@ submitted with nothing running drops the queue, which the terminal has cleared. 
 a queued message in the terminal tells no hook, so the pairing is by position and can
 attach a turn to the wrong prompt.
 
-## Hooks without a resident
+## Hooks without a daemon
 
-With no resident listening, `UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` and
+With no daemon listening, `UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` and
 `PostCompact` send from the hook process itself, each as a message of its own, and
 nothing can be sent back. Every other event is dropped, since posted alone it would be
 one call per tool call or streamed fragment, and `PreToolUse` holds up its call until

@@ -126,8 +126,8 @@ const BREAK: &str = "  \n";
 /// glance.
 const WHY_MAX: usize = 60;
 
-/// Where the resident's socket lives. `$XDG_RUNTIME_DIR` belongs to this user alone, so
-/// without it there is no resident to reach.
+/// Where the daemon's socket lives. `$XDG_RUNTIME_DIR` belongs to this user alone, so
+/// without it there is no daemon to reach.
 pub fn runtime_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR").map(|base| PathBuf::from(base).join("klaudo"))
 }
@@ -643,7 +643,7 @@ struct Machine {
     limits: Option<(Limits, u64)>,
 }
 
-/// What of the resident outlives a restart, so a session idle through one is still
+/// What of the daemon outlives a restart, so a session idle through one is still
 /// reachable: where each session is and when it was last heard from, and where each
 /// exited one ran. A turn in flight and what the chat asked of a window are left behind.
 #[derive(Serialize, Deserialize, Default)]
@@ -795,7 +795,7 @@ impl Machine {
                 .collect(),
             ended: self.ended.clone(),
         };
-        // Renamed into place, so a resident killed mid-write leaves the last state whole.
+        // Renamed into place, so a daemon killed mid-write leaves the last state whole.
         let written = self.state.with_extension("tmp");
         let raw = serde_json::to_vec(&saved).expect("the state serializes");
         if let Err(error) =
@@ -1566,7 +1566,7 @@ impl Machine {
         projects
     }
 
-    /// Every session the resident knows of, running or exited, with where it ran, when
+    /// Every session the daemon knows of, running or exited, with where it ran, when
     /// it was last heard from in Unix milliseconds, and its trail.
     fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
         let now = SystemTime::now();
@@ -1628,7 +1628,7 @@ impl Machine {
         let Some((_, dir, _, trail)) = self.known().find(|(known, _, _, _)| *known == id) else {
             self.say(
                 place,
-                &format!("{} is not a session this resident has seen", code(id)),
+                &format!("{} is not a session this daemon has seen", code(id)),
             );
             return None;
         };
@@ -1722,7 +1722,7 @@ impl Machine {
                 Some(ended) => self.open(ended.dir.clone(), Some(ended.id.clone()), ask),
                 None => self.say(
                     place,
-                    &format!("`{address}` is not a session this resident has seen"),
+                    &format!("`{address}` is not a session this daemon has seen"),
                 ),
             }
             return;
