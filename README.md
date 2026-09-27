@@ -7,10 +7,10 @@ followed on the phone, and answered from there.
 Klaŭdo is Esperanto for Claude. Its commands, paths and names in the system are spelled
 `klaudo`, the Esperanto h-system's spelling of ŭ as u.
 
-## What lands in the chat
+## Chat messages
 
 A turn opens with its prompt, quoted and silent, and every later message of the turn
-replies to it, so the chat reads as a thread per turn. A prompt klaudo typed is already
+replies to it, so the chat reads as a thread per turn. A prompt Klaŭdo typed is already
 in the chat as the message that asked for it, and its turn threads under that one.
 
 A turn is a sequence of segments, each either an assistant message with text or the run
@@ -36,11 +36,11 @@ A run of tool calls is a line per call:
 ⎿ Exit code 1
 ○ [Explore] **Grep**  `fn seal`
 
-What a call works on travels in a code span, so a command carrying markdown is not read
-as markdown, and every other sentence a person or a tool wrote has its markdown escaped.
-What Claude Code answered is markdown and reads as markdown.
+Klaŭdo puts a call's command, path or pattern in a code span, so markdown inside it
+stays literal, and escapes the markdown in every other sentence a person or a tool
+wrote. Claude Code answers in markdown, and Klaŭdo posts that markdown as it is.
 
-Telegram's message drafts would do the open segment's job in one call, and klaudo was
+Telegram's message drafts would do the open segment's job in one call, and Klaŭdo was
 built on them first. A draft expires thirty seconds after its last frame, no method
 retires it, and clients differ on what they do when the real message arrives beside it,
 from a clean transition to a duplicate to a crash.
@@ -73,10 +73,10 @@ character it stays, and a client copying the message hands it back, which is why
 `hook::prose` escapes against that set alone. HTML tags are parsed inside this markdown,
 so the characters HTML owns travel as entities.
 
-## What you can send
+## Replies and commands
 
 A reply to any message from a turn is typed into that session's terminal as a prompt. A
-message replying to nothing goes to the session klaudo heard from last in the chat and
+message replying to nothing goes to the session Klaŭdo heard from last in the chat and
 topic it was sent in. A session is where its running turn is posted, and between turns
 in its project's chat, in the topic its last message went to.
 
@@ -124,17 +124,17 @@ Only `USER_ID` is answered, in `CHAT_ID` or in that person's private chat with t
 A turn a message started is posted where the message came from. A turn started in the
 terminal goes to `CHAT_ID` when its project is in `CHAT_PROJECTS`, and to the private
 chat otherwise. In a group, a bot in Telegram's default privacy mode receives only
-commands and replies to its own messages, so an unaddressed message reaches klaudo only
+commands and replies to its own messages, so an unaddressed message reaches Klaŭdo only
 once privacy mode is off in BotFather's `/setprivacy` or the bot is an admin. A channel
 is unsupported, since a post there carries no sender to check.
 
 ## Topics
 
 A private chat is split into topics once topic mode is on for the bot in BotFather, and
-a group is when it is a forum. Every message klaudo sends names its topic, because
+a group is when it is a forum. Every message Klaŭdo sends names its topic, because
 Telegram puts a message naming none outside every topic, even a reply to a message
 inside one. A message in a forum's topic replying to nothing arrives replying to the
-service message that opened the topic, which klaudo reads as replying to nothing.
+service message that opened the topic, which Klaŭdo reads as replying to nothing.
 
 A private chat in topic mode takes no message outside every topic: one sent there opens
 a topic whose name the service message marks as implicit. A message replying to nothing
@@ -156,11 +156,11 @@ status says whether every file arrived. The answer comes to an abstract socket a
 which any local user can send to, so the command takes only an answer sent from the
 resident's own socket.
 
-## Why keystrokes
+## Keystroke delivery
 
 Claude Code's own local messaging socket delivers text to a running session too, but
 labels it as coming from another Claude session, to be treated as a peer's request and
-never as the user's approval. That guardrail against permission laundering is why klaudo
+never as the user's approval. That guardrail against permission laundering is why Klaŭdo
 types through `send-keys`, the path a person's own typing takes.
 
 Before every delivery, the terminal `/proc/<pid>/stat` names for the session has to be
@@ -192,7 +192,7 @@ is how a window opened from the chat knows when to type its first prompt.
 `$XDG_CONFIG_HOME/klaudo/env` alone, read with `dotenvy` on every event, so a changed
 token applies from the next event and an exported variable reaches nothing. A private
 chat's id is its person's, so `USER_ID` defaults to `CHAT_ID`, and a group, whose id is
-negative, needs it set. A message klaudo ignores
+negative, needs it set. A message Klaŭdo ignores
 is logged with its chat's and sender's ids, so `journalctl --user -u klaudo` shows what to
 write here.
 
@@ -213,7 +213,7 @@ The link points at the release build, so a rebuild updates what the hooks run, a
 `systemctl --user restart klaudo` updates the resident. A hook newer than the resident
 forwards events it has no arm for, which reach the chat verbatim.
 
-## Why one resident owns everything
+## The resident process
 
 The terminal draws streamed text only once the `MessageDisplay` hook returns, so the
 hook cannot touch the network. That is why the hook is a compiled binary: shell scripts
@@ -226,10 +226,10 @@ reply needs to know which session a message belongs to, so the reader is the pro
 that posts.
 
 A reply is routed by the address read back out of the message it replies to, so a
-restarted resident still routes replies to messages it never posted. Where each session
-is, and where each exited one ran, is written to `$XDG_RUNTIME_DIR/klaudo/state.json` as
-it changes, so an idle session stays reachable across a restart. A turn in flight is
-lost.
+restarted resident still routes replies to messages it never posted. The resident writes
+the pane of each session and the directory of each exited one to
+`$XDG_RUNTIME_DIR/klaudo/state.json` as they change, so an idle session stays reachable
+across a restart. A turn in flight is lost.
 
 A session is forgotten at its `SessionEnd`, or once `/proc/<pid>` is gone for one that
 was killed first.
@@ -246,12 +246,13 @@ submitted with nothing running drops the queue, which the terminal has cleared. 
 a queued message in the terminal tells no hook, so the pairing is by position and can
 attach a turn to the wrong prompt.
 
-## When the resident is not there
+## Hooks without a resident
 
-`UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` and `PostCompact` then send from
-the hook process itself, each as a message of its own, and nothing can be sent back.
-Every other event is dropped, since posted alone it would be one call per tool call or
-streamed fragment, and `PreToolUse` holds up its call until the hook returns.
+With no resident listening, `UserPromptSubmit`, `Stop`, `StopFailure`, `Notification` and
+`PostCompact` send from the hook process itself, each as a message of its own, and
+nothing can be sent back. Every other event is dropped, since posted alone it would be
+one call per tool call or streamed fragment, and `PreToolUse` holds up its call until
+the hook returns.
 
 ## Checks
 
