@@ -172,8 +172,8 @@ enum Arrival {
     },
 }
 
-/// A button the chat pressed on a menu klaudo posted. The menu is the message the button
-/// hangs from, and `data` names the button.
+/// A button the chat pressed on a menu the daemon posted. The menu is the message the
+/// button hangs from, and `data` names the button.
 #[derive(Deserialize)]
 struct Press {
     id: String,
@@ -568,7 +568,8 @@ struct Session {
     /// Code reports such a prompt under the running turn's id and only reveals its own
     /// when that turn begins, so the order they were submitted in is what pairs them.
     queued: VecDeque<Thread>,
-    /// What klaudo has typed into this session and not yet seen reported as a prompt.
+    /// What the daemon has typed into this session and not yet seen reported as a
+    /// prompt.
     asked: VecDeque<Ask>,
     turn: Option<Turn>,
     /// The turn that finished most recently, so its stragglers do not open it again.
@@ -701,7 +702,7 @@ fn instant(millis: u64) -> Instant {
     now.checked_sub(Duration::from_millis(age)).unwrap_or(now)
 }
 
-/// What the chat asked, waiting for the session of the window klaudo opened for it.
+/// What the chat asked, waiting for the session of the window the daemon opened for it.
 struct Opening {
     dir: PathBuf,
     /// The session the window resumes, which is what the ask waits for. A new
@@ -846,8 +847,8 @@ impl Machine {
             &mut session.asked,
             event.prompt.as_deref().unwrap_or_default(),
         );
-        // A prompt klaudo typed is already in the chat as the message that asked for
-        // it, and that message is what the turn replies to.
+        // A prompt the daemon typed is already in the chat as the message that asked
+        // for it, and that message is what the turn replies to.
         let thread = if let Some(thread) = typed {
             if let Some(prompt) = thread.prompt {
                 self.telegram.acknowledge(thread.place.chat, prompt);
@@ -1126,10 +1127,10 @@ impl Machine {
         turn.sealed.push(segment);
     }
 
-    /// A message klaudo has posted, rewritten with what reached its segment afterwards.
-    /// A message's last flushes race the hook of the tool call that ends it, and a tool
-    /// reports after the run it belongs to has been left behind, so both land on a
-    /// segment the chat already has.
+    /// A message the daemon has posted, rewritten with what reached its segment
+    /// afterwards. A message's last flushes race the hook of the tool call that ends
+    /// it, and a tool reports after the run it belongs to has been left behind, so both
+    /// land on a segment the chat already has.
     fn amend(&mut self, id: &str, segment_id: &str) {
         let Some(session) = self.sessions.get(id) else {
             return;
@@ -1193,8 +1194,8 @@ impl Machine {
         }
     }
 
-    /// A `/compact` klaudo typed never reports as a prompt, so its start is what tells
-    /// the chat it was accepted.
+    /// A `/compact` the daemon typed never reports as a prompt, so its start is what
+    /// tells the chat it was accepted.
     fn compacting(&self, id: &str) {
         let Some(session) = self.sessions.get(id) else {
             return;
@@ -1205,7 +1206,7 @@ impl Machine {
     }
 
     /// `/compact` runs no turn, so its end is the answer to it and rings like one,
-    /// replying to the message that asked for it when klaudo typed it.
+    /// replying to the message that asked for it when the daemon typed it.
     fn compacted(&mut self, id: &str, event: &Event) {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -1853,7 +1854,7 @@ impl Machine {
     }
 }
 
-/// The chat message that carried a prompt, when klaudo is the one that typed it.
+/// The chat message that carried a prompt, when the daemon is the one that typed it.
 /// Anything asked before the match never reached a prompt, so it goes with the match.
 fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
     let at = asked.iter().position(|ask| ask.text == prompt)?;
@@ -1863,7 +1864,7 @@ fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
     })
 }
 
-/// The `/compact` klaudo typed into a session and Claude Code has yet to finish.
+/// The `/compact` the daemon typed into a session and Claude Code has yet to finish.
 fn compaction(asked: &VecDeque<Ask>) -> Option<&Ask> {
     asked.iter().find(|ask| {
         ask.text
@@ -1872,7 +1873,7 @@ fn compaction(asked: &VecDeque<Ask>) -> Option<&Ask> {
     })
 }
 
-/// The address in the head of a message klaudo posted, which is the session it belongs
+/// The address in the head of a message Klaŭdo posted, which is the session it belongs
 /// to or the anchor of a conversation that has not started.
 fn address(message: &Value) -> Option<String> {
     let code = headed(message)
@@ -1888,8 +1889,8 @@ fn headed(message: &Value) -> Option<String> {
     Some(plain(&code["text"]))
 }
 
-/// The code span of a message klaudo posted as text with entities: a file, whose head is
-/// its caption, or an HTML message. Entities count UTF-16 code units.
+/// The code span of a message Klaŭdo posted as text with entities: a file, whose head
+/// is its caption, or an HTML message. Entities count UTF-16 code units.
 fn coded(text: &Value, entities: &Value) -> Option<String> {
     let text: Vec<u16> = text.as_str()?.encode_utf16().collect();
     let code = entities
@@ -1907,7 +1908,7 @@ fn body(message: &Value) -> Option<String> {
     (!body.is_empty()).then(|| body.to_owned())
 }
 
-/// A message klaudo posted comes back as the blocks Telegram rendered its markdown
+/// A message Klaŭdo posted comes back as the blocks Telegram rendered its markdown
 /// into, so its head and its body are the first two paragraphs of that.
 fn paragraph(message: &Value, index: usize) -> Option<&Value> {
     let block = message["rich_message"]["blocks"].get(index)?;
@@ -2035,8 +2036,8 @@ fn tokens(count: u64) -> String {
     }
 }
 
-/// A command klaudo answers and its argument. A group's command menu names the bot a
-/// command is for, as `/new@bot`.
+/// A command the daemon answers and its argument. A group's command menu names the bot
+/// a command is for, as `/new@bot`.
 fn command(text: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix('/')?;
     let (word, argument) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
@@ -2324,7 +2325,7 @@ mod tests {
         assert_eq!(why(&"x".repeat(WHY_MAX + 5)).chars().count(), WHY_MAX + 1);
     }
 
-    /// A message klaudo posted, as Telegram hands it back in the reply to it.
+    /// A message Klaŭdo posted, as Telegram hands it back in the reply to it.
     fn posted(paragraphs: &[Value]) -> Value {
         let blocks: Vec<Value> = paragraphs
             .iter()
