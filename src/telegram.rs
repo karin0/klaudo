@@ -75,6 +75,8 @@ pub struct Telegram {
     /// The directories whose sessions post in `CHAT_ID`; every other goes to the user's
     /// private chat.
     projects: Vec<PathBuf>,
+    /// Whether each update polled is logged as Telegram sent it.
+    trace: bool,
     agent: ureq::Agent,
 }
 
@@ -88,6 +90,7 @@ impl Telegram {
         let projects = setting("CHAT_PROJECTS").map_or_else(Vec::new, |value| projects(&value));
         // The test stands a recording server in front of the daemon here.
         let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
+        let trace = setting("TRACE_UPDATES").is_some();
         let agent = ureq::Agent::config_builder()
             // Telegram explains a rejection in the body of the failing response.
             .http_status_as_error(false)
@@ -99,6 +102,7 @@ impl Telegram {
             chat_id,
             user_id,
             projects,
+            trace,
             agent,
         }
     }
@@ -328,7 +332,13 @@ impl Telegram {
                 "allowed_updates": ["message", "callback_query"],
             }),
         )?;
-        Some(answer["result"].as_array()?.clone())
+        let updates = answer["result"].as_array()?.clone();
+        if self.trace {
+            for update in &updates {
+                eprintln!("{update}");
+            }
+        }
+        Some(updates)
     }
 
     fn call(&self, method: &str, body: &Value) -> Option<Value> {
