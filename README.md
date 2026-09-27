@@ -146,6 +146,9 @@ the anchor opens a window running `claude` there and types the reply as its firs
 prompt. Those windows live in a tmux session called `klaude`, one window per
 conversation, so `tmux attach -t klaude` reaches a conversation that began on the phone.
 
+The resident lists its commands in the command menu when it starts, for the user alone:
+in the private chat, and in `CHAT_ID` for that member only.
+
 A session that opens a directory for the first time stops at the dialog asking whether
 the folder is trusted, and reports what it is showing to the chat rather than typing
 into a dialog. Answer that once locally and the directory stays trusted.
@@ -368,7 +371,7 @@ tool outcome arriving after their segment went out rewrite that message; that a 
 whose session was killed stops reading as running with no further event; that a file
 `klaude send` posts replies to the prompt of its turn, one from a session klaude has not
 heard from fails the command, and one sent outside Claude Code from a directory not in
-`CHAT_PROJECTS` goes to the private chat; that `--help` and a call the binary cannot
+`CHAT_PROJECTS` goes to the private chat; that the commands are listed for the user in both chats; that `--help` and a call the binary cannot
 act on print the usage, and a missing file or a stopped resident is named without a
 panic; that an idle session and an exited one stay reachable after the resident is
 killed and started again; that a

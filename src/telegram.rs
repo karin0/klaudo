@@ -171,6 +171,27 @@ impl Telegram {
                 .is_some_and(|chat| chat == self.chat_id || chat == self.user_id)
     }
 
+    /// Lists `commands` in the command menu of both chats klaude answers in, shown to the
+    /// user alone, since nobody else is answered.
+    pub fn register(&self, commands: &[(&str, &str)]) {
+        let commands: Vec<Value> = commands
+            .iter()
+            .map(|(command, description)| json!({"command": command, "description": description}))
+            .collect();
+        let mut scopes = vec![json!({"type": "chat", "chat_id": self.user_id})];
+        if self.chat_id != self.user_id {
+            scopes.push(
+                json!({"type": "chat_member", "chat_id": self.chat_id, "user_id": self.user_id}),
+            );
+        }
+        for scope in scopes {
+            self.call(
+                "setMyCommands",
+                &json!({"commands": commands, "scope": scope}),
+            );
+        }
+    }
+
     /// One long poll for what the chat has sent since `offset`. Telegram holds the
     /// request open until something arrives, so the timeout has to outlast that.
     pub fn updates(&self, offset: i64) -> Option<Vec<Value>> {

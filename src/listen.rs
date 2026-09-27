@@ -89,6 +89,8 @@ const DATAGRAM_MAX: usize = 200 * 1024;
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
 const NEW: &str = "new";
+/// What the chat's command menu offers, each with the line it is listed under.
+const COMMANDS: &[(&str, &str)] = &[("new", "Open a conversation in a directory")];
 /// How many exited sessions a reply can still resume, oldest forgotten first. An entry is
 /// an id and a directory, so the list stays under a hundred kilobytes.
 const ENDED_MAX: usize = 1000;
@@ -246,6 +248,7 @@ fn acquire(lock: &File) -> bool {
 /// typing those into a terminal would replay an afternoon of asks.
 fn poll(target: &Path) {
     let telegram = Telegram::new();
+    telegram.register(COMMANDS);
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("a clock after 1970")
