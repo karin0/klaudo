@@ -163,8 +163,9 @@ so the anchor is a message of its own, and the menu is taken back once it is pos
 private chat has no link to a single message, which is why the way back is a reply
 rather than a link in the menu.
 
-The resident lists `/new` and `/resume` in the command menu when it starts, for the user alone:
-in the private chat, and in `CHAT_ID` for that member only.
+The resident lists `/new`, `/resume` and `/compact` in the command menu when it starts, for
+the user alone: in the private chat, and in `CHAT_ID` for that member only. `/compact` goes to
+a session like any other message, with the `@<bot>` a group's command menu appends taken off.
 
 A session that opens a directory for the first time stops at the dialog asking whether
 the folder is trusted, and reports what it is showing to the chat rather than typing
