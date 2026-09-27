@@ -25,6 +25,8 @@ pub const MAX_CHARS: usize = 32768;
 /// from cannot be recovered once it is gone.
 const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = Duration::from_secs(1);
+/// The longest placeholder Telegram shows in an input field.
+const PLACEHOLDER_MAX: usize = 64;
 /// What klaude leaves on a message whose text reached a session's input box.
 const SEEN: &str = "👀";
 
@@ -110,14 +112,25 @@ impl Telegram {
         sound: Sound,
         reply_to: Option<i64>,
     ) -> Option<i64> {
-        let mut body = json!({
-            "disable_notification": matches!(sound, Sound::Silent),
-            "rich_message": {"markdown": clamp(markdown)},
+        let body = rich(place, markdown, sound, reply_to);
+        self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
+    }
+
+    /// A silent message the next message typed replies to, since clients open the reply
+    /// box on it as it arrives, with `placeholder` in the input field. Telegram attaches
+    /// that only to a message being sent.
+    pub fn anchor(
+        &self,
+        place: Place,
+        markdown: &str,
+        placeholder: &str,
+        reply_to: Option<i64>,
+    ) -> Option<i64> {
+        let mut body = rich(place, markdown, Sound::Silent, reply_to);
+        body["reply_markup"] = json!({
+            "force_reply": true,
+            "input_field_placeholder": placeholder.chars().take(PLACEHOLDER_MAX).collect::<String>(),
         });
-        place.address(&mut body);
-        if let Some(message_id) = reply_to {
-            body["reply_parameters"] = replying(message_id);
-        }
         self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
     }
 
@@ -184,7 +197,7 @@ impl Telegram {
     }
 
     /// Rewrites a message klaude posted, for a segment that received more after it went
-    /// out or a menu that becomes the anchor it picked, whose buttons this takes away.
+    /// out, or a menu that leads to the next choice.
     pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
         self.call(
             "editMessageText",
@@ -368,6 +381,18 @@ impl Telegram {
     fn report(&self, method: &str, detail: &str) {
         eprintln!("{method}: {}", detail.replace(&self.token, "***"));
     }
+}
+
+fn rich(place: Place, markdown: &str, sound: Sound, reply_to: Option<i64>) -> Value {
+    let mut body = json!({
+        "disable_notification": matches!(sound, Sound::Silent),
+        "rich_message": {"markdown": clamp(markdown)},
+    });
+    place.address(&mut body);
+    if let Some(message_id) = reply_to {
+        body["reply_parameters"] = replying(message_id);
+    }
+    body
 }
 
 fn keyboard(buttons: &[(String, String)]) -> Value {

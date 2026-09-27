@@ -1425,9 +1425,7 @@ impl Machine {
                 return;
             }
             Some((NEW, argument)) => {
-                if let Some(anchor) = self.anchor(place, argument) {
-                    self.telegram.send(place, &anchor, Sound::Silent, None);
-                }
+                self.anchor(place, argument);
                 return;
             }
             Some((RESUME, _)) => {
@@ -1502,15 +1500,14 @@ impl Machine {
             return;
         };
         match press.data.split_once(' ') {
-            // The menu becomes the anchor, which also takes its buttons away.
+            // An anchor opens the reply box only as it arrives, so it is a message of
+            // its own, and a menu left behind is one mistaken press from a second one.
             Some((NEW, _)) => {
-                if let Some(anchor) = self.anchor(place, &label) {
-                    self.telegram.edit(place.chat, menu, &anchor);
+                if self.anchor(place, &label).is_some() {
+                    self.telegram.delete(place.chat, menu);
                 }
             }
             Some((RESUME, _)) => self.conversations(place, menu, &label),
-            // The anchor has to be a message of its own to reply to the session's last
-            // one, and a menu left behind is one mistaken press from a second anchor.
             Some((SESSION, id)) => {
                 if self.resumption(place, id).is_some() {
                     self.telegram.delete(place.chat, menu);
@@ -1612,7 +1609,8 @@ impl Machine {
         let last = trail
             .last
             .and_then(|(posted, message)| (posted == place).then_some(message));
-        self.telegram.send(place, &message, Sound::Silent, last)
+        let placeholder = format!("prompt for {}", hook::address(id, None));
+        self.telegram.anchor(place, &message, &placeholder, last)
     }
 
     /// A menu of the projects of the chat `place` is in, each button carrying `command`
@@ -1645,20 +1643,17 @@ impl Machine {
             .map(|(id, _)| id.clone())
     }
 
-    /// A message to reply to with the first prompt of a new conversation. Nothing is
-    /// started yet, so an anchor left alone costs nothing.
-    fn anchor(&self, place: Place, argument: &str) -> Option<String> {
+    /// Posts a message to reply to with the first prompt of a new conversation. Nothing
+    /// is started yet, so an anchor left alone costs nothing.
+    fn anchor(&self, place: Place, argument: &str) -> Option<i64> {
         let Some(cwd) = expand(argument).filter(|cwd| cwd.is_dir()) else {
             self.say(place, &format!("{} is not a directory", code(argument)));
             return None;
         };
         let head = hook::head(&hook::project(&cwd), NEW, None);
-        Some(hook::compose(
-            &head,
-            "",
-            "",
-            &hook::prose(&cwd.to_string_lossy()),
-        ))
+        let message = hook::compose(&head, "", "", &hook::prose(&cwd.to_string_lossy()));
+        let placeholder = format!("first prompt in {}", tilde(&cwd));
+        self.telegram.anchor(place, &message, &placeholder, None)
     }
 
     /// Opens a window for a conversation, a new one or the session `resume` names, and

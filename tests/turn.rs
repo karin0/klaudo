@@ -895,15 +895,26 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     assert_eq!(menu.chat, Some(OWNER));
 
     chat.presses(OWNER, menu, "new 1");
-    let made = collect(&calls, |call| call.label == "editMessageText");
-    let anchor = made.last().expect("the anchor");
-    assert_eq!(anchor.target, Some(menu.id), "the menu becomes the anchor");
+    let made = collect(&calls, |call| call.label == "deleteMessage");
+    let anchor = made
+        .iter()
+        .find(|call| call.label.starts_with("sendRichMessage"))
+        .expect("the anchor");
     // The directory is escaped as prose, which the reader never sees.
     assert_eq!(
         anchor.markdown.replace('\\', ""),
         format!("**b** `new`\n\n{b}")
     );
-    assert!(anchor.body["reply_markup"].is_null(), "the buttons go");
+    // The next message typed replies to the anchor.
+    assert_eq!(
+        anchor.body["reply_markup"],
+        json!({"force_reply": true, "input_field_placeholder": format!("first prompt in {b}")
+            .chars().take(64).collect::<String>()})
+    );
+    assert_eq!(
+        made.last().expect("the menu taken back").target,
+        Some(menu.id)
+    );
     assert!(made.iter().any(|call| call.label == "answerCallbackQuery"));
 
     // The group's menu holds only the project posting there.
@@ -991,6 +1002,10 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
         anchor.markdown
     );
     assert_eq!(anchor.reply, replying_to(answer));
+    assert_eq!(
+        anchor.body["reply_markup"],
+        json!({"force_reply": true, "input_field_placeholder": "prompt for 11111111"})
+    );
     assert_eq!(
         made.last().expect("the menu taken back").target,
         menu.target
