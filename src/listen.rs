@@ -94,6 +94,8 @@ const COMMANDS: &[(&str, &str)] = &[("new", "Open a conversation in a directory"
 /// How many exited sessions a reply can still resume, oldest forgotten first. An entry is
 /// an id and a directory, so the list stays under a hundred kilobytes.
 const ENDED_MAX: usize = 1000;
+/// How many choices a menu offers, which a phone shows without scrolling.
+const MENU_MAX: usize = 8;
 /// How many calls a run lists before the oldest are counted instead.
 const RUN_MAX: usize = 30;
 /// The mark a call opens its line with, for how it went. Geometric shapes, which every
@@ -139,6 +141,9 @@ struct Handoff {
 #[serde(untagged)]
 enum Arrival {
     Hook(Box<Handoff>),
+    Press {
+        press: Press,
+    },
     Chat {
         message: Value,
     },
@@ -147,6 +152,16 @@ enum Arrival {
         cwd: PathBuf,
         reply: String,
     },
+}
+
+/// A button the chat pressed on a menu klaude posted. The menu is the message the button
+/// hangs from, and `data` names the button.
+#[derive(Deserialize)]
+struct Press {
+    id: String,
+    from: Value,
+    message: Value,
+    data: String,
 }
 
 /// Where a file `klaude send` uploads goes, and the caption that addresses it.
@@ -264,12 +279,19 @@ fn poll(target: &Path) {
             if let Some(id) = update["update_id"].as_i64() {
                 offset = id + 1;
             }
-            let message = &update["message"];
-            let sent = message["date"].as_i64().unwrap_or_default();
-            if message.is_null() || sent < i64::try_from(started).unwrap_or(i64::MAX) {
-                continue;
+            // A press only redraws a menu or posts an anchor, so a backlog of them
+            // replays nothing a terminal would take.
+            let handoff = if update["callback_query"].is_object() {
+                serde_json::json!({"press": update["callback_query"]})
+            } else {
+                let message = &update["message"];
+                let sent = message["date"].as_i64().unwrap_or_default();
+                if message.is_null() || sent < i64::try_from(started).unwrap_or(i64::MAX) {
+                    continue;
+                }
+                serde_json::json!({"message": message})
             }
-            let handoff = serde_json::json!({"message": message}).to_string();
+            .to_string();
             if let Err(error) = socket.send_to(handoff.as_bytes(), target) {
                 eprintln!("forward: {error}");
             }
@@ -521,9 +543,8 @@ struct Machine {
     answers: UnixDatagram,
     sessions: BTreeMap<String, Session>,
     opening: Vec<Opening>,
-    /// The directory each exited session ran in, which is where a reply to one resumes
-    /// it, oldest first.
-    ended: VecDeque<(String, PathBuf)>,
+    /// Every exited session, oldest first.
+    ended: VecDeque<Ended>,
     swept: Instant,
     /// Where `Saved` is written.
     state: PathBuf,
@@ -535,7 +556,17 @@ struct Machine {
 #[derive(Serialize, Deserialize, Default)]
 struct Saved {
     sessions: Vec<Known>,
-    ended: VecDeque<(String, PathBuf)>,
+    ended: VecDeque<Ended>,
+}
+
+/// A session that exited: where it ran, which is where a reply to it resumes it, and
+/// when it was last heard from, which is how recent its project is.
+#[derive(Serialize, Deserialize, Clone)]
+struct Ended {
+    id: String,
+    dir: PathBuf,
+    /// Unix milliseconds.
+    seen: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -590,6 +621,7 @@ impl Machine {
             Arrival::Hook(handoff) => {
                 self.hook(handoff.pid, handoff.tmux.zip(handoff.pane), &handoff.event);
             }
+            Arrival::Press { press } => self.press(&press),
             Arrival::Chat { message } => self.chat(&message),
             Arrival::Locate {
                 session,
@@ -612,7 +644,7 @@ impl Machine {
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
         let directory = event.directory();
         if !self.sessions.contains_key(&id) {
-            self.ended.retain(|(ended, _)| *ended != id);
+            self.ended.retain(|ended| ended.id != id);
         }
         let session = self.sessions.entry(id.clone()).or_insert_with(|| {
             Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), Instant::now())
@@ -1198,7 +1230,11 @@ impl Machine {
             self.telegram.delete(chat, message);
         }
         let session = self.sessions.remove(id).expect("a session that ended");
-        self.ended.push_back((id.to_owned(), session.dir));
+        self.ended.push_back(Ended {
+            id: id.to_owned(),
+            dir: session.dir,
+            seen: unix_millis(SystemTime::now() - session.seen.elapsed()),
+        });
         if self.ended.len() > ENDED_MAX {
             self.ended.pop_front();
         }
@@ -1253,33 +1289,25 @@ impl Machine {
     /// conversation in the directory it names. A message replying to nothing goes to
     /// the session heard from last in its chat.
     fn chat(&mut self, message: &Value) {
-        if !self.telegram.accepts(message) {
-            // The ids to put in the env file are read from here.
-            eprintln!(
-                "ignored: chat {} {:?} from {}",
-                message["chat"]["id"],
-                message["chat"]["title"].as_str().unwrap_or_default(),
-                message["from"]["id"]
-            );
-            return;
-        }
-        let Some(chat) = message["chat"]["id"].as_i64() else {
+        let Some(chat) = self.admitted(&message["from"], &message["chat"]) else {
             return;
         };
         let text = message["text"].as_str().unwrap_or_default().trim();
         if text.is_empty() {
             return;
         }
-        if let Some(argument) = text.strip_prefix("/new") {
-            // A group's command menu names the bot a command is for, as `/new@bot`.
-            let argument = match argument.strip_prefix('@') {
-                Some(named) => named
-                    .split_once(char::is_whitespace)
-                    .map_or("", |(_, rest)| rest),
-                None => argument,
-            };
-            self.anchor(chat, argument.trim());
-            return;
+        match command(text) {
+            Some((NEW, "")) => {
+                self.menu(chat, NEW, "Open a conversation in:");
+                return;
+            }
+            Some((NEW, argument)) => {
+                if let Some(anchor) = self.anchor(chat, argument) {
+                    self.telegram.send(chat, &anchor, Sound::Silent, None);
+                }
+                return;
+            }
+            _ => {}
         }
         let Some(carrier) = message["message_id"].as_i64() else {
             return;
@@ -1308,6 +1336,87 @@ impl Machine {
         }
     }
 
+    /// The chat something came from, when it is one to act on.
+    fn admitted(&self, sender: &Value, chat: &Value) -> Option<i64> {
+        if self
+            .telegram
+            .accepts(sender["id"].as_i64(), chat["id"].as_i64())
+        {
+            return chat["id"].as_i64();
+        }
+        // The ids to put in the env file are read from here.
+        eprintln!(
+            "ignored: chat {} {:?} from {}",
+            chat["id"],
+            chat["title"].as_str().unwrap_or_default(),
+            sender["id"]
+        );
+        None
+    }
+
+    /// A button pressed on a menu. Its label is what it picks, so a menu posted before a
+    /// restart still works.
+    fn press(&mut self, press: &Press) {
+        self.telegram.answer(&press.id);
+        let Some(chat) = self.admitted(&press.from, &press.message["chat"]) else {
+            return;
+        };
+        let Some(menu) = press.message["message_id"].as_i64() else {
+            return;
+        };
+        let Some(label) = label(&press.message, &press.data) else {
+            return;
+        };
+        match press.data.split_once(' ') {
+            // The menu becomes the anchor, which also takes its buttons away.
+            Some((NEW, _)) => {
+                if let Some(anchor) = self.anchor(chat, &label) {
+                    self.telegram.edit(chat, menu, &anchor);
+                }
+            }
+            _ => eprintln!("press: {}", press.data),
+        }
+    }
+
+    /// The directories the sessions of `chat` ran in, the one heard from last first.
+    fn projects(&self, chat: i64) -> Vec<PathBuf> {
+        let now = SystemTime::now();
+        let mut seen: Vec<(u64, &PathBuf)> = self
+            .sessions
+            .values()
+            .map(|session| (unix_millis(now - session.seen.elapsed()), &session.dir))
+            .chain(self.ended.iter().map(|ended| (ended.seen, &ended.dir)))
+            .filter(|(_, dir)| self.telegram.chat(dir) == chat && dir.is_dir())
+            .collect();
+        seen.sort_by_key(|(seen, _)| std::cmp::Reverse(*seen));
+        let mut projects: Vec<PathBuf> = Vec::new();
+        for (_, dir) in seen {
+            if !projects.contains(dir) {
+                projects.push(dir.clone());
+            }
+        }
+        projects.truncate(MENU_MAX);
+        projects
+    }
+
+    /// A menu of the projects of `chat`, each button carrying `command` and its place.
+    fn menu(&self, chat: i64, command: &str, text: &str) {
+        let buttons: Vec<(String, String)> = self
+            .projects(chat)
+            .iter()
+            .enumerate()
+            .map(|(index, dir)| (tilde(dir), format!("{command} {index}")))
+            .collect();
+        if buttons.is_empty() {
+            self.say(
+                chat,
+                "no project has run here yet; `/new <directory>` opens one",
+            );
+            return;
+        }
+        self.telegram.menu(chat, text, &buttons);
+    }
+
     /// The session in `chat` heard from last, which is where a message that replies to
     /// nothing goes. A session in the other chat stays out of reach, so a project never
     /// answers in a chat it is not posted to.
@@ -1321,18 +1430,18 @@ impl Machine {
 
     /// A message to reply to with the first prompt of a new conversation. Nothing is
     /// started yet, so an anchor left alone costs nothing.
-    fn anchor(&mut self, chat: i64, argument: &str) {
-        let Some(cwd) = expand(argument) else {
-            self.say(chat, "`/new <directory>`");
-            return;
+    fn anchor(&self, chat: i64, argument: &str) -> Option<String> {
+        let Some(cwd) = expand(argument).filter(|cwd| cwd.is_dir()) else {
+            self.say(chat, &format!("{} is not a directory", code(argument)));
+            return None;
         };
-        if !cwd.is_dir() {
-            self.say(chat, &format!("`{}` is not a directory", cwd.display()));
-            return;
-        }
         let head = hook::head(&hook::project(&cwd), NEW, None);
-        let message = hook::compose(&head, "", "", &hook::prose(&cwd.to_string_lossy()));
-        self.telegram.send(chat, &message, Sound::Silent, None);
+        Some(hook::compose(
+            &head,
+            "",
+            "",
+            &hook::prose(&cwd.to_string_lossy()),
+        ))
     }
 
     /// Opens a window for a conversation, a new one or the session `resume` names, and
@@ -1354,8 +1463,12 @@ impl Machine {
         let chat = ask.chat;
         let Some((id, session)) = self.sessions.iter().find(|(id, _)| id.starts_with(address))
         else {
-            match self.ended.iter().find(|(id, _)| id.starts_with(address)) {
-                Some((id, dir)) => self.open(dir.clone(), Some(id.clone()), ask),
+            match self
+                .ended
+                .iter()
+                .find(|ended| ended.id.starts_with(address))
+            {
+                Some(ended) => self.open(ended.dir.clone(), Some(ended.id.clone()), ask),
                 None => self.say(
                     chat,
                     &format!("`{address}` is not a session this resident has seen"),
@@ -1474,6 +1587,36 @@ fn plain(node: &Value) -> String {
         Value::Array(spans) => spans.iter().map(plain).collect(),
         Value::Object(_) => plain(&node["text"]),
         _ => String::new(),
+    }
+}
+
+/// A command klaude answers and its argument. A group's command menu names the bot a
+/// command is for, as `/new@bot`.
+fn command(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix('/')?;
+    let (word, argument) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    let name = word.split_once('@').map_or(word, |(name, _)| name);
+    Some((name, argument.trim()))
+}
+
+/// The label of the button in a menu that carries `data`.
+fn label(menu: &Value, data: &str) -> Option<String> {
+    menu["reply_markup"]["inline_keyboard"]
+        .as_array()?
+        .iter()
+        .flat_map(|row| row.as_array().into_iter().flatten())
+        .find(|button| button["callback_data"] == data)?["text"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// A directory as it would be typed in the chat, which `expand` reads back.
+fn tilde(dir: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match home.as_deref().and_then(|home| dir.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => dir.display().to_string(),
     }
 }
 
@@ -1816,6 +1959,36 @@ mod tests {
         assert_eq!(found(&["/compactor", "/compact"]), Some(2));
         assert_eq!(found(&["/compact keep the plan"]), Some(1));
         assert_eq!(found(&["compact it"]), None);
+    }
+
+    #[test]
+    fn a_command_is_read_with_or_without_the_bot_it_names() {
+        assert_eq!(command("/new ~/p"), Some(("new", "~/p")));
+        assert_eq!(command("/new@klaude_bot  ~/p "), Some(("new", "~/p")));
+        assert_eq!(command("/new@klaude_bot"), Some(("new", "")));
+        assert_eq!(
+            command("/compact keep it short"),
+            Some(("compact", "keep it short"))
+        );
+        assert_eq!(command("new"), None);
+    }
+
+    #[test]
+    fn a_directory_under_home_is_written_from_a_tilde_and_read_back() {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("a home"));
+        assert_eq!(tilde(&home), "~");
+        assert_eq!(tilde(&home.join("dev/p")), "~/dev/p");
+        assert_eq!(tilde(Path::new("/srv/p")), "/srv/p");
+    }
+
+    #[test]
+    fn a_pressed_button_is_found_by_the_data_it_carries() {
+        let menu = serde_json::json!({"reply_markup": {"inline_keyboard": [
+            [{"text": "~/a", "callback_data": "new 0"}],
+            [{"text": "~/b", "callback_data": "new 1"}],
+        ]}});
+        assert_eq!(label(&menu, "new 1").as_deref(), Some("~/b"));
+        assert_eq!(label(&menu, "new 2"), None);
     }
 
     #[test]

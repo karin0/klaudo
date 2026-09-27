@@ -748,6 +748,76 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
     drop(resident);
 }
 
+/// `/new` alone offers the projects that ran in its chat, the one heard from last first and
+/// an exited one among them, and a press on one rewrites the menu into the anchor for it.
+#[test]
+fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("menu", port);
+    let root = temporary.path();
+    let resident = resident(root);
+
+    for dir in ["a", "b"] {
+        std::fs::create_dir(root.join(dir)).expect("a project");
+    }
+    for (event, session, cwd) in [
+        ("SessionStart", "aaaaaaaa", root.join("a")),
+        ("SessionStart", "bbbbbbbb", root.join("b")),
+        (
+            "SessionStart",
+            "cccccccc",
+            env!("CARGO_MANIFEST_DIR").into(),
+        ),
+        ("SessionEnd", "aaaaaaaa", root.join("a")),
+    ] {
+        hook(
+            root,
+            &json!({"hook_event_name": event, "session_id": session, "cwd": cwd}),
+        );
+    }
+    chat.says(OWNER, OWNER, "/new");
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    let menu = made.last().expect("the menu");
+    let labels: Vec<_> = menu.body["reply_markup"]["inline_keyboard"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|row| row[0]["text"].as_str().expect("a label").to_owned())
+        .collect();
+    let a = root.join("a").display().to_string();
+    let b = root.join("b").display().to_string();
+    assert_eq!(labels, [a.clone(), b.clone()]);
+    assert_eq!(menu.chat, Some(OWNER));
+
+    chat.presses(OWNER, menu, "new 1");
+    let made = collect(&calls, |call| call.label == "editMessageText");
+    let anchor = made.last().expect("the anchor");
+    assert_eq!(anchor.target, Some(menu.id), "the menu becomes the anchor");
+    // The directory is escaped as prose, which the reader never sees.
+    assert_eq!(
+        anchor.markdown.replace('\\', ""),
+        format!("**b** `new`\n\n{b}")
+    );
+    assert!(anchor.body["reply_markup"].is_null(), "the buttons go");
+    assert!(made.iter().any(|call| call.label == "answerCallbackQuery"));
+
+    // The group's menu holds only the project posting there.
+    chat.says(GROUP, OWNER, "/new@klaude_bot");
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    let menu = made.last().expect("the menu");
+    assert_eq!(
+        menu.body["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+        "new 0"
+    );
+    assert_eq!(
+        menu.body["reply_markup"]["inline_keyboard"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    drop(resident);
+}
+
 /// What the chat is left holding: every message klaude sent, in the order it sent them,
 /// carrying its last rewrite, without the ones it took back. Each is the sound it
 /// arrived with and its body under the head.
@@ -796,7 +866,7 @@ fn replying_to(message_id: i64) -> serde_json::Value {
 /// One call the resident made, as the server saw it.
 struct Call {
     label: String,
-    /// A message's markdown, or the caption of a file.
+    /// A message's markdown, the caption of a file, or the text of a menu.
     markdown: String,
     /// What an uploaded file holds.
     document: Option<String>,
@@ -1022,6 +1092,24 @@ impl Chat {
         }));
     }
 
+    /// A press on a button of `menu`, a menu klaude posted, as Telegram hands it back.
+    fn presses(&self, sender: i64, menu: &Call, data: &str) {
+        self.0.lock().expect("the chat").push(json!({
+            "update_id": 1,
+            "callback_query": {
+                "id": "query",
+                "from": {"id": sender},
+                "message": {
+                    "message_id": menu.id,
+                    "chat": {"id": menu.chat},
+                    "text": menu.markdown,
+                    "reply_markup": menu.body["reply_markup"],
+                },
+                "data": data,
+            },
+        }));
+    }
+
     fn drain(&self) -> Vec<serde_json::Value> {
         std::mem::take(&mut *self.0.lock().expect("the chat"))
     }
@@ -1087,6 +1175,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
                 markdown: body["rich_message"]["markdown"]
                     .as_str()
                     .or(body["caption"].as_str())
+                    .or(body["text"].as_str())
                     .unwrap_or_default()
                     .to_owned(),
                 document: body["document"].as_str().map(str::to_owned),

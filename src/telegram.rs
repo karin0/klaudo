@@ -116,7 +116,7 @@ impl Telegram {
     }
 
     /// Rewrites a message klaude posted, for a segment that received more after it went
-    /// out.
+    /// out or a menu that becomes the anchor it picked, whose buttons this takes away.
     pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
         self.call(
             "editMessageText",
@@ -162,13 +162,31 @@ impl Telegram {
         }
     }
 
-    /// Whether a message is one to act on: the user's own, sent in `CHAT_ID` or in the
-    /// user's private chat with the bot, whose id is the user's.
-    pub fn accepts(&self, message: &Value) -> bool {
-        message["from"]["id"].as_i64() == Some(self.user_id)
-            && message["chat"]["id"]
-                .as_i64()
-                .is_some_and(|chat| chat == self.chat_id || chat == self.user_id)
+    /// Whether something the chat sent is one to act on: the user's own, sent in
+    /// `CHAT_ID` or in the user's private chat with the bot, whose id is the user's.
+    pub fn accepts(&self, sender: Option<i64>, chat: Option<i64>) -> bool {
+        sender == Some(self.user_id)
+            && chat.is_some_and(|chat| chat == self.chat_id || chat == self.user_id)
+    }
+
+    /// A plain message with a button on each row, each button carrying `(label, data)`.
+    /// The menu is what to pick from, so it arrives without a sound.
+    pub fn menu(&self, chat: i64, text: &str, buttons: &[(String, String)]) -> Option<i64> {
+        self.call(
+            "sendMessage",
+            &json!({
+                "chat_id": chat,
+                "text": text,
+                "disable_notification": true,
+                "reply_markup": keyboard(buttons),
+            }),
+        )?["result"]["message_id"]
+            .as_i64()
+    }
+
+    /// Stops the client's progress bar on a pressed button, which it shows until this.
+    pub fn answer(&self, query: &str) {
+        self.call("answerCallbackQuery", &json!({"callback_query_id": query}));
     }
 
     /// Lists `commands` in the command menu of both chats klaude answers in, shown to the
@@ -200,7 +218,7 @@ impl Telegram {
             &json!({
                 "offset": offset,
                 "timeout": POLL_SECONDS,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             }),
         )?;
         Some(answer["result"].as_array()?.clone())
@@ -256,6 +274,14 @@ impl Telegram {
     fn report(&self, method: &str, detail: &str) {
         eprintln!("{method}: {}", detail.replace(&self.token, "***"));
     }
+}
+
+fn keyboard(buttons: &[(String, String)]) -> Value {
+    let rows: Vec<Value> = buttons
+        .iter()
+        .map(|(label, data)| json!([{"text": label, "callback_data": data}]))
+        .collect();
+    json!({"inline_keyboard": rows})
 }
 
 /// A prompt the user deleted must not take the answer to it down as well.
