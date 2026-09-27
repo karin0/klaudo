@@ -155,6 +155,10 @@ does `/new@<bot> <directory>`, which is how a group's command menu writes it. Re
 the anchor opens a window running `claude` there and types the reply as its first
 prompt. Those windows live in a tmux session called `klaudo`, one window per
 conversation, so `tmux attach -t klaudo` reaches a conversation that began on the phone.
+tmux runs `claude` there through its `default-shell` as a non-interactive shell, with
+the tmux server's environment, so `claude` has to be on the `PATH` that shell ends up
+with. A directory added to `PATH` only by an interactive shell's startup file, as the
+native installer's `~/.local/bin` often is, leaves the window to exit at once.
 
 Every anchor carries Telegram's `ForceReply`, so a client opens the reply box on it as it
 arrives, with where the reply goes as the placeholder, and the next message typed
