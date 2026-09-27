@@ -20,9 +20,9 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
 /// rejection included.
 const LOCATE_WAIT: Duration = Duration::from_secs(60);
 
-/// Carries a Claude Code session's turns to Telegram and what is typed there back into
-/// its terminal. `klaudo send` is the one command to run by hand. Without a command, it
-/// reads a hook event on stdin.
+/// Klaŭdo posts a Claude Code session's turns to Telegram and types the replies sent
+/// there into the session's terminal. `klaudo send` is the one command to run by hand.
+/// Without a command, it reads a hook event on stdin.
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
@@ -31,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the resident that owns the chat
+    /// Run the resident process that sends and receives every Telegram message
     Listen,
     /// Send files to the user, the one command to run by hand
     ///
