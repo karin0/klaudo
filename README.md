@@ -220,7 +220,13 @@ the message it answers or of the session it comes from, because Telegram puts a 
 naming no topic outside every topic, even one replying to a message inside a topic, and
 drops the reply from a message that replies into another topic. A message in a forum's
 topic that replies to nothing arrives replying to the service message that opened the
-topic, which klaude reads as replying to nothing. `/new` and `/resume` list the projects
+topic, which klaude reads as replying to nothing. A private chat in topic mode takes no
+message outside every topic: one sent there opens a topic of its own, and the service
+message opening it marks the name as implicit. A message replying to nothing in such a
+topic, when no session is there, goes to the session heard from last outside every
+topic of the chat, which is where a turn started in the terminal is posted until its
+session posts in a topic, and the turn it starts moves that session into the topic. A
+topic the user created and named reaches only its own sessions. `/new` and `/resume` list the projects
 of the whole chat, and the anchor they lead to is posted in the topic they were sent in,
 so the conversation it starts stays there.
 
@@ -321,6 +327,9 @@ in the list stops the process.
 `dotenvy` reads the file: `NAME=value` lines, `#` opening a comment, an `export` in
 front allowed, and a `$` expanding outside single quotes, so a file written for a shell
 to source reads the same way here.
+
+`TRACE_UPDATES`, when present with any value, has the resident log every update it polls
+as Telegram sent it, which shows the fields a message carries.
 
 `API_BASE` is optional and defaults to `https://api.telegram.org`; the test writes it
 into a file of its own, pointing at a server of its own.
@@ -452,7 +461,8 @@ heard from fails the command, and one sent outside Claude Code from a directory 
 act on print the usage, `klaude --help` ending with how `klaude send` is called, and a missing file or a stopped resident is named without a
 panic; that an idle session and an exited one stay reachable after the resident is
 killed and started again; that a message in a topic reaches only a session posting
-there, is answered in that topic, and that a turn started in the terminal follows its
+there, is answered in that topic, and in a topic with an implicit name that holds no
+session reaches the session outside every topic, and that a turn started in the terminal follows its
 session to the topic it last posted in; that a
 message replying to nothing reaches the session heard from last in its chat, and one
 replying to a message that names no session reaches none, while a

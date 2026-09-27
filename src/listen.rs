@@ -1418,12 +1418,7 @@ impl Machine {
         let Some(carrier) = message["message_id"].as_i64() else {
             return;
         };
-        // A message in a topic of a forum group that replies to nothing replies to the
-        // service message that opened the topic.
-        let replied = match &message["reply_to_message"] {
-            replied if replied["forum_topic_created"].is_object() => &Value::Null,
-            replied => replied,
-        };
+        let replied = &message["reply_to_message"];
         match command(text) {
             Some((NEW, "")) => {
                 self.menu(place, NEW, "Open a conversation in:");
@@ -1465,10 +1460,22 @@ impl Machine {
     }
 
     /// Where a message goes: the session or anchor the message it replies to names, or
-    /// for a message replying to nothing, the session heard from last in its place.
+    /// for a message replying to nothing, the session heard from last in its place. A
+    /// message outside every topic of a private chat in topic mode opens a topic whose
+    /// name is implicit, so a topic like that holding no session reaches the sessions
+    /// outside every topic, where the turns started in the terminal are posted.
     fn addressee(&self, place: Place, replied: &Value) -> Result<Option<String>, &'static str> {
-        if replied.is_null() {
-            return Ok(self.latest(place));
+        // A message in a topic that replies to nothing replies to the service message
+        // that opened the topic.
+        let opened = &replied["forum_topic_created"];
+        if replied.is_null() || opened.is_object() {
+            let outside = (opened["is_name_implicit"] == Value::Bool(true)).then_some(Place {
+                topic: None,
+                ..place
+            });
+            return Ok(self
+                .latest(place)
+                .or_else(|| outside.and_then(|outside| self.latest(outside))));
         }
         address(replied)
             .map(Some)

@@ -647,6 +647,55 @@ fn a_topic_holds_its_own_conversations() {
     drop(resident);
 }
 
+/// A message outside every topic of a private chat in topic mode opens a topic of its
+/// own, which reaches the session heard from last outside every topic, while a topic the
+/// user named reaches no session outside it.
+#[test]
+fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("implicit", port);
+    let root = temporary.path();
+    let seen = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_millis();
+    // The session started in the terminal and has posted nothing yet.
+    std::fs::create_dir_all(root.join("run/klaude")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaude/state.json"),
+        json!({
+            "sessions": [{
+                "id": "0123456789abcdef",
+                "dir": env!("CARGO_MANIFEST_DIR"),
+                "pid": std::process::id(),
+                "pane": null,
+                "seen": seen,
+                "trail": {"prompt": "", "last": null},
+            }],
+            "ended": [],
+        })
+        .to_string(),
+    )
+    .expect("the state");
+    let resident = resident(root);
+
+    chat.says_in(GROUP, 78, OWNER, "anyone");
+    chat.opens(GROUP, 79, OWNER, "anyone");
+    let made = collect(&calls, |call| call.markdown.starts_with("`01234567` "));
+    let answered: Vec<_> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage"))
+        .map(|call| {
+            (
+                call.markdown.split_once(' ').expect("a reason").0,
+                call.body["message_thread_id"].as_i64(),
+            )
+        })
+        .collect();
+    assert_eq!(answered, [("no", Some(78)), ("`01234567`", Some(79))]);
+    drop(resident);
+}
+
 /// A session killed mid-turn sends no event again, and the resident still finds it gone:
 /// the message that showed the turn running is rewritten to what the turn said.
 #[test]
@@ -1313,6 +1362,20 @@ impl Chat {
     /// A message in topic `topic` replying to nothing, which a forum hands over as a
     /// reply to the service message that opened the topic.
     fn says_in(&self, chat: i64, topic: i64, sender: i64, text: &str) {
+        self.in_topic(chat, topic, sender, text, false);
+    }
+
+    /// A message sent outside every topic of a private chat in topic mode, which opens
+    /// topic `topic` named after it.
+    fn opens(&self, chat: i64, topic: i64, sender: i64, text: &str) {
+        self.in_topic(chat, topic, sender, text, true);
+    }
+
+    fn in_topic(&self, chat: i64, topic: i64, sender: i64, text: &str, implicit: bool) {
+        let mut opened = json!({"name": "a topic", "icon_color": 7_322_096});
+        if implicit {
+            opened["is_name_implicit"] = json!(true);
+        }
         self.push(json!({
             "chat": {"id": chat},
             "from": {"id": sender},
@@ -1322,7 +1385,7 @@ impl Chat {
             "reply_to_message": {
                 "message_id": topic,
                 "message_thread_id": topic,
-                "forum_topic_created": {"name": "a topic", "icon_color": 7_322_096},
+                "forum_topic_created": opened,
             },
         }));
     }
