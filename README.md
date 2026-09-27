@@ -158,7 +158,10 @@ conversation, so `tmux attach -t klaudo` reaches a conversation that began on th
 tmux runs `claude` there through its `default-shell` as a non-interactive shell, with
 the tmux server's environment, so `claude` has to be on the `PATH` that shell ends up
 with. A directory added to `PATH` only by an interactive shell's startup file, as the
-native installer's `~/.local/bin` often is, leaves the window to exit at once.
+native installer's `~/.local/bin` often is, leaves the window to exit at once. The
+resident looks for a window it opened every five seconds until its session starts, and
+answers each message waiting for a window that has closed by then with the directory
+it was opened in, so the next reply opens another.
 
 Every anchor carries Telegram's `ForceReply`, so a client opens the reply box on it as it
 arrives, with where the reply goes as the placeholder, and the next message typed
@@ -477,4 +480,5 @@ session in the other chat stays out of reach, and the same message
 from anyone else in the group gets no answer, and the answer to the user's own goes to
 the chat it was sent in; and that a reply to a session that exited, its process gone or
 its `SessionEnd` reported, resumes it in its directory, with a second reply waiting for
-the same window.
+the same window, and that a window closed before its session started is answered and
+leaves the next reply to open another.

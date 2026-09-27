@@ -865,7 +865,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         .collect();
     let window = |opening: &str, id: &str| {
         format!(
-            "{opening} -c {} -n {} claude --resume {id}",
+            "{opening} -P -F #{{pane_id}} #{{socket_path}} -c {} -n {} claude --resume {id}",
             root.display(),
             root.file_name().expect("a name").display()
         )
@@ -1182,6 +1182,50 @@ fn showing(markdown: &str, text: &str) {
     println!("frame:\n{markdown}");
 }
 
+/// A window whose command exits before its session starts is answered in the chat, and
+/// the next reply to that session opens another window rather than waiting for it.
+#[test]
+fn a_window_closed_before_its_session_started_is_reported() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("closed", port);
+    let root = temporary.path();
+    let resident = resident(root);
+
+    for event in ["SessionStart", "SessionEnd"] {
+        hook(
+            root,
+            &json!({
+                "hook_event_name": event,
+                "session_id": "fedcba9876543210",
+                "cwd": root,
+            }),
+        );
+    }
+    let replied = json!({"rich_message": {"blocks": [
+        {"type": "paragraph", "text": [{"type": "code", "text": "fedcba98"}]},
+    ]}});
+    std::fs::write(root.join("closed"), "").expect("the window closes");
+    chat.replies(OWNER, OWNER, "pick it up", &replied);
+    collect(&calls, |call| {
+        call.chat == Some(OWNER)
+            && call.markdown.starts_with("the window opened in ")
+            && call
+                .markdown
+                .ends_with(" closed before its session started")
+    });
+
+    chat.replies(OWNER, OWNER, "once more", &replied);
+    let log = root.join("tmux.log");
+    wait_for(
+        || {
+            std::fs::read_to_string(&log)
+                .is_ok_and(|log| log.lines().filter(|line| line.starts_with("new-")).count() == 2)
+        },
+        "the second reply opened no window",
+    );
+    drop(resident);
+}
+
 /// A throwaway root holding the runtime directory the resident binds its socket in and
 /// the credentials file every klaudo process started from it reads, so a machine's own
 /// credentials stay out of the test. It is removed when the test drops it, which a
@@ -1195,12 +1239,23 @@ fn prepare(name: &str, port: u16) -> TempDir {
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
     // A window klaudo opens goes to a `tmux` that records how it was called, so a test
     // never reaches the tmux server of the machine it runs on. Its session exists once a
-    // `new-session` has been recorded.
+    // `new-session` has been recorded, and its windows stay open until a `closed` file
+    // appears beside the log.
     std::fs::create_dir_all(root.join("bin")).expect("binary directory");
     let tmux = root.join("bin/tmux");
     std::fs::write(
         &tmux,
-        "#!/bin/sh\nlog=\"$(dirname \"$0\")/../tmux.log\"\nif [ \"$1\" = has-session ]; then grep -q '^new-session' \"$log\" 2>/dev/null; exit; fi\nprintf '%s\\n' \"$*\" >> \"$log\"\n",
+        r#"#!/bin/sh
+dir="$(dirname "$0")/.."
+log="$dir/tmux.log"
+[ "$1" = -S ] && shift 2
+case "$1" in
+has-session) grep -q '^new-session' "$log" 2>/dev/null; exit ;;
+display-message) [ -e "$dir/closed" ] || echo /dev/pts/0; exit ;;
+esac
+printf '%s\n' "$*" >> "$log"
+case "$1" in new-*) echo "%$(grep -c '^new-' "$log") $dir/tmux.sock" ;; esac
+"#,
     )
     .expect("a recording tmux");
     std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755))

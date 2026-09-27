@@ -707,6 +707,7 @@ struct Opening {
     /// The session the window resumes, which is what the ask waits for. A new
     /// conversation waits for the next session to start in `dir`.
     resume: Option<String>,
+    pane: Pane,
     ask: Ask,
 }
 
@@ -1291,14 +1292,16 @@ impl Machine {
     }
 
     /// The next moment `tick` has work: a tool call settling, a message falling due, or
-    /// the sweep for a session killed mid-turn. With none, only an arrival wakes it.
+    /// the sweep for a session killed mid-turn or a window closed before its session
+    /// started. With none, only an arrival wakes it.
     fn due(&self) -> Option<Instant> {
         let turns = || {
             self.sessions
                 .values()
                 .filter_map(|session| session.turn.as_ref())
         };
-        let sweep = turns().next().map(|_| self.swept + SWEEP);
+        let sweep =
+            (turns().next().is_some() || !self.opening.is_empty()).then(|| self.swept + SWEEP);
         turns()
             .flat_map(|turn| [turn.pending.first().map(|(at, _)| *at + SETTLE), turn.due()])
             .flatten()
@@ -1319,6 +1322,19 @@ impl Machine {
 
     fn sweep(&mut self) {
         self.swept = Instant::now();
+        let closed: Vec<Opening> = self
+            .opening
+            .extract_if(.., |opening| !opening.pane.open())
+            .collect();
+        for opening in closed {
+            self.say(
+                opening.ask.place,
+                &format!(
+                    "the window opened in {} closed before its session started",
+                    code(&tilde(&opening.dir))
+                ),
+            );
+        }
         let gone: Vec<String> = self
             .sessions
             .iter()
@@ -1672,13 +1688,24 @@ impl Machine {
     /// keeps its first prompt until the session there reports that it is ready. A
     /// session already being resumed gets no second window, which would run it twice.
     fn open(&mut self, dir: PathBuf, resume: Option<String>, ask: Ask) {
-        let resuming =
-            resume.is_some() && self.opening.iter().any(|opening| opening.resume == resume);
-        if !resuming && let Err(error) = tmux::open(&dir, resume.as_deref()) {
-            self.say(ask.place, &format!("tmux: {}", hook::prose(&error)));
-            return;
-        }
-        self.opening.push(Opening { dir, resume, ask });
+        let resuming = self
+            .opening
+            .iter()
+            .find(|opening| resume.is_some() && opening.resume == resume)
+            .map(|opening| opening.pane.clone());
+        let pane = match resuming.map_or_else(|| tmux::open(&dir, resume.as_deref()), Ok) {
+            Ok(pane) => pane,
+            Err(error) => {
+                self.say(ask.place, &format!("tmux: {}", hook::prose(&error)));
+                return;
+            }
+        };
+        self.opening.push(Opening {
+            dir,
+            resume,
+            pane,
+            ask,
+        });
     }
 
     /// Types into the session whose id starts with `address`, resuming it first when it
