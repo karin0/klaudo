@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hook::{self, Event};
-use crate::telegram::{Sound, Telegram};
+use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::{self, Pane};
 
 /// The longest the message showing an open segment goes without its clock advancing,
@@ -226,7 +226,7 @@ struct Limit {
 /// Where the files `klaude send` uploads go, and the caption that addresses each of them.
 #[derive(Serialize, Deserialize)]
 pub struct Placement {
-    pub chat: i64,
+    pub place: Place,
     pub reply_to: Option<i64>,
     pub caption: Option<String>,
 }
@@ -490,12 +490,12 @@ fn listing(calls: &[Call]) -> String {
         .join(BREAK)
 }
 
-/// The chat a turn is posted in and the message there carrying what was asked, which the
-/// rest of the turn replies to. A turn asked from the phone stays in the chat it was
-/// asked in, and any other goes to the chat of its project.
+/// The place a turn is posted in and the message there carrying what was asked, which
+/// the rest of the turn replies to. A turn asked from the phone stays in the place it was
+/// asked in, and any other goes to the session's home.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Thread {
-    chat: i64,
+    place: Place,
     prompt: Option<i64>,
 }
 
@@ -503,7 +503,7 @@ struct Thread {
 /// becomes replies into.
 struct Ask {
     text: String,
-    chat: i64,
+    place: Place,
     message: i64,
 }
 
@@ -535,7 +535,7 @@ impl Turn {
         match &segment.written {
             None => Some((self.started + REWRITE).max(quiet)),
             Some((written, at)) if *written == segment.text() => Some(*at + REFRESH),
-            Some((_, at)) => Some((*at + rewrite(self.thread.chat)).max(quiet)),
+            Some((_, at)) => Some((*at + rewrite(self.thread.place.chat)).max(quiet)),
         }
     }
 
@@ -582,11 +582,11 @@ struct Session {
 }
 
 /// What a `/resume` menu shows of a session and leads back to: the start of its latest
-/// prompt, and the last message it left in the chat as `(chat, message)`.
+/// prompt, and the last message it left in the chat as `(place, message)`.
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Trail {
     prompt: String,
-    last: Option<(i64, i64)>,
+    last: Option<(Place, i64)>,
 }
 
 impl Session {
@@ -605,10 +605,22 @@ impl Session {
         }
     }
 
-    fn left(&mut self, chat: i64, message: Option<i64>) {
+    fn left(&mut self, place: Place, message: Option<i64>) {
         if let Some(message) = message {
-            self.trail.last = Some((chat, message));
+            self.trail.last = Some((place, message));
         }
+    }
+
+    /// Where the session posts between turns: its project's chat, in the topic its last
+    /// message there went to, so a topic stays one conversation across the turns the
+    /// terminal starts.
+    fn home(&self, telegram: &Telegram) -> Place {
+        let chat = telegram.chat(&self.dir);
+        let topic = self
+            .trail
+            .last
+            .and_then(|(place, _)| place.topic.filter(|_| place.chat == chat));
+        Place { chat, topic }
     }
 
     fn head(&self, id: &str, prompt: Option<&str>) -> String {
@@ -837,7 +849,7 @@ impl Machine {
         // it, and that message is what the turn replies to.
         let thread = if let Some(thread) = typed {
             if let Some(prompt) = thread.prompt {
-                self.telegram.acknowledge(thread.chat, prompt);
+                self.telegram.acknowledge(thread.place.chat, prompt);
             }
             thread
         } else {
@@ -851,18 +863,18 @@ impl Machine {
             };
             let head = session.head(id, prompt);
             let message = hook::message(event, &head, "");
-            let chat = self.telegram.chat(&session.dir);
+            let place = session.home(&self.telegram);
             // The phone's owner asked this, so it arrives without a sound.
             Thread {
-                chat,
-                prompt: self.telegram.send(chat, &message, Sound::Silent, None),
+                place,
+                prompt: self.telegram.send(place, &message, Sound::Silent, None),
             }
         };
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
         session.trail.prompt = glimpse(event.prompt.as_deref().unwrap_or_default());
-        session.left(thread.chat, thread.prompt);
+        session.left(thread.place, thread.prompt);
         if running {
             session.queued.push_back(thread);
         } else {
@@ -901,15 +913,15 @@ impl Machine {
         let Some(session) = self.sessions.get_mut(id) else {
             return false;
         };
-        let chat = self.telegram.chat(&session.dir);
+        let place = session.home(&self.telegram);
         session.turn = Some(Turn {
             prompt_id: named.to_owned(),
             seed: seed(named),
             started: Instant::now(),
-            thread: session
-                .queued
-                .pop_front()
-                .unwrap_or(Thread { chat, prompt: None }),
+            thread: session.queued.pop_front().unwrap_or(Thread {
+                place,
+                prompt: None,
+            }),
             live: None,
             segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
             sealed: Vec::new(),
@@ -1094,19 +1106,19 @@ impl Machine {
         let done = hook::compose(&head, &took(elapsed), "", &text);
         let message = match live {
             Some(message) => {
-                self.telegram.edit(thread.chat, message, &done);
+                self.telegram.edit(thread.place.chat, message, &done);
                 Some(message)
             }
             // A segment that ran its course inside one rewrite has no message yet.
             None => self
                 .telegram
-                .send(thread.chat, &done, Sound::Silent, thread.prompt),
+                .send(thread.place, &done, Sound::Silent, thread.prompt),
         };
         segment.posted = message.map(|message| (message, elapsed));
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        session.left(thread.chat, message);
+        session.left(thread.place, message);
         let Some(turn) = session.turn.as_mut() else {
             return;
         };
@@ -1133,7 +1145,7 @@ impl Machine {
         let text = segment.text();
         let head = session.head(id, Some(&turn.prompt_id));
         self.telegram.edit(
-            turn.thread.chat,
+            turn.thread.place.chat,
             message,
             &hook::compose(&head, &took(elapsed), "", &text),
         );
@@ -1166,12 +1178,12 @@ impl Machine {
         let thread = turn.thread;
         let answer = self
             .telegram
-            .send(thread.chat, &message, Sound::Ring, thread.prompt);
-        session.left(thread.chat, answer);
+            .send(thread.place, &message, Sound::Ring, thread.prompt);
+        session.left(thread.place, answer);
         // This event carries the last segment's text, so the message that was showing
         // it goes rather than standing above the one that repeats it.
         if let Some(live) = turn.live {
-            self.telegram.delete(thread.chat, live);
+            self.telegram.delete(thread.place.chat, live);
         }
     }
 
@@ -1182,7 +1194,7 @@ impl Machine {
             return;
         };
         if let Some(ask) = compaction(&session.asked) {
-            self.telegram.acknowledge(ask.chat, ask.message);
+            self.telegram.acknowledge(ask.place.chat, ask.message);
         }
     }
 
@@ -1198,13 +1210,13 @@ impl Machine {
         let head = session.head(id, event.prompt_id.as_deref());
         let thread = typed.unwrap_or_else(|| self.thread(&self.sessions[id]));
         let answer = self.telegram.send(
-            thread.chat,
+            thread.place,
             &hook::message(event, &head, ""),
             Sound::Ring,
             thread.prompt,
         );
         if let Some(session) = self.sessions.get_mut(id) {
-            session.left(thread.chat, answer);
+            session.left(thread.place, answer);
         }
     }
 
@@ -1219,9 +1231,9 @@ impl Machine {
         let message = hook::message(event, &head, "");
         let posted = self
             .telegram
-            .send(thread.chat, &message, sound, thread.prompt);
+            .send(thread.place, &message, sound, thread.prompt);
         if let Some(session) = self.sessions.get_mut(id) {
-            session.left(thread.chat, posted);
+            session.left(thread.place, posted);
         }
     }
 
@@ -1232,7 +1244,10 @@ impl Machine {
     fn locate(&mut self, id: Option<&str>, cwd: &Path) -> Result<Placement, String> {
         let Some(id) = id else {
             return Ok(Placement {
-                chat: self.telegram.chat(cwd),
+                place: Place {
+                    chat: self.telegram.chat(cwd),
+                    topic: None,
+                },
                 reply_to: None,
                 caption: None,
             });
@@ -1253,18 +1268,17 @@ impl Machine {
         );
         let thread = self.thread(session);
         Ok(Placement {
-            chat: thread.chat,
+            place: thread.place,
             reply_to: thread.prompt,
             caption: Some(caption),
         })
     }
 
-    /// Where a session's messages go: its turn's thread, or its project's chat between
-    /// turns.
+    /// Where a session's messages go: its turn's thread, or its home between turns.
     fn thread(&self, session: &Session) -> Thread {
         session.turn.as_ref().map_or(
             Thread {
-                chat: self.telegram.chat(&session.dir),
+                place: session.home(&self.telegram),
                 prompt: None,
             },
             |turn| turn.thread,
@@ -1324,7 +1338,7 @@ impl Machine {
             .sessions
             .get_mut(id)
             .and_then(|session| session.turn.as_mut())
-            .and_then(|turn| Some((turn.thread.chat, turn.live.take()?)));
+            .and_then(|turn| Some((turn.thread.place.chat, turn.live.take()?)));
         if let Some((chat, message)) = live {
             self.telegram.delete(chat, message);
         }
@@ -1366,12 +1380,12 @@ impl Machine {
         );
         let message = match live {
             Some(message) => {
-                self.telegram.edit(thread.chat, message, &shown);
+                self.telegram.edit(thread.place.chat, message, &shown);
                 Some(message)
             }
             None => self
                 .telegram
-                .send(thread.chat, &shown, Sound::Silent, thread.prompt),
+                .send(thread.place, &shown, Sound::Silent, thread.prompt),
         };
         let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
@@ -1387,9 +1401,9 @@ impl Machine {
     /// A message from the chat. What it replies to says where it goes: a message from a
     /// session reaches that session, and the message `/new` left behind opens a
     /// conversation in the directory it names. A message replying to nothing goes to
-    /// the session heard from last in its chat.
+    /// the session heard from last in its place.
     fn chat(&mut self, message: &Value) {
-        let Some(chat) = self.admitted(&message["from"], &message["chat"]) else {
+        let Some(place) = self.admitted(&message["from"], message) else {
             return;
         };
         let text = message["text"].as_str().unwrap_or_default().trim();
@@ -1399,83 +1413,86 @@ impl Machine {
         let Some(carrier) = message["message_id"].as_i64() else {
             return;
         };
-        let replied = &message["reply_to_message"];
+        // A message in a topic of a forum group that replies to nothing replies to the
+        // service message that opened the topic.
+        let replied = match &message["reply_to_message"] {
+            replied if replied["forum_topic_created"].is_object() => &Value::Null,
+            replied => replied,
+        };
         match command(text) {
             Some((NEW, "")) => {
-                self.menu(chat, NEW, "Open a conversation in:");
+                self.menu(place, NEW, "Open a conversation in:");
                 return;
             }
             Some((NEW, argument)) => {
-                if let Some(anchor) = self.anchor(chat, argument) {
-                    self.telegram.send(chat, &anchor, Sound::Silent, None);
+                if let Some(anchor) = self.anchor(place, argument) {
+                    self.telegram.send(place, &anchor, Sound::Silent, None);
                 }
                 return;
             }
             Some((RESUME, _)) => {
-                self.menu(chat, RESUME, "Resume a conversation in:");
+                self.menu(place, RESUME, "Resume a conversation in:");
                 return;
             }
             Some((USAGE, _)) => {
-                self.usage(chat, carrier, replied);
+                self.usage(place, carrier, replied);
                 return;
             }
             _ => {}
         }
         let ask = Ask {
             text: unaddressed(text),
-            chat,
+            place,
             message: carrier,
         };
         // A session that exited without saying so is resumed rather than typed into.
         self.sweep();
-        match self.addressee(chat, replied) {
+        match self.addressee(place, replied) {
             Ok(Some(address)) if address == NEW => match body(replied) {
                 Some(cwd) => self.open(PathBuf::from(cwd), None, ask),
-                None => self.say(chat, "that anchor names no directory"),
+                None => self.say(place, "that anchor names no directory"),
             },
             Ok(Some(address)) => self.send(&address, ask),
             Ok(None) => self.say(
-                chat,
+                place,
                 "no session is running here; `/new <directory>` opens one",
             ),
-            Err(error) => self.say(chat, error),
+            Err(error) => self.say(place, error),
         }
     }
 
     /// Where a message goes: the session or anchor the message it replies to names, or
-    /// for a message replying to nothing, the session heard from last in its chat.
-    fn addressee(&self, chat: i64, replied: &Value) -> Result<Option<String>, &'static str> {
+    /// for a message replying to nothing, the session heard from last in its place.
+    fn addressee(&self, place: Place, replied: &Value) -> Result<Option<String>, &'static str> {
         if replied.is_null() {
-            return Ok(self.latest(chat));
+            return Ok(self.latest(place));
         }
         address(replied)
             .map(Some)
             .ok_or("the message replied to names no session")
     }
 
-    /// The chat something came from, when it is one to act on.
-    fn admitted(&self, sender: &Value, chat: &Value) -> Option<i64> {
-        if self
-            .telegram
-            .accepts(sender["id"].as_i64(), chat["id"].as_i64())
-        {
-            return chat["id"].as_i64();
+    /// Where a message came from, when it is one to act on.
+    fn admitted(&self, sender: &Value, message: &Value) -> Option<Place> {
+        let place = self.telegram.accepts(sender, message);
+        if place.is_none() {
+            // The ids to put in the env file are read from here.
+            let chat = &message["chat"];
+            eprintln!(
+                "ignored: chat {} {:?} from {}",
+                chat["id"],
+                chat["title"].as_str().unwrap_or_default(),
+                sender["id"]
+            );
         }
-        // The ids to put in the env file are read from here.
-        eprintln!(
-            "ignored: chat {} {:?} from {}",
-            chat["id"],
-            chat["title"].as_str().unwrap_or_default(),
-            sender["id"]
-        );
-        None
+        place
     }
 
     /// A button pressed on a menu. Its label is what it picks, so a menu posted before a
     /// restart still works.
     fn press(&mut self, press: &Press) {
         self.telegram.answer(&press.id);
-        let Some(chat) = self.admitted(&press.from, &press.message["chat"]) else {
+        let Some(place) = self.admitted(&press.from, &press.message) else {
             return;
         };
         let Some(menu) = press.message["message_id"].as_i64() else {
@@ -1487,16 +1504,16 @@ impl Machine {
         match press.data.split_once(' ') {
             // The menu becomes the anchor, which also takes its buttons away.
             Some((NEW, _)) => {
-                if let Some(anchor) = self.anchor(chat, &label) {
-                    self.telegram.edit(chat, menu, &anchor);
+                if let Some(anchor) = self.anchor(place, &label) {
+                    self.telegram.edit(place.chat, menu, &anchor);
                 }
             }
-            Some((RESUME, _)) => self.conversations(chat, menu, &label),
+            Some((RESUME, _)) => self.conversations(place, menu, &label),
             // The anchor has to be a message of its own to reply to the session's last
             // one, and a menu left behind is one mistaken press from a second anchor.
             Some((SESSION, id)) => {
-                if self.resumption(chat, id).is_some() {
-                    self.telegram.delete(chat, menu);
+                if self.resumption(place, id).is_some() {
+                    self.telegram.delete(place.chat, menu);
                 }
             }
             _ => eprintln!("press: {}", press.data),
@@ -1546,9 +1563,9 @@ impl Machine {
 
     /// The menu of a project's sessions a `/resume` menu leads to once the project is
     /// picked, rewritten over it.
-    fn conversations(&self, chat: i64, menu: i64, label: &str) {
+    fn conversations(&self, place: Place, menu: i64, label: &str) {
         let Some(dir) = expand(label) else {
-            self.say(chat, &format!("{} is not a directory", code(label)));
+            self.say(place, &format!("{} is not a directory", code(label)));
             return;
         };
         let now = unix_millis(SystemTime::now());
@@ -1568,11 +1585,11 @@ impl Machine {
             })
             .collect();
         if buttons.is_empty() {
-            self.say(chat, &format!("no session has run in {}", code(label)));
+            self.say(place, &format!("no session has run in {}", code(label)));
             return;
         }
         self.telegram.remenu(
-            chat,
+            place.chat,
             menu,
             &format!("Resume a conversation in {label}:"),
             &buttons,
@@ -1580,12 +1597,12 @@ impl Machine {
     }
 
     /// An anchor addressed to session `id`, replying to the last message it left in this
-    /// chat, which a tap on the quotation scrolls back to. A reply to the anchor goes
+    /// place, which a tap on the quotation scrolls back to. A reply to the anchor goes
     /// where a reply to any of its messages would.
-    fn resumption(&self, chat: i64, id: &str) -> Option<i64> {
+    fn resumption(&self, place: Place, id: &str) -> Option<i64> {
         let Some((_, dir, _, trail)) = self.known().find(|(known, _, _, _)| *known == id) else {
             self.say(
-                chat,
+                place,
                 &format!("{} is not a session this resident has seen", code(id)),
             );
             return None;
@@ -1594,44 +1611,45 @@ impl Machine {
         let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir)));
         let last = trail
             .last
-            .and_then(|(posted, message)| (posted == chat).then_some(message));
-        self.telegram.send(chat, &message, Sound::Silent, last)
+            .and_then(|(posted, message)| (posted == place).then_some(message));
+        self.telegram.send(place, &message, Sound::Silent, last)
     }
 
-    /// A menu of the projects of `chat`, each button carrying `command` and its place.
-    fn menu(&self, chat: i64, command: &str, text: &str) {
+    /// A menu of the projects of the chat `place` is in, each button carrying `command`
+    /// and its place in the menu.
+    fn menu(&self, place: Place, command: &str, text: &str) {
         let buttons: Vec<(String, String)> = self
-            .projects(chat)
+            .projects(place.chat)
             .iter()
             .enumerate()
             .map(|(index, dir)| (tilde(dir), format!("{command} {index}")))
             .collect();
         if buttons.is_empty() {
             self.say(
-                chat,
+                place,
                 "no project has run here yet; `/new <directory>` opens one",
             );
             return;
         }
-        self.telegram.menu(chat, text, &buttons);
+        self.telegram.menu(place, text, &buttons);
     }
 
-    /// The session in `chat` heard from last, which is where a message that replies to
-    /// nothing goes. A session in the other chat stays out of reach, so a project never
-    /// answers in a chat it is not posted to.
-    fn latest(&self, chat: i64) -> Option<String> {
+    /// The session in `place` heard from last, which is where a message that replies to
+    /// nothing goes. A session posting elsewhere stays out of reach, so a project never
+    /// answers in a chat it is not posted to, and a topic holds its own conversations.
+    fn latest(&self, place: Place) -> Option<String> {
         self.sessions
             .iter()
-            .filter(|(_, session)| self.thread(session).chat == chat)
+            .filter(|(_, session)| self.thread(session).place == place)
             .max_by_key(|(_, session)| session.seen)
             .map(|(id, _)| id.clone())
     }
 
     /// A message to reply to with the first prompt of a new conversation. Nothing is
     /// started yet, so an anchor left alone costs nothing.
-    fn anchor(&self, chat: i64, argument: &str) -> Option<String> {
+    fn anchor(&self, place: Place, argument: &str) -> Option<String> {
         let Some(cwd) = expand(argument).filter(|cwd| cwd.is_dir()) else {
-            self.say(chat, &format!("{} is not a directory", code(argument)));
+            self.say(place, &format!("{} is not a directory", code(argument)));
             return None;
         };
         let head = hook::head(&hook::project(&cwd), NEW, None);
@@ -1650,7 +1668,7 @@ impl Machine {
         let resuming =
             resume.is_some() && self.opening.iter().any(|opening| opening.resume == resume);
         if !resuming && let Err(error) = tmux::open(&dir, resume.as_deref()) {
-            self.say(ask.chat, &format!("tmux: {}", hook::prose(&error)));
+            self.say(ask.place, &format!("tmux: {}", hook::prose(&error)));
             return;
         }
         self.opening.push(Opening { dir, resume, ask });
@@ -1659,7 +1677,7 @@ impl Machine {
     /// Types into the session whose id starts with `address`, resuming it first when it
     /// has exited.
     fn send(&mut self, address: &str, ask: Ask) {
-        let chat = ask.chat;
+        let place = ask.place;
         let Some((id, session)) = self.sessions.iter().find(|(id, _)| id.starts_with(address))
         else {
             match self
@@ -1669,7 +1687,7 @@ impl Machine {
             {
                 Some(ended) => self.open(ended.dir.clone(), Some(ended.id.clone()), ask),
                 None => self.say(
-                    chat,
+                    place,
                     &format!("`{address}` is not a session this resident has seen"),
                 ),
             }
@@ -1681,7 +1699,7 @@ impl Machine {
             // which runs on a pty of its own, from one whose pane went away.
             let short = &id[..8.min(id.len())];
             self.say(
-                chat,
+                place,
                 &match tmux::controlling_tty(session.pid) {
                     Some(tty) => format!("`{short}` is on `{tty}`, which no tmux pane holds"),
                     None => format!("`{short}` has no terminal to type into"),
@@ -1698,13 +1716,13 @@ impl Machine {
                 .map(|screen| format!("\n\n```\n{screen}\n```"))
                 .unwrap_or_default();
             self.say(
-                chat,
+                place,
                 &format!("that terminal no longer holds the session{screen}"),
             );
             return;
         }
         if let Err(error) = pane.deliver(&ask.text) {
-            self.say(chat, &format!("tmux: {}", hook::prose(&error)));
+            self.say(place, &format!("tmux: {}", hook::prose(&error)));
             return;
         }
         self.sessions
@@ -1733,10 +1751,10 @@ impl Machine {
     /// to `replied` would reach. With such a session the answer goes under its head, so a
     /// reply to the answer reaches it too. Times are written by each reader's client, in
     /// their own zone and, for how long ago a figure was reported, kept up to date.
-    fn usage(&self, chat: i64, asked: i64, replied: &Value) {
-        let address = match self.addressee(chat, replied) {
+    fn usage(&self, place: Place, asked: i64, replied: &Value) {
+        let address = match self.addressee(place, replied) {
             Ok(address) => address.filter(|address| address != NEW),
-            Err(error) => return self.say(chat, error),
+            Err(error) => return self.say(place, error),
         };
         let reached = address.and_then(|address| {
             self.sessions
@@ -1796,11 +1814,11 @@ impl Machine {
             ),
             None => said,
         };
-        self.telegram.html(chat, &answer, asked);
+        self.telegram.html(place, &answer, asked);
     }
 
-    fn say(&self, chat: i64, text: &str) {
-        self.telegram.send(chat, text, Sound::Silent, None);
+    fn say(&self, place: Place, text: &str) {
+        self.telegram.send(place, text, Sound::Silent, None);
     }
 }
 
@@ -1809,7 +1827,7 @@ impl Machine {
 fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
     let at = asked.iter().position(|ask| ask.text == prompt)?;
     asked.drain(..=at).next_back().map(|ask| Thread {
-        chat: ask.chat,
+        place: ask.place,
         prompt: Some(ask.message),
     })
 }
@@ -2304,18 +2322,23 @@ mod tests {
         assert_eq!(body(&posted(&[head_of(NEW)])), None);
     }
 
+    const HERE: Place = Place {
+        chat: 7,
+        topic: None,
+    };
+
     #[test]
     fn a_prompt_klaude_typed_is_paired_with_the_message_that_asked_for_it() {
         let ask = |text: &str, message| Ask {
             text: text.to_owned(),
-            chat: 7,
+            place: HERE,
             message,
         };
         let mut asked = VecDeque::from([ask("first", 1), ask("second", 2)]);
         assert_eq!(
             pair(&mut asked, "second"),
             Some(Thread {
-                chat: 7,
+                place: HERE,
                 prompt: Some(2)
             })
         );
@@ -2331,7 +2354,7 @@ mod tests {
         let found = |texts: &[&str]| {
             let asked = VecDeque::from_iter(texts.iter().zip(1..).map(|(text, message)| Ask {
                 text: (*text).to_owned(),
-                chat: 7,
+                place: HERE,
                 message,
             }));
             compaction(&asked).map(|ask| ask.message)

@@ -563,6 +563,90 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     drop(resident);
 }
 
+/// A topic holds its own conversations: a message there reaches only a session whose
+/// home is that topic, everything said back goes into the topic it answers, and a turn
+/// the terminal starts follows the session to the topic it last posted in.
+#[test]
+fn a_topic_holds_its_own_conversations() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("topic", port);
+    let root = temporary.path();
+    let session = "0123456789abcdef";
+    let seen = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_millis();
+    // The session last posted in topic 77 of the group, and its process is the test.
+    std::fs::create_dir_all(root.join("run/klaude")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaude/state.json"),
+        json!({
+            "sessions": [{
+                "id": session,
+                "dir": env!("CARGO_MANIFEST_DIR"),
+                "pid": std::process::id(),
+                "pane": null,
+                "seen": seen,
+                "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+            }],
+            "ended": [],
+        })
+        .to_string(),
+    )
+    .expect("the state");
+    let resident = resident(root);
+
+    chat.says_in(GROUP, 78, OWNER, "anyone");
+    chat.says(GROUP, OWNER, "anyone");
+    chat.says_in(GROUP, 77, OWNER, "anyone");
+    let made = collect(&calls, |call| call.markdown.starts_with("`01234567` "));
+    let answered: Vec<_> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage"))
+        .map(|call| {
+            (
+                call.markdown.split_once(' ').expect("a reason").0,
+                call.body["message_thread_id"].as_i64(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        answered,
+        [("no", Some(78)), ("no", None), ("`01234567`", Some(77))]
+    );
+
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session,
+            "cwd": env!("CARGO_MANIFEST_DIR"),
+            "prompt": "from the terminal",
+        }),
+    );
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "Stop",
+            "session_id": session,
+            "last_assistant_message": "done",
+        }),
+    );
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let sent: Vec<_> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage "))
+        .collect();
+    assert_eq!(sent.len(), 2, "the prompt and the answer");
+    assert!(
+        sent.iter()
+            .all(|call| call.body["message_thread_id"] == json!(77)),
+        "the turn stays in the topic"
+    );
+    assert_eq!(sent[1].reply, replying_to(sent[0].id));
+    drop(resident);
+}
+
 /// A session killed mid-turn sends no event again, and the resident still finds it gone:
 /// the message that showed the turn running is rewritten to what the turn said.
 #[test]
@@ -1192,21 +1276,43 @@ impl Chat {
 
     /// A reply to `replied`, a message klaude posted as Telegram hands it back.
     fn replies(&self, chat: i64, sender: i64, text: &str, replied: &serde_json::Value) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("a clock after 1970")
-            .as_secs();
-        self.0.lock().expect("the chat").push(json!({
-            "update_id": 1,
-            "message": {
-                "message_id": 9000,
-                "date": now,
-                "chat": {"id": chat},
-                "from": {"id": sender},
-                "text": text,
-                "reply_to_message": replied,
+        self.push(json!({
+            "chat": {"id": chat},
+            "from": {"id": sender},
+            "text": text,
+            "reply_to_message": replied,
+        }));
+    }
+
+    /// A message in topic `topic` replying to nothing, which a forum hands over as a
+    /// reply to the service message that opened the topic.
+    fn says_in(&self, chat: i64, topic: i64, sender: i64, text: &str) {
+        self.push(json!({
+            "chat": {"id": chat},
+            "from": {"id": sender},
+            "text": text,
+            "message_thread_id": topic,
+            "is_topic_message": true,
+            "reply_to_message": {
+                "message_id": topic,
+                "message_thread_id": topic,
+                "forum_topic_created": {"name": "a topic", "icon_color": 7_322_096},
             },
         }));
+    }
+
+    fn push(&self, mut message: serde_json::Value) {
+        message["message_id"] = json!(9000);
+        message["date"] = json!(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("a clock after 1970")
+                .as_secs()
+        );
+        self.0
+            .lock()
+            .expect("the chat")
+            .push(json!({"update_id": 1, "message": message}));
     }
 
     /// A press on a button of `menu`, a menu klaude posted or rewrote, as Telegram hands

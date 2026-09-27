@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ureq::unversioned::multipart::{Form, Part};
 
@@ -32,6 +33,36 @@ const SEEN: &str = "👀";
 pub enum Sound {
     Ring,
     Silent,
+}
+
+/// A chat, and the topic in it when the chat is split into topics. A message sent to a
+/// chat without its topic lands outside every topic, and one replying across topics loses
+/// the reply, so everything klaude sends names both.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    pub chat: i64,
+    pub topic: Option<i64>,
+}
+
+impl Place {
+    /// The place of a message Telegram delivered. `message_thread_id` also numbers the
+    /// reply threads of a group without topics, where nothing can be sent to one, so
+    /// only a topic message's counts.
+    fn of(message: &Value) -> Option<Self> {
+        Some(Self {
+            chat: message["chat"]["id"].as_i64()?,
+            topic: message["message_thread_id"]
+                .as_i64()
+                .filter(|_| message["is_topic_message"] == Value::Bool(true)),
+        })
+    }
+
+    fn address(self, body: &mut Value) {
+        body["chat_id"] = json!(self.chat);
+        if let Some(topic) = self.topic {
+            body["message_thread_id"] = json!(topic);
+        }
+    }
 }
 
 pub struct Telegram {
@@ -74,16 +105,16 @@ impl Telegram {
     /// to.
     pub fn send(
         &self,
-        chat: i64,
+        place: Place,
         markdown: &str,
         sound: Sound,
         reply_to: Option<i64>,
     ) -> Option<i64> {
         let mut body = json!({
-            "chat_id": chat,
             "disable_notification": matches!(sound, Sound::Silent),
             "rich_message": {"markdown": clamp(markdown)},
         });
+        place.address(&mut body);
         if let Some(message_id) = reply_to {
             body["reply_parameters"] = replying(message_id);
         }
@@ -95,12 +126,13 @@ impl Telegram {
     /// alone carries the caption, so it is the one a reply reaches the session from.
     pub fn documents(
         &self,
-        chat: i64,
+        place: Place,
         paths: &[PathBuf],
         caption: Option<&str>,
         reply_to: Option<i64>,
     ) -> Option<()> {
-        let chat = chat.to_string();
+        let chat = place.chat.to_string();
+        let topic = place.topic.map(|topic| topic.to_string());
         let reply = reply_to.map(|message_id| replying(message_id).to_string());
         let names: Vec<String> = (0..paths.len())
             .map(|index| format!("file{index}"))
@@ -129,6 +161,9 @@ impl Telegram {
             let mut form = Form::new()
                 .text("chat_id", &chat)
                 .text("disable_notification", "true");
+            if let Some(topic) = &topic {
+                form = form.text("message_thread_id", topic);
+            }
             if let Some(reply) = &reply {
                 form = form.text("reply_parameters", reply);
             }
@@ -195,42 +230,39 @@ impl Telegram {
         }
     }
 
-    /// Whether something the chat sent is one to act on: the user's own, sent in
-    /// `CHAT_ID` or in the user's private chat with the bot, whose id is the user's.
-    pub fn accepts(&self, sender: Option<i64>, chat: Option<i64>) -> bool {
-        sender == Some(self.user_id)
-            && chat.is_some_and(|chat| chat == self.chat_id || chat == self.user_id)
+    /// Where a message the chat sent was sent, when it is one to act on: the user's own,
+    /// sent in `CHAT_ID` or in the user's private chat with the bot, whose id is the
+    /// user's.
+    pub fn accepts(&self, sender: &Value, message: &Value) -> Option<Place> {
+        Place::of(message).filter(|place| {
+            sender["id"].as_i64() == Some(self.user_id)
+                && (place.chat == self.chat_id || place.chat == self.user_id)
+        })
     }
 
     /// A plain message with a button on each row, each button carrying `(label, data)`.
     /// The menu is what to pick from, so it arrives without a sound.
-    pub fn menu(&self, chat: i64, text: &str, buttons: &[(String, String)]) -> Option<i64> {
-        self.call(
-            "sendMessage",
-            &json!({
-                "chat_id": chat,
-                "text": text,
-                "disable_notification": true,
-                "reply_markup": keyboard(buttons),
-            }),
-        )?["result"]["message_id"]
-            .as_i64()
+    pub fn menu(&self, place: Place, text: &str, buttons: &[(String, String)]) -> Option<i64> {
+        let mut body = json!({
+            "text": text,
+            "disable_notification": true,
+            "reply_markup": keyboard(buttons),
+        });
+        place.address(&mut body);
+        self.call("sendMessage", &body)?["result"]["message_id"].as_i64()
     }
 
     /// A silent message in Telegram's HTML, for what markdown has no syntax for, such as a
     /// time each reader's client writes in their own zone.
-    pub fn html(&self, chat: i64, html: &str, reply_to: i64) -> Option<i64> {
-        self.call(
-            "sendMessage",
-            &json!({
-                "chat_id": chat,
-                "text": html,
-                "parse_mode": "HTML",
-                "disable_notification": true,
-                "reply_parameters": replying(reply_to),
-            }),
-        )?["result"]["message_id"]
-            .as_i64()
+    pub fn html(&self, place: Place, html: &str, reply_to: i64) -> Option<i64> {
+        let mut body = json!({
+            "text": html,
+            "parse_mode": "HTML",
+            "disable_notification": true,
+            "reply_parameters": replying(reply_to),
+        });
+        place.address(&mut body);
+        self.call("sendMessage", &body)?["result"]["message_id"].as_i64()
     }
 
     /// Rewrites a menu into the next choice it leads to.
@@ -524,6 +556,33 @@ mod tests {
     #[should_panic(expected = "USER_ID is needed")]
     fn a_group_without_a_user_stops_the_process() {
         user(-1001, None);
+    }
+
+    #[test]
+    fn a_message_is_placed_in_its_topic_and_only_a_topic_counts() {
+        let topic = json!({"chat": {"id": 7}, "message_thread_id": 77, "is_topic_message": true});
+        assert_eq!(
+            Place::of(&topic),
+            Some(Place {
+                chat: 7,
+                topic: Some(77)
+            })
+        );
+        let reply_thread = json!({"chat": {"id": -1001}, "message_thread_id": 5});
+        assert_eq!(
+            Place::of(&reply_thread),
+            Some(Place {
+                chat: -1001,
+                topic: None
+            })
+        );
+        let mut body = json!({});
+        Place {
+            chat: 7,
+            topic: Some(77),
+        }
+        .address(&mut body);
+        assert_eq!(body, json!({"chat_id": 7, "message_thread_id": 77}));
     }
 
     #[test]

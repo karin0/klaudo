@@ -126,8 +126,12 @@ fn hook(event: &Event, raw: &[u8]) {
                 // No resident reported this turn, so this message is all of it, and
                 // there is no prompt of its own in the chat for it to reply to.
                 let telegram = telegram::Telegram::new();
+                let place = telegram::Place {
+                    chat: telegram.chat(&directory),
+                    topic: None,
+                };
                 telegram.send(
-                    telegram.chat(&directory),
+                    place,
                     &hook::message(event, &head, ""),
                     telegram::Sound::Ring,
                     None,
@@ -198,7 +202,7 @@ fn send(files: &[PathBuf]) {
     let mut failed = false;
     for album in files.chunks(telegram::ALBUM) {
         let sent = telegram.documents(
-            placement.chat,
+            placement.place,
             album,
             placement.caption.as_deref(),
             placement.reply_to,
@@ -283,13 +287,20 @@ mod tests {
                 .expect("the forged answer");
             resident
                 .send_to_addr(
-                    br#"{"Ok": {"chat": 7, "reply_to": 3, "caption": null}}"#,
+                    br#"{"Ok": {"place": {"chat": 7, "topic": 5}, "reply_to": 3, "caption": null}}"#,
                     &reply,
                 )
                 .expect("the answer");
         });
 
         let placement = locate(&listening, None, Path::new("/")).expect("the resident's answer");
-        assert_eq!((placement.chat, placement.reply_to), (7, Some(3)));
+        assert_eq!(
+            (
+                placement.place.chat,
+                placement.place.topic,
+                placement.reply_to
+            ),
+            (7, Some(5), Some(3))
+        );
     }
 }
