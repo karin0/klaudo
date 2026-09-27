@@ -19,7 +19,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// How long a test waits for what follows the call it was watching for, so a rewrite or
 /// a deletion issued right after the answer is part of what it reads.
 const GRACE: Duration = Duration::from_millis(600);
-/// The chat is a group, so the chat and the user klaudo answers are two ids. The user's
+/// The chat is a group, so the chat and the user Klaŭdo answers are two ids. The user's
 /// private chat with the bot has the user's id. This repository is the project listed
 /// for the group, so a session opened here posts there.
 const GROUP: i64 = -1001;
@@ -484,8 +484,8 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
 }
 
 /// A message that replies to nothing still names a session: the one heard from last in
-/// the chat it was sent in. These sessions run outside tmux, so what klaudo says back
-/// names where the message went and the terminal that session is on. A reply to a
+/// the chat it was sent in. These sessions run outside tmux, so what the daemon says
+/// back names where the message went and the terminal that session is on. A reply to a
 /// message that names no session goes nowhere.
 #[test]
 fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat() {
@@ -494,8 +494,8 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     let root = temporary.path();
     let daemon = daemon(root);
 
-    // The later session sorts first, so what answers is the one heard from last
-    // rather than the first one klaudo happens to hold. The throwaway root is outside
+    // The later session sorts first, so what answers is the one heard from last rather
+    // than the first one the daemon happens to hold. The throwaway root is outside
     // `CHAT_PROJECTS`, so the session there, heard from last of all, is the private
     // chat's.
     for (session, cwd) in [
@@ -1054,7 +1054,7 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
     drop(daemon);
 }
 
-/// What the chat is left holding: every message klaudo sent, in the order it sent them,
+/// What the chat is left holding: every message Klaŭdo sent, in the order it sent them,
 /// carrying its last rewrite, without the ones it took back. Each is the sound it
 /// arrived with and its body under the head.
 fn holding(made: &[Call]) -> Vec<(&'static str, String)> {
@@ -1227,8 +1227,8 @@ fn a_window_closed_before_its_session_started_is_reported() {
 }
 
 /// A throwaway root holding the runtime directory the daemon binds its socket in and
-/// the credentials file every klaudo process started from it reads, so a machine's own
-/// credentials stay out of the test. It is removed when the test drops it, which a
+/// the credentials file every `klaudo` process started from it reads, so a machine's
+/// own credentials stay out of the test. It is removed when the test drops it, which a
 /// failing test does too.
 fn prepare(name: &str, port: u16) -> TempDir {
     let temporary = tempfile::Builder::new()
@@ -1237,10 +1237,10 @@ fn prepare(name: &str, port: u16) -> TempDir {
         .expect("throwaway root");
     let root = temporary.path();
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
-    // A window klaudo opens goes to a `tmux` that records how it was called, so a test
-    // never reaches the tmux server of the machine it runs on. Its session exists once a
-    // `new-session` has been recorded, and its windows stay open until a `closed` file
-    // appears beside the log.
+    // A window the daemon opens goes to a `tmux` that records how it was called, so a
+    // test never reaches the tmux server of the machine it runs on. Its session exists
+    // once a `new-session` has been recorded, and its windows stay open until a
+    // `closed` file appears beside the log.
     std::fs::create_dir_all(root.join("bin")).expect("binary directory");
     let tmux = root.join("bin/tmux");
     std::fs::write(
@@ -1400,7 +1400,7 @@ impl Chat {
         self.replies(chat, sender, text, &serde_json::Value::Null);
     }
 
-    /// A reply to `replied`, a message klaudo posted as Telegram hands it back.
+    /// A reply to `replied`, a message Klaŭdo posted as Telegram hands it back.
     fn replies(&self, chat: i64, sender: i64, text: &str, replied: &serde_json::Value) {
         self.push(json!({
             "chat": {"id": chat},
@@ -1455,8 +1455,8 @@ impl Chat {
             .push(json!({"update_id": 1, "message": message}));
     }
 
-    /// A press on a button of `menu`, a menu klaudo posted or rewrote, as Telegram hands
-    /// it back.
+    /// A press on a button of `menu`, a menu the daemon posted or rewrote, as Telegram
+    /// hands it back.
     fn presses(&self, sender: i64, menu: &Call, data: &str) {
         self.0.lock().expect("the chat").push(json!({
             "update_id": 1,
@@ -1634,8 +1634,8 @@ fn the_command_line_explains_itself() {
     assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaudo: the daemon at "));
 }
 
-/// The commands klaudo answers are listed in the command menu of each chat, for the user
-/// alone.
+/// The commands Klaŭdo answers are listed in the command menu of each chat, for the
+/// user alone.
 #[test]
 fn the_commands_are_listed_for_the_user_in_both_chats() {
     let (port, calls, _chat) = recorder();
@@ -1916,7 +1916,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert_eq!(media[0]["parse_mode"], json!("HTML"));
     assert_eq!(media[1].get("caption"), None);
 
-    // A session klaudo has never heard from has no thread to post in.
+    // A session the daemon has never heard from has no thread to post in.
     let refused = klaudo(root)
         .args(["send".as_ref(), file.as_os_str()])
         .env("CLAUDE_CODE_SESSION_ID", "ffffffff")
@@ -1946,9 +1946,9 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
 }
 
 /// A message's last flushes race the hook of the tool call that ends it, so a delta can
-/// land after klaudo has already posted that message, carrying a paragraph rather than
-/// a few characters. A tool reports late for the same reason, once the run holding it
-/// is a message. Both belong in the message their segment became.
+/// land after the daemon has already posted that message, carrying a paragraph rather
+/// than a few characters. A tool reports late for the same reason, once the run holding
+/// it is a message. Both belong in the message their segment became.
 #[test]
 fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     let (port, calls, _chat) = recorder();

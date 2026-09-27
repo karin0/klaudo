@@ -7,11 +7,11 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-/// The tmux session that holds the windows klaudo opens for conversations started from
-/// the chat, so one `tmux attach -t klaudo` reaches all of them.
+/// The tmux session that holds the windows the daemon opens for conversations started
+/// from the chat, so one `tmux attach -t klaudo` reaches all of them.
 const OWNED_SESSION: &str = "klaudo";
-/// Named rather than the default buffer, so a paste klaudo issues cannot consume what
-/// the user copied.
+/// Named rather than the default buffer, so a paste the daemon issues cannot consume
+/// what the user copied.
 const BUFFER: &str = "klaudo";
 /// The kernel registers all 2^20 pseudo-terminals under this one major, so a minor is
 /// the number under `/dev/pts`.
@@ -107,7 +107,7 @@ impl Pane {
             .args(["paste-buffer", "-b", BUFFER, "-t", &self.id, "-p", "-d"]))
     }
 
-    /// What the pane is showing, for reporting a session that stopped where klaudo
+    /// What the pane is showing, for reporting a session that stopped where the daemon
     /// cannot type, such as the dialog that asks whether a folder is trusted.
     pub fn screen(&self) -> Option<String> {
         let output = self
