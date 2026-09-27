@@ -96,6 +96,7 @@ const SESSION: &str = "session";
 const COMMANDS: &[(&str, &str)] = &[
     (NEW, "Open a conversation in a directory"),
     (RESUME, "Resume a recent conversation"),
+    ("compact", "Compact the conversation it replies to"),
 ];
 /// How much of a session's latest prompt its button in a `/resume` menu shows.
 const PROMPT_MAX: usize = 40;
@@ -1360,7 +1361,7 @@ impl Machine {
             return;
         };
         let ask = Ask {
-            text: text.to_owned(),
+            text: unaddressed(text),
             chat,
             message: carrier,
         };
@@ -1751,6 +1752,16 @@ fn command(text: &str) -> Option<(&str, &str)> {
     Some((name, argument.trim()))
 }
 
+/// `text` without the `@<bot>` a group's command menu appends to a command, which Claude
+/// Code would take for part of the command's name.
+fn unaddressed(text: &str) -> String {
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    match text[..end].find('@') {
+        Some(at) if text.starts_with('/') => format!("{}{}", &text[..at], &text[end..]),
+        _ => text.to_owned(),
+    }
+}
+
 /// The label of the button in a menu that carries `data`.
 fn label(menu: &Value, data: &str) -> Option<String> {
     menu["reply_markup"]["inline_keyboard"]
@@ -2131,6 +2142,17 @@ mod tests {
             Some(("compact", "keep it short"))
         );
         assert_eq!(command("new"), None);
+    }
+
+    #[test]
+    fn a_command_is_typed_without_the_bot_it_names() {
+        assert_eq!(unaddressed("/compact@klaude_bot"), "/compact");
+        assert_eq!(
+            unaddressed("/compact@klaude_bot keep a@b"),
+            "/compact keep a@b"
+        );
+        assert_eq!(unaddressed("/compact keep a@b"), "/compact keep a@b");
+        assert_eq!(unaddressed("mail a@b"), "mail a@b");
     }
 
     #[test]
