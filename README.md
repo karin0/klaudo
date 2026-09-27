@@ -118,10 +118,12 @@ message is a few thousand characters of one paragraph.
 ## What you can send
 
 What a message replies to is where it goes. A message replying to nothing goes to the
-session klaude heard from last among those in the chat it was sent in, and the turn it
-starts threads under it, whose head names the session that took it. A session is in
-the chat its running turn is posted to, and between turns in its project's chat, so a
-project listed for one chat stays out of reach of an unaddressed message in the other.
+session klaude heard from last among those in the chat and topic it was sent in, and the
+turn it starts threads under it, whose head names the session that took it. A session is
+where its running turn is posted, and between turns in its project's chat, in the topic
+its last message there went to. So a project listed for one chat stays out of reach of
+an unaddressed message in the other, and a topic keeps its conversations, including the
+turns started in their terminals.
 A reply to a message that names no session, such as a later file of an album, is
 answered with that and reaches no session.
 
@@ -162,7 +164,7 @@ sessions, the one heard from last first, each labelled with its address, how lon
 was heard from and the first forty characters of its latest prompt. Pressing a session
 posts an anchor headed with its address, and a reply to the anchor reaches the session
 like a reply to any of its messages, resuming it first when it has exited. The anchor
-replies to the last message the session left in that chat, so a tap on its quotation
+replies to the last message the session left in that chat and topic, so a tap on its quotation
 scrolls back to where the conversation stopped. A reply is set when a message is sent,
 so the anchor is a message of its own, and the menu is taken back once it is posted. A
 private chat has no link to a single message, which is why the way back is a reply
@@ -189,18 +191,30 @@ into a dialog. Answer that once locally and the directory stays trusted.
 
 Only one person is answered: a message is acted on when `USER_ID` sent it, in `CHAT_ID`
 or in that person's private chat with the bot. A turn a message started is posted in
-the chat the message came from, and so is whatever klaude says back to a message; a
+the chat and topic the message came from, and so is whatever klaude says back to a message; a
 turn started in the terminal goes to `CHAT_ID` when its project is listed in
 `CHAT_PROJECTS`, and to the private chat otherwise. In a group, a bot in Telegram's default privacy mode receives only commands
 and replies to its own messages, so a message replying to nothing reaches klaude only
 once privacy mode is turned off with BotFather's `/setprivacy` or the bot is made an
 admin. A channel is not supported: a post there carries no sender to check.
 
+## Topics
+
+A private chat with the bot is split into topics once topic mode is on for the bot in
+BotFather, and a group is when it is a forum. The user creates the topics. Every message klaude sends names the topic of
+the message it answers or of the session it comes from, because Telegram puts a message
+naming no topic outside every topic, even one replying to a message inside a topic, and
+drops the reply from a message that replies into another topic. A message in a forum's
+topic that replies to nothing arrives replying to the service message that opened the
+topic, which klaude reads as replying to nothing. `/new` and `/resume` list the projects
+of the whole chat, and the anchor they lead to is posted in the topic they were sent in,
+so the conversation it starts stays there.
+
 ## Sending a file
 
 `klaude send <file>...` posts the files as documents in the thread of the turn that ran
-the command, below what the turn has said so far, and in the chat of the session's
-project between turns. Up to ten files form one album, whose first document alone
+the command, below what the turn has said so far, and where the session is between
+turns. Up to ten files form one album, whose first document alone
 carries the caption, so a reply to that one reaches the session. Claude Code puts
 `CLAUDE_CODE_SESSION_ID` in the environment of every command it runs, which is how the
 command finds its session. Run anywhere else, the command sends the files without a
@@ -351,7 +365,7 @@ running, every five seconds, so what a session killed mid-turn had already said 
 the chat within that time.
 
 Where each session is, when it was last heard from, and where and when each exited one ran,
-along with the latest prompt of each and the last message it left in the chat, are
+along with the latest prompt of each and the last message it left in the chat with its topic, are
 written to `$XDG_RUNTIME_DIR/klaude/state.json` after every event but streamed text and
 tool calls, and read back when the resident starts. A session idle through a restart
 sends nothing until its next prompt, so without this file a message from the chat would
@@ -423,7 +437,9 @@ heard from fails the command, and one sent outside Claude Code from a directory 
 `CHAT_PROJECTS` goes to the private chat; that the commands are listed for the user in both chats; that `--help` and a call the binary cannot
 act on print the usage, `klaude --help` ending with how `klaude send` is called, and a missing file or a stopped resident is named without a
 panic; that an idle session and an exited one stay reachable after the resident is
-killed and started again; that a
+killed and started again; that a message in a topic reaches only a session posting
+there, is answered in that topic, and that a turn started in the terminal follows its
+session to the topic it last posted in; that a
 message replying to nothing reaches the session heard from last in its chat, and one
 replying to a message that names no session reaches none, while a
 session in the other chat stays out of reach, and the same message
