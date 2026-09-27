@@ -1,8 +1,8 @@
 # Klaŭdo
 
-Carries a Claude Code session's turns to a Telegram private chat or group and carries
-what you type there back into the session's terminal, so a long turn can be left alone,
-picked up from the phone, and answered from there.
+Posts a Claude Code session's turns to a Telegram private chat or group and types the
+replies you send there into the session's terminal, so a long turn can be left alone,
+followed on the phone, and answered from there.
 
 Klaŭdo is Esperanto for Claude. Its commands, paths and names in the system are spelled
 `klaudo`, the Esperanto h-system's spelling of ŭ as u.
