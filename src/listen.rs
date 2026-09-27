@@ -1744,8 +1744,8 @@ impl Machine {
 
     /// The plan's limits, and how full the context is of the session a message replying
     /// to `replied` would reach. With such a session the answer goes under its head, so a
-    /// reply to the answer reaches it too. Times are written by each reader's client, in
-    /// their own zone and, for how long ago a figure was reported, kept up to date.
+    /// reply to the answer reaches it too. When a limit resets is written by each reader's
+    /// client, in their own zone.
     fn usage(&self, place: Place, asked: i64, replied: &Value) {
         let address = match self.addressee(place, replied) {
             Ok(address) => address.filter(|address| address != NEW),
@@ -1762,10 +1762,7 @@ impl Machine {
         if let Some((_, session)) = reached {
             match &session.window {
                 Some((window, at)) => {
-                    ages.push(format!(
-                        "context {}",
-                        moment(*at, "r", &ago_since(now, *at))
-                    ));
+                    ages.push(format!("context {}", ago_since(now, *at)));
                     rows.push(match (&window.current_usage, window.used_percentage) {
                         (Some(usage), Some(percentage)) => format!(
                             "{}context {percentage:.0}%, {} of {}",
@@ -1785,15 +1782,15 @@ impl Machine {
                     if let Some(limit) = limit {
                         let left = Duration::from_secs(limit.resets_at.saturating_sub(now));
                         rows.push(format!(
-                            "{}{name} {:.0}%, resets {}\n{UNDER}{}",
+                            "{}{name} {:.0}%, resets in {}\n{UNDER}{}",
                             gauge(limit.used_percentage),
                             limit.used_percentage,
-                            moment(limit.resets_at, "r", &format!("in {}", until(left))),
-                            moment(limit.resets_at, "wDt", &utc(limit.resets_at)),
+                            until(left),
+                            moment(limit.resets_at, &utc(limit.resets_at)),
                         ));
                     }
                 }
-                ages.push(format!("limits {}", moment(*at, "r", &ago_since(now, *at))));
+                ages.push(format!("limits {}", ago_since(now, *at)));
             }
             None => rows.push("limits: not reported yet".to_owned()),
         }
@@ -1936,10 +1933,10 @@ fn gauge(percentage: f64) -> String {
 /// closest to the gauge's ten cells of about 0.6 em.
 const UNDER: &str = "\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}  ";
 
-/// A moment each reader's client writes in their own zone, as Telegram's date-time
-/// `format` says, with `fallback` for a client that cannot.
-fn moment(unix: u64, format: &str, fallback: &str) -> String {
-    format!("<tg-time unix=\"{unix}\" format=\"{format}\">{fallback}</tg-time>")
+/// A moment each reader's client writes in their own zone as weekday, date and time,
+/// with `fallback` for a client that cannot.
+fn moment(unix: u64, fallback: &str) -> String {
+    format!("<tg-time unix=\"{unix}\" format=\"wDt\">{fallback}</tg-time>")
 }
 
 fn utc(unix: u64) -> String {

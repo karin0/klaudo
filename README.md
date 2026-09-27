@@ -180,9 +180,11 @@ rather than a link in the menu.
 when each resets, and with how full the context is of the session the message would
 reach. With such a session the answer goes under its head, so a reply to the answer
 reaches the session too. Each figure is a bar and the numbers, and they are what the
-sessions' status lines last reported, with how long ago that was. The answer is a plain
-message in Telegram's HTML, because only there can a time be a `tg-time`, which each
-reader's client writes in their own zone and keeps counting up. A session reports nothing before its first call returns, and the
+sessions' status lines last reported, with how long ago that was. The resident writes
+how long ago a figure was reported and how long until a limit resets, to the minute,
+since a client writes a relative `tg-time` in coarser units. When a limit resets is a
+`tg-time` each reader's client writes in their own zone, which only a plain message in
+Telegram's HTML can carry, so the answer is one. A session reports nothing before its first call returns, and the
 resident keeps the reports in memory, so after a restart they come back with the next
 redraw of a status line. Claude Code draws `/usage` as a dialog that takes every key
 until it is dismissed, which is why the resident answers it instead of typing it.

@@ -1223,19 +1223,25 @@ fn hook(root: &Path, event: &serde_json::Value) {
 /// The last answer with how long ago each figure was reported left out, which is as long
 /// as the test took getting there.
 fn ageless(made: &[Call]) -> String {
-    const OPEN: &str = "<tg-time unix=\"";
-    const CLOSE: &str = "</tg-time>";
-    let mut rest = made.last().expect("the answer").markdown.as_str();
-    let mut written = String::new();
-    while let Some(start) = rest.find(OPEN) {
-        let end = start + rest[start..].find(CLOSE).expect("a closed time") + CLOSE.len();
-        let time = &rest[start..end];
-        written.push_str(&rest[..start]);
-        let aged = time.contains("format=\"r\"") && time.ends_with(" ago</tg-time>");
-        written.push_str(if aged { "<ago>" } else { time });
-        rest = &rest[end..];
-    }
-    written + rest
+    let answer = &made.last().expect("the answer").markdown;
+    let (said, reported) = answer.rsplit_once('\n').expect("a line of ages");
+    let ages: Vec<String> = reported
+        .strip_prefix("reported: ")
+        .expect("the ages")
+        .split(", ")
+        .map(|age| {
+            let (figure, ago) = age.split_once(' ').expect("a figure and its age");
+            let amount = ago.strip_suffix(" ago").expect("an age");
+            assert!(
+                amount.len() > 1
+                    && amount[..amount.len() - 1]
+                        .bytes()
+                        .all(|b| b.is_ascii_digit())
+            );
+            format!("{figure} <ago>")
+        })
+        .collect();
+    format!("{said}\nreported: {}", ages.join(", "))
 }
 
 /// What Claude Code hands a session's status line.
@@ -1652,7 +1658,7 @@ fn limits(now: u64) -> String {
     let bar = |bar| format!("<code>{bar}</code>  ");
     let resets = |unix: u64, left| {
         format!(
-            "resets <tg-time unix=\"{unix}\" format=\"r\">in {left}</tg-time>\n{}\
+            "resets in {left}\n{}\
              <tg-time unix=\"{unix}\" format=\"wDt\">{} UTC</tg-time>",
             "\u{2002}".repeat(12) + "  ",
             clock(unix)
