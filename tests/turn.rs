@@ -1099,6 +1099,31 @@ fn hook(root: &Path, event: &serde_json::Value) {
     report(klaude(root), event);
 }
 
+/// The last answer with how long ago each figure was reported left out, which is as long
+/// as the test took getting there.
+fn ageless(made: &[Call]) -> String {
+    const OPEN: &str = "<tg-time unix=\"";
+    const CLOSE: &str = "</tg-time>";
+    let mut rest = made.last().expect("the answer").markdown.as_str();
+    let mut written = String::new();
+    while let Some(start) = rest.find(OPEN) {
+        let end = start + rest[start..].find(CLOSE).expect("a closed time") + CLOSE.len();
+        let time = &rest[start..end];
+        written.push_str(&rest[..start]);
+        let aged = time.contains("format=\"r\"") && time.ends_with(" ago</tg-time>");
+        written.push_str(if aged { "<ago>" } else { time });
+        rest = &rest[end..];
+    }
+    written + rest
+}
+
+/// What Claude Code hands a session's status line.
+fn status(root: &Path, input: &serde_json::Value) {
+    let mut command = klaude(root);
+    command.arg("status");
+    report(command, input);
+}
+
 fn report(mut command: Command, event: &serde_json::Value) {
     let mut client = command.spawn().expect("run the hook");
     client
@@ -1364,6 +1389,137 @@ fn the_commands_are_listed_for_the_user_in_both_chats() {
         ]
     );
     drop(resident);
+}
+
+/// `/usage` answers from what the status lines last reported: the plan's limits from any
+/// session, and the context of the session a message would reach, under that session's
+/// head.
+#[test]
+fn usage_is_answered_from_the_status_lines() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("status", port);
+    let root = temporary.path();
+    let resident = resident(root);
+
+    // No session is here to go with the limits.
+    chat.says(OWNER, OWNER, "/usage");
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    let unreported = made.last().expect("the answer");
+    assert_eq!(unreported.markdown, "limits: not reported yet");
+    assert_eq!(unreported.reply["message_id"], 9000);
+
+    std::fs::create_dir(root.join("a")).expect("a project");
+    for session in ["aaaaaaaa", "bbbbbbbb"] {
+        hook(
+            root,
+            &json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": root.join("a")}),
+        );
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs();
+    status(
+        root,
+        &json!({
+            "session_id": "aaaaaaaa",
+            "context_window": {
+                "context_window_size": 1_000_000,
+                "current_usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 126,
+                    "cache_creation_input_tokens": 19957,
+                    "cache_read_input_tokens": 25597,
+                },
+                "used_percentage": 5,
+            },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 1, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
+                "seven_day": {"used_percentage": 56.4, "resets_at": now + 62 * 3600 + 30},
+            },
+        }),
+    );
+    status(
+        root,
+        &json!({
+            "session_id": "bbbbbbbb",
+            "context_window": {
+                "context_window_size": 200_000,
+                "current_usage": null,
+                "used_percentage": null,
+            },
+        }),
+    );
+
+    // Unaddressed, it reaches the session heard from last.
+    chat.says(OWNER, OWNER, "/usage");
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    let bar = |bar| format!("<code>{bar}</code>  ");
+    let limits = limits(now);
+    assert_eq!(
+        ageless(&made),
+        format!("<b>a</b> <code>bbbbbbbb</code>\ncontext: nothing has been sent yet\n{limits}")
+    );
+    chat.replies(
+        OWNER,
+        OWNER,
+        "/usage@klaude_bot",
+        &json!({
+            "text": "a bbbbbbbb\n\ncontext: nothing has been sent yet",
+            "entities": [{"type": "bold", "offset": 0, "length": 1}, {"type": "code", "offset": 2, "length": 8}],
+        }),
+    );
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    assert!(
+        ageless(&made).starts_with("<b>a</b> <code>bbbbbbbb</code>"),
+        "an answer is addressed like any message"
+    );
+    chat.replies(
+        OWNER,
+        OWNER,
+        "/usage",
+        &json!({"rich_message": {"blocks": [
+            {"type": "paragraph", "text": [{"type": "code", "text": "aaaaaaaa"}]},
+        ]}}),
+    );
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    assert_eq!(
+        ageless(&made),
+        format!(
+            "<b>a</b> <code>aaaaaaaa</code>\n{}context 5%, 45.6k of 1m\n{limits}",
+            bar("▌░░░░░░░░░")
+        )
+    );
+    drop(resident);
+}
+
+/// The limits `usage_is_answered_from_the_status_lines` reports at `now`, as the answer
+/// writes them.
+fn limits(now: u64) -> String {
+    let bar = |bar| format!("<code>{bar}</code>  ");
+    let resets = |unix: u64, left| {
+        format!(
+            "resets <tg-time unix=\"{unix}\" format=\"r\">in {left}</tg-time>\n{}\
+             <tg-time unix=\"{unix}\" format=\"wDt\">{} UTC</tg-time>",
+            "\u{2002}".repeat(12) + "  ",
+            clock(unix)
+        )
+    };
+    let (five, seven) = (now + 3 * 3600 + 29 * 60 + 30, now + 62 * 3600 + 30);
+    format!(
+        "{}5-hour 1%, {}\n{}7-day 56%, {}\n\
+         reported: context <ago>, limits <ago>",
+        bar("▏░░░░░░░░░"),
+        resets(five, "3h 30m"),
+        bar("█████▋░░░░"),
+        resets(seven, "2d 14h"),
+    )
+}
+
+/// The time of day of a Unix time, in UTC.
+fn clock(unix: u64) -> String {
+    format!("{:02}:{:02}", unix % 86400 / 3600, unix % 3600 / 60)
 }
 
 /// A file a session sends lands in the thread of the turn that sent it, below what the

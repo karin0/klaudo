@@ -163,9 +163,20 @@ so the anchor is a message of its own, and the menu is taken back once it is pos
 private chat has no link to a single message, which is why the way back is a reply
 rather than a link in the menu.
 
-The resident lists `/new`, `/resume` and `/compact` in the command menu when it starts, for
-the user alone: in the private chat, and in `CHAT_ID` for that member only. `/compact` goes to
-a session like any other message, with the `@<bot>` a group's command menu appends taken off.
+`/usage` answers with how much of the plan's five-hour and seven-day limits is used and
+when each resets, and with how full the context is of the session the message would
+reach. With such a session the answer goes under its head, so a reply to the answer
+reaches the session too. Each figure is a bar and the numbers, and they are what the
+sessions' status lines last reported, with how long ago that was. The answer is a plain
+message in Telegram's HTML, because only there can a time be a `tg-time`, which each
+reader's client writes in their own zone and keeps counting up. A session reports nothing before its first call returns, and the
+resident keeps the reports in memory, so after a restart they come back with the next
+redraw of a status line. Claude Code draws `/usage` as a dialog that takes every key
+until it is dismissed, which is why the resident answers it instead of typing it.
+
+The resident lists `/new`, `/resume`, `/usage` and `/compact` in the command menu when it starts, for the user alone: in the private chat, and in `CHAT_ID` for that
+member only. `/compact` goes to a session like any other message, with the `@<bot>` a
+group's command menu appends taken off.
 
 A session that opens a directory for the first time stops at the dialog asking whether
 the folder is trusted, and reports what it is showing to the chat rather than typing
@@ -227,8 +238,8 @@ window its output appears in belongs to the session that launched it.
 
 ## Hooks
 
-One command, `exec klaude`, answers every event. `hooks.json` is the `hooks` key of a
-`settings.json` that runs it under each event klaude handles, to be merged into
+One command, `exec klaude`, answers every event. `settings.json` runs it under each event
+klaude handles and runs `klaude status` as the status line, to be merged into
 `~/.claude/settings.json`. The command finds the binary on `PATH`, so klaude is
 installed as `/usr/local/bin/klaude`, a directory on the `PATH` Claude Code runs hooks
 with. The `Notification` matcher names the notifications that ask for you; an idle
@@ -241,6 +252,10 @@ carries `$TMUX`, `$TMUX_PANE` and its own parent process id, which is where the 
 learns which terminal a session is on. The parent is the session because of `exec`: it
 hands the shell Claude Code starts the command in over to the binary, which leaves the
 session as the parent the binary reports.
+
+The status line is the one place Claude Code reports a session's context and the plan's
+limits. `klaude status` forwards its input to the same socket and prints nothing, so the
+line under the input box stays empty.
 
 `SessionStart` fires once the session is ready for input, after the trust dialog, so it
 is both how a session announces where it lives and how a conversation opened from the
@@ -307,7 +322,9 @@ the first one's state.
 
 Which session a reply belongs to is read back out of the message being replied to. A
 reply carries that message as Telegram rendered it, a list of paragraphs made of spans,
-so the address is the code span of its first paragraph. A restarted resident therefore
+so the address is the code span of its first paragraph. A file's caption and a plain
+message carry text and entities instead, and there the address is the first code entity.
+A restarted resident therefore
 still routes replies to messages it never posted.
 
 A call Telegram rejects with a rate limit or a failure of its own is asked again up to
@@ -383,7 +400,8 @@ that a compaction, started by Claude Code or by `/compact`, quotes its summary a
 reasoning;
 that `/new` alone offers the projects of its chat most recent first and a press rewrites
 the menu into the anchor of the one picked; that `/resume` leads from a project to its sessions and a press
-posts an anchor replying to the last message the session left;
+posts an anchor replying to the last message the session left; that `/usage`
+answers from the status lines with the context of the session a message would reach;
 that a prompt queued during a turn gets a thread of its
 own; that a run of tool calls is a message between the two halves of what the turn said;
 that a call announced ahead of the words introducing it still
