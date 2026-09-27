@@ -152,7 +152,18 @@ resident remembers. Pressing one rewrites the menu into that project's anchor.
 The menu is a plain message, and a button's label is the directory it picks, so a menu
 still works after the resident restarts.
 
-The resident lists its commands in the command menu when it starts, for the user alone:
+`/resume` offers the same menu, and pressing a project rewrites it into that project's
+sessions, the one heard from last first, each labelled with its address, how long ago it
+was heard from and the first forty characters of its latest prompt. Pressing a session
+posts an anchor headed with its address, and a reply to the anchor reaches the session
+like a reply to any of its messages, resuming it first when it has exited. The anchor
+replies to the last message the session left in that chat, so a tap on its quotation
+scrolls back to where the conversation stopped. A reply is set when a message is sent,
+so the anchor is a message of its own, and the menu is taken back once it is posted. A
+private chat has no link to a single message, which is why the way back is a reply
+rather than a link in the menu.
+
+The resident lists `/new` and `/resume` in the command menu when it starts, for the user alone:
 in the private chat, and in `CHAT_ID` for that member only.
 
 A session that opens a directory for the first time stops at the dialog asking whether
@@ -312,7 +323,8 @@ checks before it routes a message from the chat and, while a turn is
 running, every five seconds, so what a session killed mid-turn had already said is in
 the chat within that time.
 
-Where each session is, when it was last heard from, and where and when each exited one ran are
+Where each session is, when it was last heard from, and where and when each exited one ran,
+along with the latest prompt of each and the last message it left in the chat, are
 written to `$XDG_RUNTIME_DIR/klaude/state.json` after every event but streamed text and
 tool calls, and read back when the resident starts. A session idle through a restart
 sends nothing until its next prompt, so without this file a message from the chat would
@@ -369,7 +381,8 @@ one's message is taken back; that an answer arriving with its `Stop` is shown on
 that a compaction, started by Claude Code or by `/compact`, quotes its summary and its
 reasoning;
 that `/new` alone offers the projects of its chat most recent first and a press rewrites
-the menu into the anchor of the one picked;
+the menu into the anchor of the one picked; that `/resume` leads from a project to its sessions and a press
+posts an anchor replying to the last message the session left;
 that a prompt queued during a turn gets a thread of its
 own; that a run of tool calls is a message between the two halves of what the turn said;
 that a call announced ahead of the words introducing it still

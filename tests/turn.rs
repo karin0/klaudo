@@ -818,6 +818,81 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     drop(resident);
 }
 
+/// `/resume` offers the projects of its chat, then the sessions of the one picked, the one
+/// heard from last first, and a press on a session posts an anchor addressed to it that
+/// replies to the last message it left, taking the menu back.
+#[test]
+fn a_conversation_is_resumed_from_a_menu_of_its_project() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("resume-menu", port);
+    let root = temporary.path();
+    let resident = resident(root);
+
+    let first = "1111111111111111";
+    for event in [
+        json!({"hook_event_name": "UserPromptSubmit", "session_id": first, "cwd": root,
+            "prompt": "tidy up the build scripts and nothing else\nsecond line"}),
+        json!({"hook_event_name": "Stop", "session_id": first, "cwd": root,
+            "last_assistant_message": "tidied"}),
+        json!({"hook_event_name": "SessionEnd", "session_id": first, "cwd": root}),
+        json!({"hook_event_name": "SessionStart", "session_id": "2222222222222222", "cwd": root}),
+    ] {
+        hook(root, &event);
+    }
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let answer = made.last().expect("the answer").id;
+
+    chat.says(OWNER, OWNER, "/resume");
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    chat.presses(OWNER, made.last().expect("the menu"), "resume 0");
+    let made = collect(&calls, |call| call.label == "editMessageText");
+    let menu = made.last().expect("the sessions");
+    assert_eq!(
+        menu.markdown,
+        format!("Resume a conversation in {}:", root.display())
+    );
+    let buttons: Vec<_> = menu.body["reply_markup"]["inline_keyboard"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|row| {
+            (
+                row[0]["text"].as_str().expect("a label"),
+                row[0]["callback_data"].as_str().expect("its data"),
+            )
+        })
+        .collect();
+    let [(latest, _), (earlier, data)] = buttons[..] else {
+        panic!("the menu holds {buttons:?}");
+    };
+    assert!(latest.starts_with("22222222 · "), "{latest:?}");
+    assert!(
+        earlier.starts_with("11111111 · ")
+            && earlier.ends_with(" ago · tidy up the build scripts and nothing el…"),
+        "{earlier:?}"
+    );
+    assert_eq!(data, format!("session {first}"));
+
+    chat.presses(OWNER, menu, data);
+    let made = collect(&calls, |call| call.label == "deleteMessage");
+    let anchor = made
+        .iter()
+        .find(|call| call.label.starts_with("sendRichMessage"))
+        .expect("the anchor");
+    assert!(anchor.markdown.starts_with("**"), "{:?}", anchor.markdown);
+    assert!(
+        anchor.markdown.contains(" `11111111`\n\n"),
+        "{:?}",
+        anchor.markdown
+    );
+    assert_eq!(anchor.reply, replying_to(answer));
+    assert_eq!(
+        made.last().expect("the menu taken back").target,
+        menu.target
+    );
+    drop(resident);
+}
+
 /// What the chat is left holding: every message klaude sent, in the order it sent them,
 /// carrying its last rewrite, without the ones it took back. Each is the sound it
 /// arrived with and its body under the head.
@@ -1092,7 +1167,8 @@ impl Chat {
         }));
     }
 
-    /// A press on a button of `menu`, a menu klaude posted, as Telegram hands it back.
+    /// A press on a button of `menu`, a menu klaude posted or rewrote, as Telegram hands
+    /// it back.
     fn presses(&self, sender: i64, menu: &Call, data: &str) {
         self.0.lock().expect("the chat").push(json!({
             "update_id": 1,
@@ -1100,7 +1176,7 @@ impl Chat {
                 "id": "query",
                 "from": {"id": sender},
                 "message": {
-                    "message_id": menu.id,
+                    "message_id": menu.target.unwrap_or(menu.id),
                     "chat": {"id": menu.chat},
                     "text": menu.markdown,
                     "reply_markup": menu.body["reply_markup"],

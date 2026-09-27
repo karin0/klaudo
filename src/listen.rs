@@ -89,10 +89,19 @@ const DATAGRAM_MAX: usize = 200 * 1024;
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
 const NEW: &str = "new";
+const RESUME: &str = "resume";
+/// What a button picking one session of a `/resume` menu carries ahead of its id.
+const SESSION: &str = "session";
 /// What the chat's command menu offers, each with the line it is listed under.
-const COMMANDS: &[(&str, &str)] = &[("new", "Open a conversation in a directory")];
+const COMMANDS: &[(&str, &str)] = &[
+    (NEW, "Open a conversation in a directory"),
+    (RESUME, "Resume a recent conversation"),
+];
+/// How much of a session's latest prompt its button in a `/resume` menu shows.
+const PROMPT_MAX: usize = 40;
 /// How many exited sessions a reply can still resume, oldest forgotten first. An entry is
-/// an id and a directory, so the list stays under a hundred kilobytes.
+/// an id, a directory and the start of a prompt, so the list stays within a few hundred
+/// kilobytes.
 const ENDED_MAX: usize = 1000;
 /// How many choices a menu offers, which a phone shows without scrolling.
 const MENU_MAX: usize = 8;
@@ -196,10 +205,10 @@ pub fn run() {
             .sessions
             .into_iter()
             .map(|known| {
-                (
-                    known.id,
-                    Session::new(known.dir, known.pid, known.pane, instant(known.seen)),
-                )
+                let mut session =
+                    Session::new(known.dir, known.pid, known.pane, instant(known.seen));
+                session.trail = known.trail;
+                (known.id, session)
             })
             .collect(),
         opening: Vec::new(),
@@ -516,6 +525,15 @@ struct Session {
     /// When this session was last heard from, which is what an unaddressed message from
     /// the chat is delivered by.
     seen: Instant,
+    trail: Trail,
+}
+
+/// What a `/resume` menu shows of a session and leads back to: the start of its latest
+/// prompt, and the last message it left in the chat as `(chat, message)`.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Trail {
+    prompt: String,
+    last: Option<(i64, i64)>,
 }
 
 impl Session {
@@ -529,6 +547,13 @@ impl Session {
             turn: None,
             done: None,
             seen,
+            trail: Trail::default(),
+        }
+    }
+
+    fn left(&mut self, chat: i64, message: Option<i64>) {
+        if let Some(message) = message {
+            self.trail.last = Some((chat, message));
         }
     }
 
@@ -567,6 +592,7 @@ struct Ended {
     dir: PathBuf,
     /// Unix milliseconds.
     seen: u64,
+    trail: Trail,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -577,6 +603,7 @@ struct Known {
     pane: Option<Pane>,
     /// Unix milliseconds.
     seen: u64,
+    trail: Trail,
 }
 
 /// A state file a different version wrote may not parse, and it only saves the sessions
@@ -693,6 +720,7 @@ impl Machine {
                     pid: session.pid,
                     pane: session.pane.clone(),
                     seen: unix_millis(now - session.seen.elapsed()),
+                    trail: session.trail.clone(),
                 })
                 .collect(),
             ended: self.ended.clone(),
@@ -776,6 +804,8 @@ impl Machine {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
+        session.trail.prompt = glimpse(event.prompt.as_deref().unwrap_or_default());
+        session.left(thread.chat, thread.prompt);
         if running {
             session.queued.push_back(thread);
         } else {
@@ -1016,7 +1046,11 @@ impl Machine {
                 .send(thread.chat, &done, Sound::Silent, thread.prompt),
         };
         segment.posted = message.map(|message| (message, elapsed));
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        session.left(thread.chat, message);
+        let Some(turn) = session.turn.as_mut() else {
             return;
         };
         turn.sealed.push(segment);
@@ -1073,8 +1107,10 @@ impl Machine {
         let message = hook::message(event, &head, &took(turn.started.elapsed()));
         // The one sound of the turn: the reply is complete and worth coming back to.
         let thread = turn.thread;
-        self.telegram
+        let answer = self
+            .telegram
             .send(thread.chat, &message, Sound::Ring, thread.prompt);
+        session.left(thread.chat, answer);
         // This event carries the last segment's text, so the message that was showing
         // it goes rather than standing above the one that repeats it.
         if let Some(live) = turn.live {
@@ -1103,14 +1139,16 @@ impl Machine {
             .map(|ask| ask.text.clone())
             .and_then(|text| pair(&mut session.asked, &text));
         let head = session.head(id, event.prompt_id.as_deref());
-        let session = &self.sessions[id];
-        let thread = typed.unwrap_or_else(|| self.thread(session));
-        self.telegram.send(
+        let thread = typed.unwrap_or_else(|| self.thread(&self.sessions[id]));
+        let answer = self.telegram.send(
             thread.chat,
             &hook::message(event, &head, ""),
             Sound::Ring,
             thread.prompt,
         );
+        if let Some(session) = self.sessions.get_mut(id) {
+            session.left(thread.chat, answer);
+        }
     }
 
     /// Anything else a session reports lands in the thread of the turn it happened in.
@@ -1122,8 +1160,12 @@ impl Machine {
         let head = session.head(id, prompt.as_deref());
         let thread = self.thread(session);
         let message = hook::message(event, &head, "");
-        self.telegram
+        let posted = self
+            .telegram
             .send(thread.chat, &message, sound, thread.prompt);
+        if let Some(session) = self.sessions.get_mut(id) {
+            session.left(thread.chat, posted);
+        }
     }
 
     /// Where a file the session asks to show goes: the thread of its turn, below
@@ -1234,6 +1276,7 @@ impl Machine {
             id: id.to_owned(),
             dir: session.dir,
             seen: unix_millis(SystemTime::now() - session.seen.elapsed()),
+            trail: session.trail,
         });
         if self.ended.len() > ENDED_MAX {
             self.ended.pop_front();
@@ -1307,6 +1350,10 @@ impl Machine {
                 }
                 return;
             }
+            Some((RESUME, _)) => {
+                self.menu(chat, RESUME, "Resume a conversation in:");
+                return;
+            }
             _ => {}
         }
         let Some(carrier) = message["message_id"].as_i64() else {
@@ -1374,6 +1421,14 @@ impl Machine {
                     self.telegram.edit(chat, menu, &anchor);
                 }
             }
+            Some((RESUME, _)) => self.conversations(chat, menu, &label),
+            // The anchor has to be a message of its own to reply to the session's last
+            // one, and a menu left behind is one mistaken press from a second anchor.
+            Some((SESSION, id)) => {
+                if self.resumption(chat, id).is_some() {
+                    self.telegram.delete(chat, menu);
+                }
+            }
             _ => eprintln!("press: {}", press.data),
         }
     }
@@ -1397,6 +1452,80 @@ impl Machine {
         }
         projects.truncate(MENU_MAX);
         projects
+    }
+
+    /// Every session the resident knows of, running or exited, with where it ran, when
+    /// it was last heard from in Unix milliseconds, and its trail.
+    fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
+        let now = SystemTime::now();
+        self.sessions
+            .iter()
+            .map(move |(id, session)| {
+                let seen = unix_millis(now - session.seen.elapsed());
+                (id.as_str(), session.dir.as_path(), seen, &session.trail)
+            })
+            .chain(self.ended.iter().map(|ended| {
+                (
+                    ended.id.as_str(),
+                    ended.dir.as_path(),
+                    ended.seen,
+                    &ended.trail,
+                )
+            }))
+    }
+
+    /// The menu of a project's sessions a `/resume` menu leads to once the project is
+    /// picked, rewritten over it.
+    fn conversations(&self, chat: i64, menu: i64, label: &str) {
+        let Some(dir) = expand(label) else {
+            self.say(chat, &format!("{} is not a directory", code(label)));
+            return;
+        };
+        let now = unix_millis(SystemTime::now());
+        let mut sessions: Vec<_> = self.known().filter(|(_, ran, _, _)| *ran == dir).collect();
+        sessions.sort_by_key(|(_, _, seen, _)| std::cmp::Reverse(*seen));
+        let buttons: Vec<(String, String)> = sessions
+            .iter()
+            .take(MENU_MAX)
+            .map(|(id, _, seen, trail)| {
+                let age = ago(Duration::from_millis(now.saturating_sub(*seen)));
+                let short = hook::address(id, None);
+                let label = match trail.prompt.as_str() {
+                    "" => format!("{short} · {age}"),
+                    prompt => format!("{short} · {age} · {prompt}"),
+                };
+                (label, format!("{SESSION} {id}"))
+            })
+            .collect();
+        if buttons.is_empty() {
+            self.say(chat, &format!("no session has run in {}", code(label)));
+            return;
+        }
+        self.telegram.remenu(
+            chat,
+            menu,
+            &format!("Resume a conversation in {label}:"),
+            &buttons,
+        );
+    }
+
+    /// An anchor addressed to session `id`, replying to the last message it left in this
+    /// chat, which a tap on the quotation scrolls back to. A reply to the anchor goes
+    /// where a reply to any of its messages would.
+    fn resumption(&self, chat: i64, id: &str) -> Option<i64> {
+        let Some((_, dir, _, trail)) = self.known().find(|(known, _, _, _)| *known == id) else {
+            self.say(
+                chat,
+                &format!("{} is not a session this resident has seen", code(id)),
+            );
+            return None;
+        };
+        let head = hook::head(&hook::project(dir), id, None);
+        let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir)));
+        let last = trail
+            .last
+            .and_then(|(posted, message)| (posted == chat).then_some(message));
+        self.telegram.send(chat, &message, Sound::Silent, last)
     }
 
     /// A menu of the projects of `chat`, each button carrying `command` and its place.
@@ -1587,6 +1716,29 @@ fn plain(node: &Value) -> String {
         Value::Array(spans) => spans.iter().map(plain).collect(),
         Value::Object(_) => plain(&node["text"]),
         _ => String::new(),
+    }
+}
+
+/// The start of a prompt's first line, as a button has room for.
+fn glimpse(prompt: &str) -> String {
+    let line = prompt.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= PROMPT_MAX {
+        return line.to_owned();
+    }
+    line.chars()
+        .take(PROMPT_MAX)
+        .chain("\u{2026}".chars())
+        .collect()
+}
+
+/// How long ago, in the largest unit it fills.
+fn ago(age: Duration) -> String {
+    let seconds = age.as_secs();
+    match seconds {
+        0..60 => format!("{seconds}s ago"),
+        60..3600 => format!("{}m ago", seconds / 60),
+        3600..86400 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86400),
     }
 }
 
@@ -1959,6 +2111,14 @@ mod tests {
         assert_eq!(found(&["/compactor", "/compact"]), Some(2));
         assert_eq!(found(&["/compact keep the plan"]), Some(1));
         assert_eq!(found(&["compact it"]), None);
+    }
+
+    #[test]
+    fn an_age_reads_in_the_largest_unit_it_fills() {
+        assert_eq!(ago(Duration::from_secs(59)), "59s ago");
+        assert_eq!(ago(Duration::from_secs(3599)), "59m ago");
+        assert_eq!(ago(Duration::from_secs(86399)), "23h ago");
+        assert_eq!(ago(Duration::from_hours(72)), "3d ago");
     }
 
     #[test]
