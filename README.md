@@ -142,6 +142,9 @@ in such a topic, when no session is there, goes to the session heard from last o
 every topic, which is where a turn started in the terminal is posted until its session
 posts in a topic. A topic the user named reaches only its own sessions.
 
+Topic mode slows the whole private chat. A reply to `/new` shows several seconds later
+where topic mode is on than where it is off.
+
 ## Sending a file
 
 `klaudo send <file>...` posts the files as documents in the thread of the turn that ran
