@@ -123,24 +123,26 @@ impl Pane {
 /// pane it lands in is learned from that session's own `SessionStart`, which is also
 /// what says the session is ready to type into, so nothing here waits for it.
 pub fn open(cwd: &Path, resume: Option<&str>) -> Result<(), String> {
-    // Attaches to the session when it is already there, and this process has no
-    // terminal to attach with, hence detached.
-    run(Command::new("tmux").args(["new-session", "-d", "-A", "-s", OWNED_SESSION]))?;
-    let target = format!("{OWNED_SESSION}:");
+    let exact = format!("={OWNED_SESSION}");
+    // `new-session -A` attaches to a session already there even with `-d`, and this
+    // process has no terminal to attach with, so the first window opens the session.
+    let present = Command::new("tmux")
+        .args(["has-session", "-t", &exact])
+        .output()
+        .is_ok_and(|output| output.status.success());
+    let mut command = Command::new("tmux");
+    if present {
+        command.args(["new-window", "-t", &format!("{exact}:")]);
+    } else {
+        command.args(["new-session", "-d", "-s", OWNED_SESSION]);
+    }
     let directory = cwd.to_str().ok_or("cwd is not utf-8")?;
-    run(Command::new("tmux")
-        .args([
-            "new-window",
-            "-t",
-            &target,
-            "-c",
-            directory,
-            "-n",
-            cwd.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("claude"),
-            "claude",
-        ])
+    let name = cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("claude");
+    run(command
+        .args(["-c", directory, "-n", name, "claude"])
         .args(resume.map(|id| ["--resume", id]).into_iter().flatten()))
 }
 

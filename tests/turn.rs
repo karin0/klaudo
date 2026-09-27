@@ -742,7 +742,7 @@ fn what_the_resident_knows_outlives_a_restart() {
     let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
     assert!(
         log.lines()
-            .any(|line| line.starts_with("new-window")
+            .any(|line| line.starts_with("new-session")
                 && line.ends_with("--resume fedcba9876543210")),
         "tmux was called as {log:?}"
     );
@@ -816,18 +816,22 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
     let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
     let windows: Vec<_> = log
         .lines()
-        .filter(|line| line.starts_with("new-window"))
+        .filter(|line| line.starts_with("new-"))
         .collect();
-    let window = |id: &str| {
+    let window = |opening: &str, id: &str| {
         format!(
-            "new-window -t klaude: -c {} -n {} claude --resume {id}",
+            "{opening} -c {} -n {} claude --resume {id}",
             root.display(),
             root.file_name().expect("a name").display()
         )
     };
+    // The first window opens the session, which a later one joins.
     assert_eq!(
         windows,
-        [window("0123456789abcdef"), window("fedcba9876543210")]
+        [
+            window("new-session -d -s klaude", "0123456789abcdef"),
+            window("new-window -t =klaude:", "fedcba9876543210"),
+        ]
     );
 
     // The resumed session starts outside tmux, so each reply it takes is answered with
@@ -1134,12 +1138,13 @@ fn prepare(name: &str, port: u16) -> TempDir {
     let root = temporary.path();
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
     // A window klaude opens goes to a `tmux` that records how it was called, so a test
-    // never reaches the tmux server of the machine it runs on.
+    // never reaches the tmux server of the machine it runs on. Its session exists once a
+    // `new-session` has been recorded.
     std::fs::create_dir_all(root.join("bin")).expect("binary directory");
     let tmux = root.join("bin/tmux");
     std::fs::write(
         &tmux,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/../tmux.log\"\n",
+        "#!/bin/sh\nlog=\"$(dirname \"$0\")/../tmux.log\"\nif [ \"$1\" = has-session ]; then grep -q '^new-session' \"$log\" 2>/dev/null; exit; fi\nprintf '%s\\n' \"$*\" >> \"$log\"\n",
     )
     .expect("a recording tmux");
     std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755))
