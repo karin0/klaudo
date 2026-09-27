@@ -1428,20 +1428,29 @@ impl Machine {
         };
         // A session that exited without saying so is resumed rather than typed into.
         self.sweep();
-        match address(replied) {
-            Some(address) if address == NEW => match body(replied) {
+        match self.addressee(chat, replied) {
+            Ok(Some(address)) if address == NEW => match body(replied) {
                 Some(cwd) => self.open(PathBuf::from(cwd), None, ask),
                 None => self.say(chat, "that anchor names no directory"),
             },
-            Some(address) => self.send(&address, ask),
-            None => match self.latest(chat) {
-                Some(address) => self.send(&address, ask),
-                None => self.say(
-                    chat,
-                    "no session is running here; `/new <directory>` opens one",
-                ),
-            },
+            Ok(Some(address)) => self.send(&address, ask),
+            Ok(None) => self.say(
+                chat,
+                "no session is running here; `/new <directory>` opens one",
+            ),
+            Err(error) => self.say(chat, error),
         }
+    }
+
+    /// Where a message goes: the session or anchor the message it replies to names, or
+    /// for a message replying to nothing, the session heard from last in its chat.
+    fn addressee(&self, chat: i64, replied: &Value) -> Result<Option<String>, &'static str> {
+        if replied.is_null() {
+            return Ok(self.latest(chat));
+        }
+        address(replied)
+            .map(Some)
+            .ok_or("the message replied to names no session")
     }
 
     /// The chat something came from, when it is one to act on.
@@ -1725,9 +1734,10 @@ impl Machine {
     /// reply to the answer reaches it too. Times are written by each reader's client, in
     /// their own zone and, for how long ago a figure was reported, kept up to date.
     fn usage(&self, chat: i64, asked: i64, replied: &Value) {
-        let address = address(replied)
-            .filter(|address| address != NEW)
-            .or_else(|| self.latest(chat));
+        let address = match self.addressee(chat, replied) {
+            Ok(address) => address.filter(|address| address != NEW),
+            Err(error) => return self.say(chat, error),
+        };
         let reached = address.and_then(|address| {
             self.sessions
                 .iter()

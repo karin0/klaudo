@@ -485,7 +485,8 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
 
 /// A message that replies to nothing still names a session: the one heard from last in
 /// the chat it was sent in. These sessions run outside tmux, so what klaude says back
-/// names where the message went and the terminal that session is on.
+/// names where the message went and the terminal that session is on. A reply to a
+/// message that names no session goes nowhere.
 #[test]
 fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat() {
     let (port, calls, chat) = recorder();
@@ -515,12 +516,28 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     // answer goes back to the chat the message came from.
     chat.says(GROUP, STRANGER, "carry on");
     chat.says(GROUP, OWNER, "carry on");
+    // A reply goes where the message it replies to says, and a message that names no
+    // session is no reason to guess one.
+    chat.replies(
+        GROUP,
+        OWNER,
+        "carry on",
+        &json!({"message_id": 5, "text": "a file"}),
+    );
     chat.says(OWNER, OWNER, "carry on");
 
     let made = collect(&calls, |call| call.chat == Some(OWNER));
+    let unnamed = "the message replied to names no session";
+    assert_eq!(
+        made.iter()
+            .filter(|call| call.markdown == unnamed)
+            .map(|call| call.chat)
+            .collect::<Vec<_>>(),
+        [Some(GROUP)]
+    );
     let answers: Vec<_> = made
         .iter()
-        .filter(|call| call.label.starts_with("sendRichMessage"))
+        .filter(|call| call.label.starts_with("sendRichMessage") && call.markdown != unnamed)
         .map(|call| {
             let (address, why) = call
                 .markdown
