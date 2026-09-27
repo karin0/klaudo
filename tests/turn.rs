@@ -1336,8 +1336,9 @@ fn form(body: &str, boundary: &str) -> serde_json::Value {
     fields.into()
 }
 
-/// A call the binary cannot act on says how to call it, and a file that is not there is
-/// named, both without a panic.
+/// A call the binary cannot act on says how to call it, the help of the binary ends with
+/// how `klaude send` is called, and a file that is not there is named, both without a
+/// panic.
 #[test]
 fn the_command_line_explains_itself() {
     let temporary = prepare("usage", 0);
@@ -1356,6 +1357,11 @@ fn the_command_line_explains_itself() {
             "{asked:?}"
         );
     }
+    let help = run(&["--help"]);
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("\n\nUsage: klaude send <FILES>...\n\n"),
+        "{help:?}"
+    );
 
     for wrong in [&["send"][..], &["sned", "a"]] {
         let misused = run(wrong);

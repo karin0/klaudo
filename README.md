@@ -201,8 +201,9 @@ project between turns. Up to ten files form one album, whose first document alon
 carries the caption, so a reply to that one reaches the session. Claude Code puts
 `CLAUDE_CODE_SESSION_ID` in the environment of every command it runs, which is how the
 command finds its session. Run anywhere else, the command sends the files without a
-caption to the chat of the directory it runs in. Claude learns the command from
-whatever instructions it reads, such as a line in `~/.claude/CLAUDE.md`.
+caption to the chat of the directory it runs in. It is the one command run by hand,
+so `klaude --help` says so and ends with its usage, and a line in
+`~/.claude/CLAUDE.md` pointing at `klaude --help` is enough for Claude to learn it.
 
 The command checks every path, asks the resident once where the files go and uploads
 them itself, so a mistyped path posts nothing, the exit status says whether every file
@@ -417,7 +418,7 @@ whose session was killed stops reading as running with no further event; that a 
 `klaude send` posts the files it names as an album in order, replying to the prompt of its turn, one from a session klaude has not
 heard from fails the command, and one sent outside Claude Code from a directory not in
 `CHAT_PROJECTS` goes to the private chat; that the commands are listed for the user in both chats; that `--help` and a call the binary cannot
-act on print the usage, and a missing file or a stopped resident is named without a
+act on print the usage, `klaude --help` ending with how `klaude send` is called, and a missing file or a stopped resident is named without a
 panic; that an idle session and an exited one stay reachable after the resident is
 killed and started again; that a
 message replying to nothing reaches the session heard from last in its chat, and one
