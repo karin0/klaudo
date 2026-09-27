@@ -27,7 +27,7 @@ const ATTEMPTS: u32 = 3;
 const BACKOFF: Duration = Duration::from_secs(1);
 /// The longest placeholder Telegram shows in an input field.
 const PLACEHOLDER_MAX: usize = 64;
-/// What klaude leaves on a message whose text reached a session's input box.
+/// What klaudo leaves on a message whose text reached a session's input box.
 const SEEN: &str = "👀";
 
 /// Whether a message reaches the phone with a sound.
@@ -39,7 +39,7 @@ pub enum Sound {
 
 /// A chat, and the topic in it when the chat is split into topics. A message sent to a
 /// chat without its topic lands outside every topic, and one replying across topics loses
-/// the reply, so everything klaude sends names both.
+/// the reply, so everything klaudo sends names both.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Place {
     pub chat: i64,
@@ -81,7 +81,7 @@ pub struct Telegram {
 }
 
 impl Telegram {
-    /// The credentials come from the file below, which every klaude process reads for
+    /// The credentials come from the file below, which every klaudo process reads for
     /// itself.
     pub fn new() -> Self {
         let token = required("BOT_TOKEN");
@@ -200,7 +200,7 @@ impl Telegram {
         .map(drop)
     }
 
-    /// Rewrites a message klaude posted, for a segment that received more after it went
+    /// Rewrites a message klaudo posted, for a segment that received more after it went
     /// out, or a menu that leads to the next choice.
     pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
         self.call(
@@ -213,7 +213,7 @@ impl Telegram {
         );
     }
 
-    /// Takes back a message klaude posted, which is how the one showing a turn's last
+    /// Takes back a message klaudo posted, which is how the one showing a turn's last
     /// segment goes once the answer repeating it is in the chat.
     pub fn delete(&self, chat: i64, message_id: i64) {
         self.call(
@@ -225,7 +225,7 @@ impl Telegram {
         );
     }
 
-    /// Marks a message klaude typed into a terminal, which is what tells its sender the
+    /// Marks a message klaudo typed into a terminal, which is what tells its sender the
     /// prompt was accepted while the turn is still working.
     pub fn acknowledge(&self, chat: i64, message_id: i64) {
         self.call(
@@ -300,7 +300,7 @@ impl Telegram {
         self.call("answerCallbackQuery", &json!({"callback_query_id": query}));
     }
 
-    /// Lists `commands` in the command menu of both chats klaude answers in, shown to the
+    /// Lists `commands` in the command menu of both chats klaudo answers in, shown to the
     /// user alone, since nobody else is answered.
     pub fn register(&self, commands: &[(&str, &str)]) {
         let commands: Vec<Value> = commands
@@ -460,7 +460,7 @@ fn env_file() -> PathBuf {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".config"),
     };
-    config.join("klaude").join("env")
+    config.join("klaudo").join("env")
 }
 
 /// What a credentials file assigns. A file that cannot be read stops the process, and

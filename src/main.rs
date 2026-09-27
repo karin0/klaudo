@@ -21,7 +21,7 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
 const LOCATE_WAIT: Duration = Duration::from_secs(60);
 
 /// Carries a Claude Code session's turns to Telegram and what is typed there back into
-/// its terminal. `klaude send` is the one command to run by hand. Without a command, it
+/// its terminal. `klaudo send` is the one command to run by hand. Without a command, it
 /// reads a hook event on stdin.
 #[derive(Parser)]
 struct Cli {
@@ -52,7 +52,7 @@ fn main() {
         Some(Command::Send { files }) => send(&files),
         Some(Command::Status) => {
             if !hand_over(&wrapped("{\"status\":", &stdin())) {
-                eprintln!("klaude: no resident is listening");
+                eprintln!("klaudo: no resident is listening");
             }
         }
         None => {
@@ -63,7 +63,7 @@ fn main() {
     }
 }
 
-/// The arguments, parsed by a command line whose help ends with how `klaude send` is
+/// The arguments, parsed by a command line whose help ends with how `klaudo send` is
 /// called, since that is the command Claude has to learn, and whose list of commands
 /// already has its first line.
 fn cli() -> Cli {
@@ -92,7 +92,7 @@ fn stdin() -> Vec<u8> {
 
 /// A mistake in how the command was called, which is reported without a backtrace.
 fn fail(message: &str) -> ! {
-    eprintln!("klaude: {message}");
+    eprintln!("klaudo: {message}");
     std::process::exit(1);
 }
 
@@ -210,7 +210,7 @@ fn send(files: &[PathBuf]) {
         // What Telegram answered is already on stderr.
         if sent.is_none() {
             for file in album {
-                eprintln!("klaude: {} did not reach the chat", file.display());
+                eprintln!("klaudo: {} did not reach the chat", file.display());
             }
             failed = true;
         }
@@ -231,7 +231,7 @@ fn locate(
     let unreachable = |error: std::io::Error| -> ! {
         fail(&format!("the resident at {}: {error}", listening.display()))
     };
-    let name = format!("klaude-send-{}", std::process::id());
+    let name = format!("klaudo-send-{}", std::process::id());
     let socket = SocketAddr::from_abstract_name(&name)
         .and_then(|address| UnixDatagram::bind_addr(&address))
         .expect("bind");

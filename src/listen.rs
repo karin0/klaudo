@@ -129,7 +129,7 @@ const WHY_MAX: usize = 60;
 /// Where the resident's socket lives. `$XDG_RUNTIME_DIR` belongs to this user alone, so
 /// without it there is no resident to reach.
 pub fn runtime_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").map(|base| PathBuf::from(base).join("klaude"))
+    std::env::var_os("XDG_RUNTIME_DIR").map(|base| PathBuf::from(base).join("klaudo"))
 }
 
 pub fn socket_path() -> Option<PathBuf> {
@@ -149,7 +149,7 @@ struct Handoff {
 }
 
 /// What reaches the socket, from a hook, from the poller reading the chat, or from
-/// `klaude send` asking where a file goes. That question waits for the answer at the
+/// `klaudo send` asking where a file goes. That question waits for the answer at the
 /// abstract address `reply`, and names no session when it ran outside Claude Code, which
 /// leaves `cwd` to say where the file goes.
 #[derive(Deserialize)]
@@ -172,7 +172,7 @@ enum Arrival {
     },
 }
 
-/// A button the chat pressed on a menu klaude posted. The menu is the message the button
+/// A button the chat pressed on a menu klaudo posted. The menu is the message the button
 /// hangs from, and `data` names the button.
 #[derive(Deserialize)]
 struct Press {
@@ -182,7 +182,7 @@ struct Press {
     data: String,
 }
 
-/// What Claude Code hands a session's status line, as `klaude status` forwards it. Both
+/// What Claude Code hands a session's status line, as `klaudo status` forwards it. Both
 /// parts are absent until the session's first API call returns.
 #[derive(Deserialize)]
 struct Status {
@@ -223,7 +223,7 @@ struct Limit {
     resets_at: u64,
 }
 
-/// Where the files `klaude send` uploads go, and the caption that addresses each of them.
+/// Where the files `klaudo send` uploads go, and the caption that addresses each of them.
 #[derive(Serialize, Deserialize)]
 pub struct Placement {
     pub place: Place,
@@ -568,7 +568,7 @@ struct Session {
     /// Code reports such a prompt under the running turn's id and only reveals its own
     /// when that turn begins, so the order they were submitted in is what pairs them.
     queued: VecDeque<Thread>,
-    /// What klaude has typed into this session and not yet seen reported as a prompt.
+    /// What klaudo has typed into this session and not yet seen reported as a prompt.
     asked: VecDeque<Ask>,
     turn: Option<Turn>,
     /// The turn that finished most recently, so its stragglers do not open it again.
@@ -630,7 +630,7 @@ impl Session {
 
 struct Machine {
     telegram: Telegram,
-    /// Where `klaude send` hears where its file goes.
+    /// Where `klaudo send` hears where its file goes.
     answers: UnixDatagram,
     sessions: BTreeMap<String, Session>,
     opening: Vec<Opening>,
@@ -701,7 +701,7 @@ fn instant(millis: u64) -> Instant {
     now.checked_sub(Duration::from_millis(age)).unwrap_or(now)
 }
 
-/// What the chat asked, waiting for the session of the window klaude opened for it.
+/// What the chat asked, waiting for the session of the window klaudo opened for it.
 struct Opening {
     dir: PathBuf,
     /// The session the window resumes, which is what the ask waits for. A new
@@ -845,7 +845,7 @@ impl Machine {
             &mut session.asked,
             event.prompt.as_deref().unwrap_or_default(),
         );
-        // A prompt klaude typed is already in the chat as the message that asked for
+        // A prompt klaudo typed is already in the chat as the message that asked for
         // it, and that message is what the turn replies to.
         let thread = if let Some(thread) = typed {
             if let Some(prompt) = thread.prompt {
@@ -1125,7 +1125,7 @@ impl Machine {
         turn.sealed.push(segment);
     }
 
-    /// A message klaude has posted, rewritten with what reached its segment afterwards.
+    /// A message klaudo has posted, rewritten with what reached its segment afterwards.
     /// A message's last flushes race the hook of the tool call that ends it, and a tool
     /// reports after the run it belongs to has been left behind, so both land on a
     /// segment the chat already has.
@@ -1192,7 +1192,7 @@ impl Machine {
         }
     }
 
-    /// A `/compact` klaude typed never reports as a prompt, so its start is what tells
+    /// A `/compact` klaudo typed never reports as a prompt, so its start is what tells
     /// the chat it was accepted.
     fn compacting(&self, id: &str) {
         let Some(session) = self.sessions.get(id) else {
@@ -1204,7 +1204,7 @@ impl Machine {
     }
 
     /// `/compact` runs no turn, so its end is the answer to it and rings like one,
-    /// replying to the message that asked for it when klaude typed it.
+    /// replying to the message that asked for it when klaudo typed it.
     fn compacted(&mut self, id: &str, event: &Event) {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -1258,7 +1258,7 @@ impl Machine {
             });
         };
         if !self.sessions.contains_key(id) {
-            return Err(format!("session {id} has not reported to klaude"));
+            return Err(format!("session {id} has not reported to klaudo"));
         }
         self.seal(id);
         let session = &self.sessions[id];
@@ -1826,7 +1826,7 @@ impl Machine {
     }
 }
 
-/// The chat message that carried a prompt, when klaude is the one that typed it.
+/// The chat message that carried a prompt, when klaudo is the one that typed it.
 /// Anything asked before the match never reached a prompt, so it goes with the match.
 fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
     let at = asked.iter().position(|ask| ask.text == prompt)?;
@@ -1836,7 +1836,7 @@ fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
     })
 }
 
-/// The `/compact` klaude typed into a session and Claude Code has yet to finish.
+/// The `/compact` klaudo typed into a session and Claude Code has yet to finish.
 fn compaction(asked: &VecDeque<Ask>) -> Option<&Ask> {
     asked.iter().find(|ask| {
         ask.text
@@ -1845,7 +1845,7 @@ fn compaction(asked: &VecDeque<Ask>) -> Option<&Ask> {
     })
 }
 
-/// The address in the head of a message klaude posted, which is the session it belongs
+/// The address in the head of a message klaudo posted, which is the session it belongs
 /// to or the anchor of a conversation that has not started.
 fn address(message: &Value) -> Option<String> {
     let code = headed(message)
@@ -1861,7 +1861,7 @@ fn headed(message: &Value) -> Option<String> {
     Some(plain(&code["text"]))
 }
 
-/// The code span of a message klaude posted as text with entities: a file, whose head is
+/// The code span of a message klaudo posted as text with entities: a file, whose head is
 /// its caption, or an HTML message. Entities count UTF-16 code units.
 fn coded(text: &Value, entities: &Value) -> Option<String> {
     let text: Vec<u16> = text.as_str()?.encode_utf16().collect();
@@ -1880,7 +1880,7 @@ fn body(message: &Value) -> Option<String> {
     (!body.is_empty()).then(|| body.to_owned())
 }
 
-/// A message klaude posted comes back as the blocks Telegram rendered its markdown
+/// A message klaudo posted comes back as the blocks Telegram rendered its markdown
 /// into, so its head and its body are the first two paragraphs of that.
 fn paragraph(message: &Value, index: usize) -> Option<&Value> {
     let block = message["rich_message"]["blocks"].get(index)?;
@@ -2008,7 +2008,7 @@ fn tokens(count: u64) -> String {
     }
 }
 
-/// A command klaude answers and its argument. A group's command menu names the bot a
+/// A command klaudo answers and its argument. A group's command menu names the bot a
 /// command is for, as `/new@bot`.
 fn command(text: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix('/')?;
@@ -2297,7 +2297,7 @@ mod tests {
         assert_eq!(why(&"x".repeat(WHY_MAX + 5)).chars().count(), WHY_MAX + 1);
     }
 
-    /// A message klaude posted, as Telegram hands it back in the reply to it.
+    /// A message klaudo posted, as Telegram hands it back in the reply to it.
     fn posted(paragraphs: &[Value]) -> Value {
         let blocks: Vec<Value> = paragraphs
             .iter()
@@ -2358,7 +2358,7 @@ mod tests {
     };
 
     #[test]
-    fn a_prompt_klaude_typed_is_paired_with_the_message_that_asked_for_it() {
+    fn a_prompt_klaudo_typed_is_paired_with_the_message_that_asked_for_it() {
         let ask = |text: &str, message| Ask {
             text: text.to_owned(),
             place: HERE,
@@ -2380,7 +2380,7 @@ mod tests {
     }
 
     #[test]
-    fn a_compact_klaude_typed_is_found_with_or_without_instructions() {
+    fn a_compact_klaudo_typed_is_found_with_or_without_instructions() {
         let found = |texts: &[&str]| {
             let asked = VecDeque::from_iter(texts.iter().zip(1..).map(|(text, message)| Ask {
                 text: (*text).to_owned(),
@@ -2405,8 +2405,8 @@ mod tests {
     #[test]
     fn a_command_is_read_with_or_without_the_bot_it_names() {
         assert_eq!(command("/new ~/p"), Some(("new", "~/p")));
-        assert_eq!(command("/new@klaude_bot  ~/p "), Some(("new", "~/p")));
-        assert_eq!(command("/new@klaude_bot"), Some(("new", "")));
+        assert_eq!(command("/new@klaudo_bot  ~/p "), Some(("new", "~/p")));
+        assert_eq!(command("/new@klaudo_bot"), Some(("new", "")));
         assert_eq!(
             command("/compact keep it short"),
             Some(("compact", "keep it short"))
@@ -2444,9 +2444,9 @@ mod tests {
 
     #[test]
     fn a_command_is_typed_without_the_bot_it_names() {
-        assert_eq!(unaddressed("/compact@klaude_bot"), "/compact");
+        assert_eq!(unaddressed("/compact@klaudo_bot"), "/compact");
         assert_eq!(
-            unaddressed("/compact@klaude_bot keep a@b"),
+            unaddressed("/compact@klaudo_bot keep a@b"),
             "/compact keep a@b"
         );
         assert_eq!(unaddressed("/compact keep a@b"), "/compact keep a@b");

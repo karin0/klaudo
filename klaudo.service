@@ -1,10 +1,10 @@
 [Unit]
-Description=klaude
+Description=klaudo
 After=default.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/klaude listen
+ExecStart=/usr/local/bin/klaudo listen
 Restart=always
 RestartSec=2
 
