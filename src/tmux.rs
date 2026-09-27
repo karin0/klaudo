@@ -16,6 +16,11 @@ const BUFFER: &str = "klaude";
 /// The kernel registers all 2^20 pseudo-terminals under this one major, so a minor is
 /// the number under `/dev/pts`.
 const PTS_MAJOR: u32 = 136;
+/// Claude Code folds a paste of four lines or of about 800 UTF-16 units into a
+/// `[Pasted text #N]` placeholder and submits it wrapped as content the user did not
+/// write, so a message goes in pieces below both, which each stay typed text.
+const PIECE_NEWLINES: usize = 2;
+const PIECE_UNITS: usize = 700;
 
 /// Where a session's terminal is. `$TMUX` names the server, `$TMUX_PANE` the pane, and
 /// a hook inherits both from the session it reports for.
@@ -68,6 +73,13 @@ impl Pane {
         // key table, where it ends the mode and submits nothing. Leaving the mode is a
         // no-op on a pane that is in none.
         run(self.tmux().args(["copy-mode", "-q", "-t", &self.id]))?;
+        for piece in pieces(text) {
+            self.paste(piece)?;
+        }
+        run(self.tmux().args(["send-keys", "-t", &self.id, "Enter"]))
+    }
+
+    fn paste(&self, text: &str) -> Result<(), String> {
         let mut load = self
             .tmux()
             .args(["load-buffer", "-b", BUFFER, "-"])
@@ -87,8 +99,7 @@ impl Pane {
         }
         run(self
             .tmux()
-            .args(["paste-buffer", "-b", BUFFER, "-t", &self.id, "-p", "-d"]))?;
-        run(self.tmux().args(["send-keys", "-t", &self.id, "Enter"]))
+            .args(["paste-buffer", "-b", BUFFER, "-t", &self.id, "-p", "-d"]))
     }
 
     /// What the pane is showing, for reporting a session that stopped where klaude
@@ -131,6 +142,24 @@ pub fn open(cwd: &Path, resume: Option<&str>) -> Result<(), String> {
             "claude",
         ])
         .args(resume.map(|id| ["--resume", id]).into_iter().flatten()))
+}
+
+fn pieces(text: &str) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let (mut start, mut newlines, mut units) = (0, 0, 0);
+    for (index, char) in text.char_indices() {
+        let newline = usize::from(char == '\n');
+        if newlines + newline > PIECE_NEWLINES || units + char.len_utf16() > PIECE_UNITS {
+            pieces.push(&text[start..index]);
+            (start, newlines, units) = (index, 0, 0);
+        }
+        newlines += newline;
+        units += char.len_utf16();
+    }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    pieces
 }
 
 fn run(command: &mut Command) -> Result<(), String> {
@@ -187,6 +216,20 @@ mod tests {
         assert_eq!(pts(encode(136, 300)).as_deref(), Some("/dev/pts/300"));
         // The first virtual console.
         assert_eq!(pts(encode(4, 1)), None);
+    }
+
+    #[test]
+    fn a_message_goes_in_pieces_short_enough_to_stay_typed() {
+        let text = format!("one\ntwo\nthree\nfour\n{}", "猫".repeat(PIECE_UNITS + 1));
+        let cut = pieces(&text);
+        assert_eq!(cut.concat(), text);
+        assert_eq!(cut[0], "one\ntwo\nthree");
+        assert_eq!(cut.len(), 3);
+        assert!(cut.iter().all(|piece| {
+            piece.matches('\n').count() <= PIECE_NEWLINES
+                && piece.encode_utf16().count() <= PIECE_UNITS
+        }));
+        assert!(pieces("").is_empty());
     }
 
     #[test]

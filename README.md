@@ -128,7 +128,10 @@ answered with that and reaches no session.
 Replying to any message from a turn types the text into that session's terminal, as a
 prompt in its input box. Multiple lines arrive as multiple lines, and quotes, backticks
 and non-ASCII text need no escaping, because the text travels through a tmux paste
-buffer rather than a shell argument. Sending while a turn is running leaves the prompt
+buffer rather than a shell argument. The text is pasted in pieces of at most three
+lines and 700 UTF-16 units, since Claude Code folds a longer paste into a
+`[Pasted text #N]` placeholder and submits it wrapped in `<pasted_content>` tags, as
+text the user did not write. Sending while a turn is running leaves the prompt
 queued, which is what the terminal does with anything typed then.
 
 Replying to a message from a session that has exited opens a window running
