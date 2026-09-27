@@ -10,7 +10,7 @@ use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use hook::Event;
 
 /// The terminal holds back the text a delta carries until this process returns, so a
@@ -21,7 +21,8 @@ const HANDOFF_TIMEOUT: Duration = Duration::from_millis(100);
 const LOCATE_WAIT: Duration = Duration::from_secs(60);
 
 /// Carries a Claude Code session's turns to Telegram and what is typed there back into
-/// its terminal. Without a command, it reads a hook event on stdin.
+/// its terminal. `klaude send` is the one command to run by hand. Without a command, it
+/// reads a hook event on stdin.
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
@@ -32,7 +33,10 @@ struct Cli {
 enum Command {
     /// Run the resident that owns the chat
     Listen,
-    /// Post files in the thread of this session's turn, up to ten of them to an album
+    /// Send files to the user, the one command to run by hand
+    ///
+    /// Up to ten files form one album. It exits with 0 once every file reached the user.
+    /// Telegram takes files of up to 50 MB.
     Send {
         /// The files to post, in this order
         #[arg(required = true)]
@@ -43,7 +47,7 @@ enum Command {
 }
 
 fn main() {
-    match Cli::parse().command {
+    match cli().command {
         Some(Command::Listen) => listen::run(),
         Some(Command::Send { files }) => send(&files),
         Some(Command::Status) => {
@@ -57,6 +61,27 @@ fn main() {
             hook(&event, &raw);
         }
     }
+}
+
+/// The arguments, parsed by a command line whose help ends with how `klaude send` is
+/// called, since that is the command Claude has to learn, and whose list of commands
+/// already has its first line.
+fn cli() -> Cli {
+    let mut command = Cli::command();
+    command.build();
+    let send = command
+        .find_subcommand_mut("send")
+        .expect("send is a subcommand");
+    let usage = send.render_usage();
+    let about = send.get_about().expect("send has an about").to_string();
+    let long_about = send
+        .get_long_about()
+        .expect("send has a long about")
+        .to_string();
+    let details = long_about.trim_start_matches(&about).trim_start();
+    let manual = format!("{usage}\n\n{details}");
+    let matches = command.after_help(manual).get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
 }
 
 fn stdin() -> Vec<u8> {
