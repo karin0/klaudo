@@ -32,10 +32,11 @@ struct Cli {
 enum Command {
     /// Run the resident that owns the chat
     Listen,
-    /// Post a file in the thread of this session's turn
+    /// Post files in the thread of this session's turn, up to ten of them to an album
     Send {
-        /// The file to post
-        file: PathBuf,
+        /// The files to post, in this order
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
     },
     /// Forward the status line's input on stdin to the resident
     Status,
@@ -44,7 +45,7 @@ enum Command {
 fn main() {
     match Cli::parse().command {
         Some(Command::Listen) => listen::run(),
-        Some(Command::Send { file }) => send(&file),
+        Some(Command::Send { files }) => send(&files),
         Some(Command::Status) => {
             if !hand_over(&wrapped("{\"status\":", &stdin())) {
                 eprintln!("klaude: no resident is listening");
@@ -144,32 +145,48 @@ fn hand_over(datagram: &[u8]) -> bool {
     socket.send_to(datagram, target).is_ok()
 }
 
-/// Asks the resident where a file goes and uploads it from here, so the upload holds up
-/// nothing but this command, and the exit status says whether the file reached the chat.
+/// Asks the resident where the files go and uploads them from here, so the uploads hold
+/// up nothing but this command, and the exit status says whether they reached the chat.
 /// Claude Code names the session in the environment of every command it runs, and a
-/// command run anywhere else sends to the chat of the directory it runs in.
-fn send(file: &Path) {
+/// command run anywhere else sends to the chat of the directory it runs in. Every path is
+/// checked before the first upload, so a mistyped one posts nothing.
+fn send(files: &[PathBuf]) {
     let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
     let cwd = std::env::current_dir().expect("working directory");
-    let file = std::fs::canonicalize(file)
-        .unwrap_or_else(|error| fail(&format!("{}: {error}", file.display())));
-    if !file.is_file() {
-        fail(&format!("{} is not a file", file.display()));
-    }
+    let files: Vec<PathBuf> = files
+        .iter()
+        .map(|file| {
+            let resolved = std::fs::canonicalize(file)
+                .unwrap_or_else(|error| fail(&format!("{}: {error}", file.display())));
+            if !resolved.is_file() {
+                fail(&format!("{} is not a file", resolved.display()));
+            }
+            resolved
+        })
+        .collect();
     let Some(listening) = listen::socket_path() else {
         fail("XDG_RUNTIME_DIR is not set, so there is no resident to reach");
     };
     let placement =
         locate(&listening, session.as_deref(), &cwd).unwrap_or_else(|error| fail(&error));
     let telegram = telegram::Telegram::new();
-    let sent = telegram.document(
-        placement.chat,
-        &file,
-        placement.caption.as_deref(),
-        placement.reply_to,
-    );
-    // What Telegram answered is already on stderr.
-    if sent.is_none() {
+    let mut failed = false;
+    for album in files.chunks(telegram::ALBUM) {
+        let sent = telegram.documents(
+            placement.chat,
+            album,
+            placement.caption.as_deref(),
+            placement.reply_to,
+        );
+        // What Telegram answered is already on stderr.
+        if sent.is_none() {
+            for file in album {
+                eprintln!("klaude: {} did not reach the chat", file.display());
+            }
+            failed = true;
+        }
+    }
+    if failed {
         std::process::exit(1);
     }
 }

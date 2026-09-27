@@ -223,7 +223,7 @@ struct Limit {
     resets_at: u64,
 }
 
-/// Where a file `klaude send` uploads goes, and the caption that addresses it.
+/// Where the files `klaude send` uploads go, and the caption that addresses each of them.
 #[derive(Serialize, Deserialize)]
 pub struct Placement {
     pub chat: i64,

@@ -7,9 +7,11 @@ use serde_json::{Value, json};
 use ureq::unversioned::multipart::{Form, Part};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// An upload is as large as the 50 MB Telegram accepts from a bot, over whatever uplink
-/// the machine has.
+/// An upload of a file is as large as the 50 MB Telegram accepts from a bot, over
+/// whatever uplink the machine has.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+/// The most documents Telegram groups into one album.
+pub const ALBUM: usize = 10;
 /// How long Telegram holds a poll open with nothing to report.
 const POLL_SECONDS: u64 = 50;
 /// Telegram rejects a rich message past 32768 characters of rendered text, and a
@@ -88,27 +90,58 @@ impl Telegram {
         self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
     }
 
-    /// Posts a file without a sound, under an HTML caption where one is given, since a
-    /// document takes no rich message.
-    pub fn document(
+    /// Posts files without a sound, under an HTML caption where one is given, since a
+    /// document takes no rich message. More than one file is an album, whose first file
+    /// alone carries the caption, so it is the one a reply reaches the session from.
+    pub fn documents(
         &self,
         chat: i64,
-        path: &Path,
+        paths: &[PathBuf],
         caption: Option<&str>,
         reply_to: Option<i64>,
     ) -> Option<()> {
         let chat = chat.to_string();
         let reply = reply_to.map(|message_id| replying(message_id).to_string());
-        self.attempt("sendDocument", UPLOAD_TIMEOUT, |request| {
+        let names: Vec<String> = (0..paths.len())
+            .map(|index| format!("file{index}"))
+            .collect();
+        let media: Value = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let mut item = json!({"type": "document", "media": format!("attach://{name}")});
+                if let (0, Some(caption)) = (index, caption) {
+                    item["caption"] = json!(caption);
+                    item["parse_mode"] = json!("HTML");
+                }
+                item
+            })
+            .collect();
+        let media = media.to_string();
+        // An album takes two files or more.
+        let method = if paths.len() == 1 {
+            "sendDocument"
+        } else {
+            "sendMediaGroup"
+        };
+        let timeout = UPLOAD_TIMEOUT * u32::try_from(paths.len()).expect("an album's size");
+        self.attempt(method, timeout, |request| {
             let mut form = Form::new()
                 .text("chat_id", &chat)
-                .text("disable_notification", "true")
-                .part("document", Part::file(path)?);
-            if let Some(caption) = caption {
-                form = form.text("caption", caption).text("parse_mode", "HTML");
-            }
+                .text("disable_notification", "true");
             if let Some(reply) = &reply {
                 form = form.text("reply_parameters", reply);
+            }
+            if let [path] = paths {
+                form = form.part("document", Part::file(path)?);
+                if let Some(caption) = caption {
+                    form = form.text("caption", caption).text("parse_mode", "HTML");
+                }
+            } else {
+                form = form.text("media", &media);
+                for (name, path) in names.iter().zip(paths) {
+                    form = form.part(name, Part::file(path)?);
+                }
             }
             request.send(form)
         })
