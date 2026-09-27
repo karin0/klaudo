@@ -121,5 +121,9 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "exec klaude status"
   }
 }

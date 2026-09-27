@@ -90,12 +90,17 @@ const DATAGRAM_MAX: usize = 200 * 1024;
 /// continuing one.
 const NEW: &str = "new";
 const RESUME: &str = "resume";
+const USAGE: &str = "usage";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
 const SESSION: &str = "session";
 /// What the chat's command menu offers, each with the line it is listed under.
 const COMMANDS: &[(&str, &str)] = &[
     (NEW, "Open a conversation in a directory"),
     (RESUME, "Resume a recent conversation"),
+    (
+        USAGE,
+        "Show the plan's limits and the context of the conversation it replies to",
+    ),
     ("compact", "Compact the conversation it replies to"),
 ];
 /// How much of a session's latest prompt its button in a `/resume` menu shows.
@@ -154,6 +159,9 @@ enum Arrival {
     Press {
         press: Press,
     },
+    Status {
+        status: Status,
+    },
     Chat {
         message: Value,
     },
@@ -172,6 +180,47 @@ struct Press {
     from: Value,
     message: Value,
     data: String,
+}
+
+/// What Claude Code hands a session's status line, as `klaude status` forwards it. Both
+/// parts are absent until the session's first API call returns.
+#[derive(Deserialize)]
+struct Status {
+    session_id: String,
+    context_window: Option<Window>,
+    rate_limits: Option<Limits>,
+}
+
+#[derive(Deserialize, Clone)]
+struct Window {
+    context_window_size: u64,
+    current_usage: Option<Usage>,
+    used_percentage: Option<f64>,
+}
+
+/// The tokens the latest call sent, which is what the context holds.
+#[derive(Deserialize, Clone)]
+struct Usage {
+    #[serde(rename = "input_tokens")]
+    uncached: u64,
+    #[serde(rename = "cache_creation_input_tokens")]
+    cache_written: u64,
+    #[serde(rename = "cache_read_input_tokens")]
+    cache_read: u64,
+}
+
+/// The plan's limits, which every session of the account reports alike.
+#[derive(Deserialize)]
+struct Limits {
+    five_hour: Option<Limit>,
+    seven_day: Option<Limit>,
+}
+
+#[derive(Deserialize)]
+struct Limit {
+    used_percentage: f64,
+    /// Unix seconds.
+    resets_at: u64,
 }
 
 /// Where a file `klaude send` uploads goes, and the caption that addresses it.
@@ -216,6 +265,7 @@ pub fn run() {
         ended: saved.ended,
         swept: Instant::now(),
         state,
+        limits: None,
     };
     // Whatever exited while nothing was listening.
     machine.sweep();
@@ -527,6 +577,8 @@ struct Session {
     /// the chat is delivered by.
     seen: Instant,
     trail: Trail,
+    /// The context its status line last reported, and when, in Unix seconds.
+    window: Option<(Window, u64)>,
 }
 
 /// What a `/resume` menu shows of a session and leads back to: the start of its latest
@@ -549,6 +601,7 @@ impl Session {
             done: None,
             seen,
             trail: Trail::default(),
+            window: None,
         }
     }
 
@@ -574,6 +627,8 @@ struct Machine {
     swept: Instant,
     /// Where `Saved` is written.
     state: PathBuf,
+    /// The limits a status line last reported, and when, in Unix seconds.
+    limits: Option<(Limits, u64)>,
 }
 
 /// What of the resident outlives a restart, so a session idle through one is still
@@ -650,6 +705,7 @@ impl Machine {
                 self.hook(handoff.pid, handoff.tmux.zip(handoff.pane), &handoff.event);
             }
             Arrival::Press { press } => self.press(&press),
+            Arrival::Status { status } => self.status(status),
             Arrival::Chat { message } => self.chat(&message),
             Arrival::Locate {
                 session,
@@ -1340,6 +1396,10 @@ impl Machine {
         if text.is_empty() {
             return;
         }
+        let Some(carrier) = message["message_id"].as_i64() else {
+            return;
+        };
+        let replied = &message["reply_to_message"];
         match command(text) {
             Some((NEW, "")) => {
                 self.menu(chat, NEW, "Open a conversation in:");
@@ -1355,11 +1415,12 @@ impl Machine {
                 self.menu(chat, RESUME, "Resume a conversation in:");
                 return;
             }
+            Some((USAGE, _)) => {
+                self.usage(chat, carrier, replied);
+                return;
+            }
             _ => {}
         }
-        let Some(carrier) = message["message_id"].as_i64() else {
-            return;
-        };
         let ask = Ask {
             text: unaddressed(text),
             chat,
@@ -1367,7 +1428,6 @@ impl Machine {
         };
         // A session that exited without saying so is resumed rather than typed into.
         self.sweep();
-        let replied = &message["reply_to_message"];
         match address(replied) {
             Some(address) if address == NEW => match body(replied) {
                 Some(cwd) => self.open(PathBuf::from(cwd), None, ask),
@@ -1645,6 +1705,90 @@ impl Machine {
             .push_back(ask);
     }
 
+    /// A status line reports whenever the session redraws it, which is too often for the
+    /// state file and cheap to wait for again after a restart.
+    fn status(&mut self, status: Status) {
+        let now = unix_millis(SystemTime::now()) / 1000;
+        if let Some(limits) = status.rate_limits {
+            self.limits = Some((limits, now));
+        }
+        if let (Some(window), Some(session)) = (
+            status.context_window,
+            self.sessions.get_mut(&status.session_id),
+        ) {
+            session.window = Some((window, now));
+        }
+    }
+
+    /// The plan's limits, and how full the context is of the session a message replying
+    /// to `replied` would reach. With such a session the answer goes under its head, so a
+    /// reply to the answer reaches it too. Times are written by each reader's client, in
+    /// their own zone and, for how long ago a figure was reported, kept up to date.
+    fn usage(&self, chat: i64, asked: i64, replied: &Value) {
+        let address = address(replied)
+            .filter(|address| address != NEW)
+            .or_else(|| self.latest(chat));
+        let reached = address.and_then(|address| {
+            self.sessions
+                .iter()
+                .find(|(id, _)| id.starts_with(&address))
+        });
+        let now = unix_millis(SystemTime::now()) / 1000;
+        let mut rows = Vec::new();
+        let mut ages = Vec::new();
+        if let Some((_, session)) = reached {
+            match &session.window {
+                Some((window, at)) => {
+                    ages.push(format!(
+                        "context {}",
+                        moment(*at, "r", &ago_since(now, *at))
+                    ));
+                    rows.push(match (&window.current_usage, window.used_percentage) {
+                        (Some(usage), Some(percentage)) => format!(
+                            "{}context {percentage:.0}%, {} of {}",
+                            gauge(percentage),
+                            tokens(usage.uncached + usage.cache_written + usage.cache_read),
+                            tokens(window.context_window_size),
+                        ),
+                        _ => "context: nothing has been sent yet".to_owned(),
+                    });
+                }
+                None => rows.push("context: not reported yet".to_owned()),
+            }
+        }
+        match &self.limits {
+            Some((limits, at)) => {
+                for (name, limit) in [("5-hour", &limits.five_hour), ("7-day", &limits.seven_day)] {
+                    if let Some(limit) = limit {
+                        let left = Duration::from_secs(limit.resets_at.saturating_sub(now));
+                        rows.push(format!(
+                            "{}{name} {:.0}%, resets {}\n{UNDER}{}",
+                            gauge(limit.used_percentage),
+                            limit.used_percentage,
+                            moment(limit.resets_at, "r", &format!("in {}", until(left))),
+                            moment(limit.resets_at, "wDt", &utc(limit.resets_at)),
+                        ));
+                    }
+                }
+                ages.push(format!("limits {}", moment(*at, "r", &ago_since(now, *at))));
+            }
+            None => rows.push("limits: not reported yet".to_owned()),
+        }
+        if !ages.is_empty() {
+            rows.push(format!("reported: {}", ages.join(", ")));
+        }
+        let said = rows.join("\n");
+        let answer = match reached {
+            Some((id, session)) => format!(
+                "<b>{}</b> <code>{}</code>\n{said}",
+                hook::html(&hook::name(&session.dir)),
+                hook::address(id, None),
+            ),
+            None => said,
+        };
+        self.telegram.html(chat, &answer, asked);
+    }
+
     fn say(&self, chat: i64, text: &str) {
         self.telegram.send(chat, text, Sound::Silent, None);
     }
@@ -1672,7 +1816,9 @@ fn compaction(asked: &VecDeque<Ask>) -> Option<&Ask> {
 /// The address in the head of a message klaude posted, which is the session it belongs
 /// to or the anchor of a conversation that has not started.
 fn address(message: &Value) -> Option<String> {
-    let code = headed(message).or_else(|| captioned(message))?;
+    let code = headed(message)
+        .or_else(|| coded(&message["caption"], &message["caption_entities"]))
+        .or_else(|| coded(&message["text"], &message["entities"]))?;
     let session = code.split('/').next()?;
     (!session.is_empty()).then(|| session.to_owned())
 }
@@ -1683,17 +1829,17 @@ fn headed(message: &Value) -> Option<String> {
     Some(plain(&code["text"]))
 }
 
-/// A file klaude posted carries its head as a caption, whose entities count UTF-16 code
-/// units.
-fn captioned(message: &Value) -> Option<String> {
-    let caption: Vec<u16> = message["caption"].as_str()?.encode_utf16().collect();
-    let code = message["caption_entities"]
+/// The code span of a message klaude posted as text with entities: a file, whose head is
+/// its caption, or an HTML message. Entities count UTF-16 code units.
+fn coded(text: &Value, entities: &Value) -> Option<String> {
+    let text: Vec<u16> = text.as_str()?.encode_utf16().collect();
+    let code = entities
         .as_array()?
         .iter()
         .find(|entity| entity["type"] == "code")?;
     let start = usize::try_from(code["offset"].as_u64()?).ok()?;
     let end = start + usize::try_from(code["length"].as_u64()?).ok()?;
-    String::from_utf16(caption.get(start..end)?).ok()
+    String::from_utf16(text.get(start..end)?).ok()
 }
 
 fn body(message: &Value) -> Option<String> {
@@ -1740,6 +1886,67 @@ fn ago(age: Duration) -> String {
         60..3600 => format!("{}m ago", seconds / 60),
         3600..86400 => format!("{}h ago", seconds / 3600),
         _ => format!("{}d ago", seconds / 86400),
+    }
+}
+
+/// A percentage as a bar ten cells wide, filled to the eighth of a cell, and the gap to
+/// the words after it. The monospace font is what lines the blocks up from row to row.
+fn gauge(percentage: f64) -> String {
+    const CELLS: usize = 10;
+    const PARTS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+    // Clamped to the bar's eighty eighths first, so the cast neither truncates nor wraps.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let eighths = (percentage.clamp(0.0, 100.0) * 0.8).round() as usize;
+    let full = eighths / 8;
+    let part = PARTS.get((eighths % 8).wrapping_sub(1));
+    let empty = CELLS - full - usize::from(part.is_some());
+    format!(
+        "<code>{}{}{}</code>  ",
+        "█".repeat(full),
+        part.map(char::to_string).unwrap_or_default(),
+        "░".repeat(empty)
+    )
+}
+
+/// What lines a row up under the words after a gauge. The gauge is in the monospace
+/// font and the row in the reader's own, where twelve en spaces of half an em come
+/// closest to the gauge's ten cells of about 0.6 em.
+const UNDER: &str = "\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}\u{2002}  ";
+
+/// A moment each reader's client writes in their own zone, as Telegram's date-time
+/// `format` says, with `fallback` for a client that cannot.
+fn moment(unix: u64, format: &str, fallback: &str) -> String {
+    format!("<tg-time unix=\"{unix}\" format=\"{format}\">{fallback}</tg-time>")
+}
+
+fn utc(unix: u64) -> String {
+    format!("{:02}:{:02} UTC", unix % 86400 / 3600, unix % 3600 / 60)
+}
+
+fn ago_since(now: u64, then: u64) -> String {
+    ago(Duration::from_secs(now.saturating_sub(then)))
+}
+
+/// How long until a limit resets, to the minute.
+fn until(left: Duration) -> String {
+    let minutes = left.as_secs().div_ceil(60);
+    match minutes {
+        0..60 => format!("{minutes}m"),
+        60..1440 => format!("{}h {}m", minutes / 60, minutes % 60),
+        _ => format!("{}d {}h", minutes / 1440, minutes % 1440 / 60),
+    }
+}
+
+/// A token count the way Claude Code writes one, as `45.6k` or `1m`.
+fn tokens(count: u64) -> String {
+    let (tenths, unit) = match count {
+        0..1000 => return count.to_string(),
+        1000..1_000_000 => ((count + 50) / 100, "k"),
+        _ => ((count + 50_000) / 100_000, "m"),
+    };
+    match tenths % 10 {
+        0 => format!("{}{unit}", tenths / 10),
+        tenth => format!("{}.{tenth}{unit}", tenths / 10),
     }
 }
 
@@ -2142,6 +2349,34 @@ mod tests {
             Some(("compact", "keep it short"))
         );
         assert_eq!(command("new"), None);
+    }
+
+    #[test]
+    fn a_gauge_fills_to_the_eighth_of_a_cell() {
+        let bar = |percentage| {
+            gauge(percentage)
+                .replace("<code>", "")
+                .replace("</code>  ", "")
+        };
+        assert_eq!(bar(0.0), "░░░░░░░░░░");
+        assert_eq!(bar(1.0), "▏░░░░░░░░░");
+        assert_eq!(bar(56.0), "█████▋░░░░");
+        assert_eq!(bar(100.0), "██████████");
+        assert_eq!(bar(120.0), "██████████");
+    }
+
+    #[test]
+    fn a_reset_reads_to_the_minute() {
+        assert_eq!(until(Duration::from_secs(59)), "1m");
+        assert_eq!(until(Duration::from_mins(209)), "3h 29m");
+        assert_eq!(until(Duration::from_hours(62)), "2d 14h");
+    }
+
+    #[test]
+    fn a_token_count_reads_as_claude_code_writes_it() {
+        assert_eq!(tokens(75), "75");
+        assert_eq!(tokens(45_556), "45.6k");
+        assert_eq!(tokens(1_000_000), "1m");
     }
 
     #[test]

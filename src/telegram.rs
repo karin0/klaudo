@@ -184,6 +184,22 @@ impl Telegram {
             .as_i64()
     }
 
+    /// A silent message in Telegram's HTML, for what markdown has no syntax for, such as a
+    /// time each reader's client writes in their own zone.
+    pub fn html(&self, chat: i64, html: &str, reply_to: i64) -> Option<i64> {
+        self.call(
+            "sendMessage",
+            &json!({
+                "chat_id": chat,
+                "text": html,
+                "parse_mode": "HTML",
+                "disable_notification": true,
+                "reply_parameters": replying(reply_to),
+            }),
+        )?["result"]["message_id"]
+            .as_i64()
+    }
+
     /// Rewrites a menu into the next choice it leads to.
     pub fn remenu(&self, chat: i64, message_id: i64, text: &str, buttons: &[(String, String)]) {
         self.call(

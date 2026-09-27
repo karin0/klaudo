@@ -37,19 +37,31 @@ enum Command {
         /// The file to post
         file: PathBuf,
     },
+    /// Forward the status line's input on stdin to the resident
+    Status,
 }
 
 fn main() {
     match Cli::parse().command {
         Some(Command::Listen) => listen::run(),
         Some(Command::Send { file }) => send(&file),
+        Some(Command::Status) => {
+            if !hand_over(&wrapped("{\"status\":", &stdin())) {
+                eprintln!("klaude: no resident is listening");
+            }
+        }
         None => {
-            let mut raw = Vec::new();
-            std::io::stdin().read_to_end(&mut raw).expect("hook input");
+            let raw = stdin();
             let event: Event = serde_json::from_slice(&raw).expect("hook input is JSON");
             hook(&event, &raw);
         }
     }
+}
+
+fn stdin() -> Vec<u8> {
+    let mut raw = Vec::new();
+    std::io::stdin().read_to_end(&mut raw).expect("stdin");
+    raw
 }
 
 /// A mistake in how the command was called, which is reported without a backtrace.
@@ -103,24 +115,33 @@ fn hook(event: &Event, raw: &[u8]) {
 /// inherited from that session, and `exec` in the hook command is what makes this
 /// process a child of it, so the parent id is the session to type into.
 fn forward(raw: &[u8]) -> bool {
-    let (Some(target), Ok(socket)) = (listen::socket_path(), UnixDatagram::unbound()) else {
-        return false;
-    };
-    let _ = socket.set_write_timeout(Some(HANDOFF_TIMEOUT));
     let context = serde_json::json!({
         "pid": parent_id(),
         "tmux": std::env::var("TMUX").ok(),
         "pane": std::env::var("TMUX_PANE").ok(),
     })
     .to_string();
-    // Concatenated rather than re-serialised, because a delta's hook runs inside the
-    // budget that holds the terminal's own output back.
-    let mut handoff = Vec::with_capacity(context.len() + raw.len() + 10);
-    handoff.extend_from_slice(context.trim_end_matches('}').as_bytes());
-    handoff.extend_from_slice(b",\"event\":");
-    handoff.extend_from_slice(raw);
-    handoff.push(b'}');
-    socket.send_to(&handoff, target).is_ok()
+    let head = format!("{},\"event\":", context.trim_end_matches('}'));
+    hand_over(&wrapped(&head, raw))
+}
+
+/// `raw` as the last field of an object that `head` opens. Concatenated rather than
+/// re-serialised, because a delta's hook runs inside the budget that holds the
+/// terminal's own output back.
+fn wrapped(head: &str, raw: &[u8]) -> Vec<u8> {
+    let mut datagram = Vec::with_capacity(head.len() + raw.len() + 1);
+    datagram.extend_from_slice(head.as_bytes());
+    datagram.extend_from_slice(raw);
+    datagram.push(b'}');
+    datagram
+}
+
+fn hand_over(datagram: &[u8]) -> bool {
+    let (Some(target), Ok(socket)) = (listen::socket_path(), UnixDatagram::unbound()) else {
+        return false;
+    };
+    let _ = socket.set_write_timeout(Some(HANDOFF_TIMEOUT));
+    socket.send_to(datagram, target).is_ok()
 }
 
 /// Asks the resident where a file goes and uploads it from here, so the upload holds up
