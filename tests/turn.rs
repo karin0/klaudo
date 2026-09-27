@@ -31,7 +31,7 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("segments", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
 
     hook(
@@ -99,7 +99,7 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
         sent[1..].iter().all(|call| call.reply == reply),
         "every message of the turn replies to the prompt"
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A prompt submitted while a turn is running is queued by Claude Code and reported
@@ -110,7 +110,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("queue", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "fedcba9876543210";
     let first = "aaaaaaaa-1111";
     let second = "bbbbbbbb-2222";
@@ -171,7 +171,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
         "the queued turn's head reads {:?}",
         sent[3].markdown
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A turn that has said nothing is already on screen, so the minutes it spends thinking
@@ -181,7 +181,7 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("waiting", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     hook(
         root,
@@ -195,7 +195,7 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
 
     let made = collect(&calls, |call| call.markdown.contains('✻'));
     showing(&made.last().expect("a live message").markdown, "");
-    drop(resident);
+    drop(daemon);
 }
 
 /// A turn long enough to be watched puts a message up and rewrites it as it goes. The
@@ -206,7 +206,7 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("watched", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -222,7 +222,7 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
         event["cwd"] = json!(project(root));
         hook(root, &event);
         if step < last {
-            // Longer than the gap the resident leaves between two rewrites, so every
+            // Longer than the gap the daemon leaves between two rewrites, so every
             // step of the turn is one the chat was shown.
             std::thread::sleep(Duration::from_millis(3200));
         }
@@ -251,7 +251,7 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
         1,
         "the last segment's message goes"
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A final message arrives milliseconds before its `Stop`, so the message showing the
@@ -261,7 +261,7 @@ fn an_answer_arriving_with_its_stop_is_shown_once() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("answered", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -293,7 +293,7 @@ fn an_answer_arriving_with_its_stop_is_shown_once() {
         holding(&made),
         [("silent", ">think".to_owned()), ("ring", "done".to_owned())]
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A compaction Claude Code started mid-turn is a quiet note in that turn, and a
@@ -303,7 +303,7 @@ fn a_compaction_reports_its_summary() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("compacted", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let summary = "<analysis>\nwhy\n</analysis>\n\n<summary>\nall of it\n</summary>";
 
     let events = [
@@ -333,7 +333,7 @@ fn a_compaction_reports_its_summary() {
             ("ring", quoted),
         ]
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A turn that talked, worked and talked again leaves three messages in order, and the
@@ -343,7 +343,7 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("tools", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -397,10 +397,10 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
         replying_to(sent[0].id),
         "the run threads under the prompt"
     );
-    drop(resident);
+    drop(daemon);
 }
 
-/// An assistant message's last flush reaches the resident after the hook of the tool
+/// An assistant message's last flush reaches the daemon after the hook of the tool
 /// call that message ends with, so the words introducing a call are announced after it.
 /// They belong above it in the chat all the same.
 #[test]
@@ -408,7 +408,7 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("settling", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -442,7 +442,7 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
             ("ring", "checked".to_owned()),
         ]
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// The three hook processes run at once, so a delta can land after the `Stop` of its own
@@ -453,7 +453,7 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("straggler", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
     let prompt = "aaaaaaaa-1111";
 
@@ -480,7 +480,7 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
         ],
         "the answer is the last thing the turn says"
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A message that replies to nothing still names a session: the one heard from last in
@@ -492,7 +492,7 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     let (port, calls, chat) = recorder();
     let temporary = prepare("unaddressed", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     // The later session sorts first, so what answers is the one heard from last
     // rather than the first one klaudo happens to hold. The throwaway root is outside
@@ -560,7 +560,7 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
         [(Some(GROUP), "`01234567`"), (Some(OWNER), "`89abcdef`")],
         "only the owner's messages are answered, each by a session of its own chat"
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A topic holds its own conversations: a message there reaches only a session whose
@@ -594,7 +594,7 @@ fn a_topic_holds_its_own_conversations() {
         .to_string(),
     )
     .expect("the state");
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     chat.says_in(GROUP, 78, OWNER, "anyone");
     chat.says(GROUP, OWNER, "anyone");
@@ -644,7 +644,7 @@ fn a_topic_holds_its_own_conversations() {
         "the turn stays in the topic"
     );
     assert_eq!(sent[1].reply, replying_to(sent[0].id));
-    drop(resident);
+    drop(daemon);
 }
 
 /// A message outside every topic of a private chat in topic mode opens a topic of its
@@ -677,7 +677,7 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
         .to_string(),
     )
     .expect("the state");
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     chat.says_in(GROUP, 78, OWNER, "anyone");
     chat.opens(GROUP, 79, OWNER, "anyone");
@@ -693,17 +693,17 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
         })
         .collect();
     assert_eq!(answered, [("no", Some(78)), ("`01234567`", Some(79))]);
-    drop(resident);
+    drop(daemon);
 }
 
-/// A session killed mid-turn sends no event again, and the resident still finds it gone:
+/// A session killed mid-turn sends no event again, and the daemon still finds it gone:
 /// the message that showed the turn running is rewritten to what the turn said.
 #[test]
 fn a_turn_whose_session_was_killed_stops_reading_as_running() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("killed", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     // Each hook's parent is the session, and every one of these shells exits once its
     // hook has.
@@ -739,18 +739,18 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
         held.iter().all(|(_, body)| !body.contains('✻')),
         "the chat holds {held:?}"
     );
-    drop(resident);
+    drop(daemon);
 }
 
-/// A session idle through a restart of the resident stays reachable, and so does one that
-/// ended before it, though the resident that heard them was killed with no chance to
+/// A session idle through a restart of the daemon stays reachable, and so does one that
+/// ended before it, though the daemon that heard them was killed with no chance to
 /// write anything on its way out.
 #[test]
-fn what_the_resident_knows_outlives_a_restart() {
+fn what_the_daemon_knows_outlives_a_restart() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("restart", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     for (event, session, cwd) in [
         ("SessionStart", "0123456789abcdef", project(root).as_path()),
@@ -768,9 +768,9 @@ fn what_the_resident_knows_outlives_a_restart() {
     collect(&calls, |call| {
         call.markdown.starts_with("no session is running here")
     });
-    drop(resident);
+    drop(daemon);
     std::fs::remove_file(root.join("run/klaudo/listen.sock")).expect("the old socket");
-    let resident = self::resident(root);
+    let daemon = self::daemon(root);
 
     chat.replies(
         OWNER,
@@ -791,7 +791,7 @@ fn what_the_resident_knows_outlives_a_restart() {
                 && line.ends_with("--resume fedcba9876543210")),
         "tmux was called as {log:?}"
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// A reply to a session that has exited, whether its process is gone or it reported its
@@ -802,7 +802,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("resume", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     // The hook's parent is the session, and this shell exits once the hook has.
     let mut passing = within(root, "sh");
@@ -857,7 +857,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         .filter(|call| call.label.starts_with("sendRichMessage"))
         .map(|call| call.markdown.as_str())
         .collect();
-    assert_eq!(said, ["`77777777` is not a session this resident has seen"]);
+    assert_eq!(said, ["`77777777` is not a session this daemon has seen"]);
     let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
     let windows: Vec<_> = log
         .lines()
@@ -895,7 +895,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         .filter(|call| call.markdown.starts_with("`01234567` "))
         .count();
     assert_eq!(taken, 2, "both replies wait for the resumed session");
-    drop(resident);
+    drop(daemon);
 }
 
 /// `/new` alone offers the projects that ran in its chat, the one heard from last first and
@@ -905,7 +905,7 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("menu", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     for dir in ["a", "b"] {
         std::fs::create_dir(root.join(dir)).expect("a project");
@@ -972,7 +972,7 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
             .map(Vec::len),
         Some(1)
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// `/resume` offers the projects of its chat, then the sessions of the one picked, the one
@@ -983,7 +983,7 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("resume-menu", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     let first = "1111111111111111";
     for event in [
@@ -1051,7 +1051,7 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
         made.last().expect("the menu taken back").target,
         menu.target
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// What the chat is left holding: every message klaudo sent, in the order it sent them,
@@ -1099,7 +1099,7 @@ fn replying_to(message_id: i64) -> serde_json::Value {
     json!({"message_id": message_id, "allow_sending_without_reply": true})
 }
 
-/// One call the resident made, as the server saw it.
+/// One call the daemon made, as the server saw it.
 struct Call {
     label: String,
     /// A message's markdown, the caption of a file, or the text of a menu.
@@ -1189,7 +1189,7 @@ fn a_window_closed_before_its_session_started_is_reported() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("closed", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     for event in ["SessionStart", "SessionEnd"] {
         hook(
@@ -1223,10 +1223,10 @@ fn a_window_closed_before_its_session_started_is_reported() {
         },
         "the second reply opened no window",
     );
-    drop(resident);
+    drop(daemon);
 }
 
-/// A throwaway root holding the runtime directory the resident binds its socket in and
+/// A throwaway root holding the runtime directory the daemon binds its socket in and
 /// the credentials file every klaudo process started from it reads, so a machine's own
 /// credentials stay out of the test. It is removed when the test drops it, which a
 /// failing test does too.
@@ -1276,24 +1276,21 @@ fn project(root: &Path) -> PathBuf {
     root.join("project")
 }
 
-/// The resident, killed when the test drops it.
-struct Resident(Child);
+/// The daemon, killed when the test drops it.
+struct Daemon(Child);
 
-impl Drop for Resident {
+impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }
 
-fn resident(root: &Path) -> Resident {
-    let child = klaudo(root)
-        .arg("listen")
-        .spawn()
-        .expect("run the resident");
+fn daemon(root: &Path) -> Daemon {
+    let child = klaudo(root).arg("listen").spawn().expect("run the daemon");
     let socket = root.join("run/klaudo/listen.sock");
-    wait_for(|| socket.exists(), "the resident never bound its socket");
-    Resident(child)
+    wait_for(|| socket.exists(), "the daemon never bound its socket");
+    Daemon(child)
 }
 
 fn klaudo(root: &Path) -> Command {
@@ -1487,7 +1484,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
     let mut chunk = [0; 4096];
     let (method, length, boundary, head) = loop {
         let read = stream.read(&mut chunk).expect("request");
-        // A resident killed on its way to the next request leaves nothing to answer.
+        // A daemon killed on its way to the next request leaves nothing to answer.
         if read == 0 {
             return;
         }
@@ -1631,10 +1628,10 @@ fn the_command_line_explains_itself() {
         "klaudo: /definitely/not/here: No such file or directory (os error 2)\n"
     );
 
-    // Nothing is listening in this root, which is what a stopped resident looks like.
+    // Nothing is listening in this root, which is what a stopped daemon looks like.
     let alone = run(&["send", path]);
     assert_eq!(alone.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaudo: the resident at "));
+    assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaudo: the daemon at "));
 }
 
 /// The commands klaudo answers are listed in the command menu of each chat, for the user
@@ -1643,7 +1640,7 @@ fn the_command_line_explains_itself() {
 fn the_commands_are_listed_for_the_user_in_both_chats() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("commands", port);
-    let resident = resident(temporary.path());
+    let daemon = daemon(temporary.path());
 
     let made = collect(&calls, |call| call.body["scope"]["type"] == "chat_member");
     let registered: Vec<_> = made
@@ -1663,7 +1660,7 @@ fn the_commands_are_listed_for_the_user_in_both_chats() {
             &json!({"type": "chat_member", "chat_id": GROUP, "user_id": OWNER}),
         ]
     );
-    drop(resident);
+    drop(daemon);
 }
 
 /// `/usage` answers from what the status lines last reported: the plan's limits from any
@@ -1674,7 +1671,7 @@ fn usage_is_answered_from_the_status_lines() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("status", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
 
     // No session is here to go with the limits.
     chat.says(OWNER, OWNER, "/usage");
@@ -1767,7 +1764,7 @@ fn usage_is_answered_from_the_status_lines() {
         )
     );
 
-    drop(resident);
+    drop(daemon);
 }
 
 /// The answer that closes a turn ends with what `/usage` answers, in one line of the
@@ -1777,7 +1774,7 @@ fn a_turn_ends_with_a_status_line() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("line", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let turn = |prompt: &str, line: &str| {
         for mut event in [
             json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
@@ -1828,7 +1825,7 @@ fn a_turn_ends_with_a_status_line() {
     );
     // Limits a later status line leaves out are still the ones reported last.
     turn("p3", "done\n\n`5% 45.6k/1m · 1% 3h30m · 56% 2d14h`");
-    drop(resident);
+    drop(daemon);
 }
 
 /// The limits `usage_is_answered_from_the_status_lines` reports at `now`, as the answer
@@ -1867,7 +1864,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("file", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
 
     hook(
@@ -1945,7 +1942,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert_eq!(document.chat, Some(OWNER));
     assert_eq!(document.reply, json!(null));
     assert_eq!(document.markdown, "");
-    drop(resident);
+    drop(daemon);
 }
 
 /// A message's last flushes race the hook of the tool call that ends it, so a delta can
@@ -1957,7 +1954,7 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("straggling-flush", port);
     let root = temporary.path();
-    let resident = resident(root);
+    let daemon = daemon(root);
     let session = "0123456789abcdef";
 
     let turn = [
@@ -1991,5 +1988,5 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
         ]
         .map(|(sound, body)| (sound, body.to_owned()))
     );
-    drop(resident);
+    drop(daemon);
 }
