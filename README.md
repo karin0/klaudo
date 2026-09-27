@@ -122,8 +122,8 @@ session klaude heard from last among those in the chat it was sent in, and the t
 starts threads under it, whose head names the session that took it. A session is in
 the chat its running turn is posted to, and between turns in its project's chat, so a
 project listed for one chat stays out of reach of an unaddressed message in the other.
-A reply to a message that names no session is answered with that and reaches no
-session.
+A reply to a message that names no session, such as a later file of an album, is
+answered with that and reaches no session.
 
 Replying to any message from a turn types the text into that session's terminal, as a
 prompt in its input box. Multiple lines arrive as multiple lines, and quotes, backticks
@@ -195,25 +195,28 @@ admin. A channel is not supported: a post there carries no sender to check.
 
 ## Sending a file
 
-`klaude send <file>` posts a file as a document in the thread of the turn that ran the
-command, below what the turn has said so far, and in the chat of the session's project
-between turns. Claude Code puts `CLAUDE_CODE_SESSION_ID` in the environment of every
-command it runs, which is how the command finds its session. Run anywhere else, the
-command sends the file without a caption to the chat of the directory it runs in. Claude learns the command from whatever instructions
-it reads, such as a line in `~/.claude/CLAUDE.md`.
+`klaude send <file>...` posts the files as documents in the thread of the turn that ran
+the command, below what the turn has said so far, and in the chat of the session's
+project between turns. Up to ten files form one album, whose first document alone
+carries the caption, so a reply to that one reaches the session. Claude Code puts
+`CLAUDE_CODE_SESSION_ID` in the environment of every command it runs, which is how the
+command finds its session. Run anywhere else, the command sends the files without a
+caption to the chat of the directory it runs in. Claude learns the command from
+whatever instructions it reads, such as a line in `~/.claude/CLAUDE.md`.
 
-The command asks the resident where the file goes and uploads it itself, so its exit
-status says whether the file reached the chat, a failure prints what Telegram answered,
-and a long upload holds up nothing else. The resident answers once the turn's open
-segment is a message, so the file lands below it, while what the turn says during the
-upload can land above the file. A bot uploads files of up to 50 MB.
+The command checks every path, asks the resident once where the files go and uploads
+them itself, so a mistyped path posts nothing, the exit status says whether every file
+reached the chat, a failure names the files and prints what Telegram answered, and a
+long upload holds up nothing else. The resident answers once the turn's open segment is
+a message, so the files land below it, while what the turn says during the uploads can
+land among the albums. A bot uploads files of up to 50 MB.
 
 The answer arrives at an abstract socket address, which vanishes with the command
 however it ends. Any local user can send to such an address, so the command takes only
 an answer sent from the resident's own socket.
 
 A document carries no rich message, so its caption is the head in Telegram's HTML, and a
-reply to the file reaches the session like a reply to any message of the turn.
+reply to the captioned file reaches the session like a reply to any message of the turn.
 
 ## Why keystrokes
 
@@ -411,7 +414,7 @@ follows them; that a delta landing after its own `Stop` leaves the answer last; 
 flush and a
 tool outcome arriving after their segment went out rewrite that message; that a turn
 whose session was killed stops reading as running with no further event; that a file
-`klaude send` posts replies to the prompt of its turn, one from a session klaude has not
+`klaude send` posts the files it names as an album in order, replying to the prompt of its turn, one from a session klaude has not
 heard from fails the command, and one sent outside Claude Code from a directory not in
 `CHAT_PROJECTS` goes to the private chat; that the commands are listed for the user in both chats; that `--help` and a call the binary cannot
 act on print the usage, and a missing file or a stopped resident is named without a

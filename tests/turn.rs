@@ -517,7 +517,7 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     chat.says(GROUP, STRANGER, "carry on");
     chat.says(GROUP, OWNER, "carry on");
     // A reply goes where the message it replies to says, and a message that names no
-    // session is no reason to guess one.
+    // session, such as a later file of an album, is no reason to guess one.
     chat.replies(
         GROUP,
         OWNER,
@@ -1281,10 +1281,12 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         json!({"ok": true, "result": chat.drain()}).to_string()
     } else {
         let sound = match method.as_str() {
-            "sendRichMessage" | "sendDocument" if body["disable_notification"] == json!(true) => {
+            "sendRichMessage" | "sendDocument" | "sendMediaGroup"
+                if body["disable_notification"] == json!(true) =>
+            {
                 " silent"
             }
-            "sendRichMessage" | "sendDocument" => " ring",
+            "sendRichMessage" | "sendDocument" | "sendMediaGroup" => " ring",
             _ => "",
         };
         calls
@@ -1345,7 +1347,7 @@ fn the_command_line_explains_itself() {
     for (asked, usage) in [
         (&["--help"][..], "Usage: klaude [COMMAND]"),
         (&["-h"], "Usage: klaude [COMMAND]"),
-        (&["send", "--help"], "Usage: klaude send <FILE>"),
+        (&["send", "--help"], "Usage: klaude send <FILES>..."),
     ] {
         let help = run(asked);
         assert!(help.status.success(), "{asked:?}");
@@ -1355,7 +1357,7 @@ fn the_command_line_explains_itself() {
         );
     }
 
-    for wrong in [&["send"][..], &["send", "a", "b"], &["sned", "a"]] {
+    for wrong in [&["send"][..], &["sned", "a"]] {
         let misused = run(wrong);
         assert_eq!(misused.status.code(), Some(2), "{wrong:?}");
         assert!(
@@ -1364,7 +1366,10 @@ fn the_command_line_explains_itself() {
         );
     }
 
-    let missing = run(&["send", "/definitely/not/here"]);
+    let file = root.join("build.log");
+    std::fs::write(&file, "all green").expect("the file to send");
+    let path = file.to_str().expect("a UTF-8 path");
+    let missing = run(&["send", path, "/definitely/not/here"]);
     assert_eq!(missing.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&missing.stderr),
@@ -1372,9 +1377,7 @@ fn the_command_line_explains_itself() {
     );
 
     // Nothing is listening in this root, which is what a stopped resident looks like.
-    let file = root.join("build.log");
-    std::fs::write(&file, "all green").expect("the file to send");
-    let alone = run(&["send", file.to_str().expect("a UTF-8 path")]);
+    let alone = run(&["send", path]);
     assert_eq!(alone.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaude: the resident at "));
 }
@@ -1539,8 +1542,9 @@ fn clock(unix: u64) -> String {
     format!("{:02}:{:02}", unix % 86400 / 3600, unix % 3600 / 60)
 }
 
-/// A file a session sends lands in the thread of the turn that sent it, below what the
-/// turn has said, and `klaude send` exits with how the upload went.
+/// Files a session sends land in the thread of the turn that sent them, below what the
+/// turn has said, as an album in the order they were named, and `klaude send` exits with
+/// how the uploads went.
 #[test]
 fn a_file_a_turn_sends_lands_in_its_thread() {
     let (port, calls, _chat) = recorder();
@@ -1561,30 +1565,42 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     );
     let file = root.join("build.log");
     std::fs::write(&file, "all green").expect("the file to send");
+    let other = root.join("test.log");
+    std::fs::write(&other, "all passed").expect("the file to send");
     let sent = klaude(root)
-        .args(["send".as_ref(), file.as_os_str()])
+        .args(["send".as_ref(), file.as_os_str(), other.as_os_str()])
         .env("CLAUDE_CODE_SESSION_ID", session)
         .output()
         .expect("run send");
     assert!(sent.status.success(), "send failed: {sent:?}");
 
-    let made = collect(&calls, |call| call.label.starts_with("sendDocument"));
-    let document = made.last().expect("the file");
-    assert_eq!(document.label, "sendDocument silent");
-    assert_eq!(document.document.as_deref(), Some("all green"));
-    assert_eq!(document.chat, Some(GROUP));
+    let made = collect(&calls, |call| call.label.starts_with("sendMediaGroup"));
+    let album = made.last().expect("the album");
+    assert_eq!(album.label, "sendMediaGroup silent");
+    assert_eq!(album.chat, Some(GROUP));
+    assert_eq!(
+        (&album.body["file0"], &album.body["file1"]),
+        (&json!("all green"), &json!("all passed"))
+    );
     let prompt = made
         .iter()
         .find(|call| call.label.starts_with("sendRichMessage"))
         .expect("the prompt");
-    assert_eq!(document.reply, replying_to(prompt.id));
-    assert!(
-        document
-            .markdown
-            .starts_with("<b>klaude</b> <code>01234567/aaaaaaaa</code> "),
-        "the caption reads {:?}",
-        document.markdown
+    assert_eq!(album.reply, replying_to(prompt.id));
+    let media = album.body["media"]
+        .as_array()
+        .expect("the album's documents");
+    assert_eq!(
+        media.iter().map(|item| &item["media"]).collect::<Vec<_>>(),
+        [&json!("attach://file0"), &json!("attach://file1")]
     );
+    let caption = media[0]["caption"].as_str().expect("a caption");
+    assert!(
+        caption.starts_with("<b>klaude</b> <code>01234567/aaaaaaaa</code> "),
+        "the caption reads {caption:?}"
+    );
+    assert_eq!(media[0]["parse_mode"], json!("HTML"));
+    assert_eq!(media[1].get("caption"), None);
 
     // A session klaude has never heard from has no thread to post in.
     let refused = klaude(root)
@@ -1608,6 +1624,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert!(bare.status.success(), "send failed: {bare:?}");
     let made = collect(&calls, |call| call.label.starts_with("sendDocument"));
     let document = made.last().expect("the file");
+    assert_eq!(document.document.as_deref(), Some("all green"));
     assert_eq!(document.chat, Some(OWNER));
     assert_eq!(document.reply, json!(null));
     assert_eq!(document.markdown, "");
