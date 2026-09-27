@@ -184,6 +184,19 @@ impl Telegram {
             .as_i64()
     }
 
+    /// Rewrites a menu into the next choice it leads to.
+    pub fn remenu(&self, chat: i64, message_id: i64, text: &str, buttons: &[(String, String)]) {
+        self.call(
+            "editMessageText",
+            &json!({
+                "chat_id": chat,
+                "message_id": message_id,
+                "text": text,
+                "reply_markup": keyboard(buttons),
+            }),
+        );
+    }
+
     /// Stops the client's progress bar on a pressed button, which it shows until this.
     pub fn answer(&self, query: &str) {
         self.call("answerCallbackQuery", &json!({"callback_query_id": query}));
