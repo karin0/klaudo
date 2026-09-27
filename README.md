@@ -153,9 +153,16 @@ the anchor opens a window running `claude` there and types the reply as its firs
 prompt. Those windows live in a tmux session called `klaude`, one window per
 conversation, so `tmux attach -t klaude` reaches a conversation that began on the phone.
 
+Every anchor carries Telegram's `ForceReply`, so a client opens the reply box on it as it
+arrives, with where the reply goes as the placeholder, and the next message typed
+replies to the anchor rather than going to whichever session was heard from last. A
+reply box closed first leaves that message replying to nothing. Telegram attaches
+`ForceReply` only to a message being sent, so an anchor is always a message of its own,
+and a menu it came from is taken back once it is posted.
+
 `/new` alone offers a menu of the projects whose sessions post in the chat it was sent
 in, the one heard from last first, eight at most, counting the exited sessions the
-resident remembers. Pressing one rewrites the menu into that project's anchor.
+resident remembers. Pressing one posts that project's anchor.
 The menu is a plain message, and a button's label is the directory it picks, so a menu
 still works after the resident restarts.
 
@@ -165,8 +172,7 @@ was heard from and the first forty characters of its latest prompt. Pressing a s
 posts an anchor headed with its address, and a reply to the anchor reaches the session
 like a reply to any of its messages, resuming it first when it has exited. The anchor
 replies to the last message the session left in that chat and topic, so a tap on its quotation
-scrolls back to where the conversation stopped. A reply is set when a message is sent,
-so the anchor is a message of its own, and the menu is taken back once it is posted. A
+scrolls back to where the conversation stopped. A
 private chat has no link to a single message, which is why the way back is a reply
 rather than a link in the menu.
 
@@ -421,8 +427,8 @@ a segment watched while it ran finishes in the message it was watched in and the
 one's message is taken back; that an answer arriving with its `Stop` is shown once;
 that a compaction, started by Claude Code or by `/compact`, quotes its summary and its
 reasoning;
-that `/new` alone offers the projects of its chat most recent first and a press rewrites
-the menu into the anchor of the one picked; that `/resume` leads from a project to its sessions and a press
+that `/new` alone offers the projects of its chat most recent first and a press
+posts the anchor of the one picked, which opens the reply box, and takes the menu back; that `/resume` leads from a project to its sessions and a press
 posts an anchor replying to the last message the session left; that `/usage`
 answers from the status lines with the context of the session a message would reach;
 that a prompt queued during a turn gets a thread of its
