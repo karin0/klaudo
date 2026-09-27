@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -96,7 +96,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -106,7 +106,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -116,7 +116,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec klaude"
+            "command": "exec klaudo"
           }
         ]
       }
@@ -124,6 +124,6 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "exec klaude status"
+    "command": "exec klaudo status"
   }
 }

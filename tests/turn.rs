@@ -19,7 +19,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// How long a test waits for what follows the call it was watching for, so a rewrite or
 /// a deletion issued right after the answer is part of what it reads.
 const GRACE: Duration = Duration::from_millis(600);
-/// The chat is a group, so the chat and the user klaude answers are two ids. The user's
+/// The chat is a group, so the chat and the user klaudo answers are two ids. The user's
 /// private chat with the bot has the user's id. This repository is the project listed
 /// for the group, so a session opened here posts there.
 const GROUP: i64 = -1001;
@@ -484,7 +484,7 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
 }
 
 /// A message that replies to nothing still names a session: the one heard from last in
-/// the chat it was sent in. These sessions run outside tmux, so what klaude says back
+/// the chat it was sent in. These sessions run outside tmux, so what klaudo says back
 /// names where the message went and the terminal that session is on. A reply to a
 /// message that names no session goes nowhere.
 #[test]
@@ -495,7 +495,7 @@ fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat
     let resident = resident(root);
 
     // The later session sorts first, so what answers is the one heard from last
-    // rather than the first one klaude happens to hold. The throwaway root is outside
+    // rather than the first one klaudo happens to hold. The throwaway root is outside
     // `CHAT_PROJECTS`, so the session there, heard from last of all, is the private
     // chat's.
     for (session, cwd) in [
@@ -577,9 +577,9 @@ fn a_topic_holds_its_own_conversations() {
         .expect("a clock after 1970")
         .as_millis();
     // The session last posted in topic 77 of the group, and its process is the test.
-    std::fs::create_dir_all(root.join("run/klaude")).expect("runtime directory");
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
     std::fs::write(
-        root.join("run/klaude/state.json"),
+        root.join("run/klaudo/state.json"),
         json!({
             "sessions": [{
                 "id": session,
@@ -660,9 +660,9 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
         .expect("a clock after 1970")
         .as_millis();
     // The session started in the terminal and has posted nothing yet.
-    std::fs::create_dir_all(root.join("run/klaude")).expect("runtime directory");
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
     std::fs::write(
-        root.join("run/klaude/state.json"),
+        root.join("run/klaudo/state.json"),
         json!({
             "sessions": [{
                 "id": "0123456789abcdef",
@@ -723,7 +723,7 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
         }),
     ] {
         let mut passing = within(root, "sh");
-        passing.args(["-c", "\"$0\"; true", env!("CARGO_BIN_EXE_klaude")]);
+        passing.args(["-c", "\"$0\"; true", env!("CARGO_BIN_EXE_klaudo")]);
         report(passing, &event);
     }
 
@@ -773,7 +773,7 @@ fn what_the_resident_knows_outlives_a_restart() {
         call.markdown.starts_with("no session is running here")
     });
     drop(resident);
-    std::fs::remove_file(root.join("run/klaude/listen.sock")).expect("the old socket");
+    std::fs::remove_file(root.join("run/klaudo/listen.sock")).expect("the old socket");
     let resident = self::resident(root);
 
     chat.replies(
@@ -810,7 +810,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
 
     // The hook's parent is the session, and this shell exits once the hook has.
     let mut passing = within(root, "sh");
-    passing.args(["-c", "\"$0\"; true", env!("CARGO_BIN_EXE_klaude")]);
+    passing.args(["-c", "\"$0\"; true", env!("CARGO_BIN_EXE_klaudo")]);
     report(
         passing,
         &json!({
@@ -878,8 +878,8 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
     assert_eq!(
         windows,
         [
-            window("new-session -d -s klaude", "0123456789abcdef"),
-            window("new-window -t =klaude:", "fedcba9876543210"),
+            window("new-session -d -s klaudo", "0123456789abcdef"),
+            window("new-window -t =klaudo:", "fedcba9876543210"),
         ]
     );
 
@@ -967,7 +967,7 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     assert!(made.iter().any(|call| call.label == "answerCallbackQuery"));
 
     // The group's menu holds only the project posting there.
-    chat.says(GROUP, OWNER, "/new@klaude_bot");
+    chat.says(GROUP, OWNER, "/new@klaudo_bot");
     let made = collect(&calls, |call| call.label == "sendMessage");
     let menu = made.last().expect("the menu");
     assert_eq!(
@@ -1062,7 +1062,7 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
     drop(resident);
 }
 
-/// What the chat is left holding: every message klaude sent, in the order it sent them,
+/// What the chat is left holding: every message klaudo sent, in the order it sent them,
 /// carrying its last rewrite, without the ones it took back. Each is the sound it
 /// arrived with and its body under the head.
 fn holding(made: &[Call]) -> Vec<(&'static str, String)> {
@@ -1088,7 +1088,7 @@ fn holding(made: &[Call]) -> Vec<(&'static str, String)> {
             }
             "editMessageText" => {
                 let target = call.target.expect("a message to rewrite");
-                held.get_mut(&target).expect("a message klaude sent").1 = body(call);
+                held.get_mut(&target).expect("a message klaudo sent").1 = body(call);
             }
             "deleteMessage" => {
                 let target = call.target.expect("a message to take back");
@@ -1191,17 +1191,17 @@ fn showing(markdown: &str, text: &str) {
 }
 
 /// A throwaway root holding the runtime directory the resident binds its socket in and
-/// the credentials file every klaude process started from it reads, so a machine's own
+/// the credentials file every klaudo process started from it reads, so a machine's own
 /// credentials stay out of the test. It is removed when the test drops it, which a
 /// failing test does too.
 fn prepare(name: &str, port: u16) -> TempDir {
     let temporary = tempfile::Builder::new()
-        .prefix(&format!("klaude-{name}-"))
+        .prefix(&format!("klaudo-{name}-"))
         .tempdir()
         .expect("throwaway root");
     let root = temporary.path();
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
-    // A window klaude opens goes to a `tmux` that records how it was called, so a test
+    // A window klaudo opens goes to a `tmux` that records how it was called, so a test
     // never reaches the tmux server of the machine it runs on. Its session exists once a
     // `new-session` has been recorded.
     std::fs::create_dir_all(root.join("bin")).expect("binary directory");
@@ -1213,9 +1213,9 @@ fn prepare(name: &str, port: u16) -> TempDir {
     .expect("a recording tmux");
     std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755))
         .expect("an executable tmux");
-    std::fs::create_dir_all(root.join("config/klaude")).expect("configuration directory");
+    std::fs::create_dir_all(root.join("config/klaudo")).expect("configuration directory");
     std::fs::write(
-        root.join("config/klaude/env"),
+        root.join("config/klaudo/env"),
         format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nCHAT_PROJECTS={}\nAPI_BASE=http://127.0.0.1:{port}\n", env!("CARGO_MANIFEST_DIR")),
     )
     .expect("credentials");
@@ -1233,17 +1233,17 @@ impl Drop for Resident {
 }
 
 fn resident(root: &Path) -> Resident {
-    let child = klaude(root)
+    let child = klaudo(root)
         .arg("listen")
         .spawn()
         .expect("run the resident");
-    let socket = root.join("run/klaude/listen.sock");
+    let socket = root.join("run/klaudo/listen.sock");
     wait_for(|| socket.exists(), "the resident never bound its socket");
     Resident(child)
 }
 
-fn klaude(root: &Path) -> Command {
-    within(root, env!("CARGO_BIN_EXE_klaude"))
+fn klaudo(root: &Path) -> Command {
+    within(root, env!("CARGO_BIN_EXE_klaudo"))
 }
 
 /// Both directories the binary resolves what it needs from point into the throwaway
@@ -1266,7 +1266,7 @@ fn within(root: &Path, program: &str) -> Command {
 }
 
 fn hook(root: &Path, event: &serde_json::Value) {
-    report(klaude(root), event);
+    report(klaudo(root), event);
 }
 
 /// The last answer with how long ago each figure was reported left out, which is as long
@@ -1295,7 +1295,7 @@ fn ageless(made: &[Call]) -> String {
 
 /// What Claude Code hands a session's status line.
 fn status(root: &Path, input: &serde_json::Value) {
-    let mut command = klaude(root);
+    let mut command = klaudo(root);
     command.arg("status");
     report(command, input);
 }
@@ -1349,7 +1349,7 @@ impl Chat {
         self.replies(chat, sender, text, &serde_json::Value::Null);
     }
 
-    /// A reply to `replied`, a message klaude posted as Telegram hands it back.
+    /// A reply to `replied`, a message klaudo posted as Telegram hands it back.
     fn replies(&self, chat: i64, sender: i64, text: &str, replied: &serde_json::Value) {
         self.push(json!({
             "chat": {"id": chat},
@@ -1404,7 +1404,7 @@ impl Chat {
             .push(json!({"update_id": 1, "message": message}));
     }
 
-    /// A press on a button of `menu`, a menu klaude posted or rewrote, as Telegram hands
+    /// A press on a button of `menu`, a menu klaudo posted or rewrote, as Telegram hands
     /// it back.
     fn presses(&self, sender: i64, menu: &Call, data: &str) {
         self.0.lock().expect("the chat").push(json!({
@@ -1532,18 +1532,18 @@ fn form(body: &str, boundary: &str) -> serde_json::Value {
 }
 
 /// A call the binary cannot act on says how to call it, the help of the binary ends with
-/// how `klaude send` is called, and a file that is not there is named, both without a
+/// how `klaudo send` is called, and a file that is not there is named, both without a
 /// panic.
 #[test]
 fn the_command_line_explains_itself() {
     let temporary = prepare("usage", 0);
     let root = temporary.path();
-    let run = |args: &[&str]| klaude(root).args(args).output().expect("run klaude");
+    let run = |args: &[&str]| klaudo(root).args(args).output().expect("run klaudo");
 
     for (asked, usage) in [
-        (&["--help"][..], "Usage: klaude [COMMAND]"),
-        (&["-h"], "Usage: klaude [COMMAND]"),
-        (&["send", "--help"], "Usage: klaude send <FILES>..."),
+        (&["--help"][..], "Usage: klaudo [COMMAND]"),
+        (&["-h"], "Usage: klaudo [COMMAND]"),
+        (&["send", "--help"], "Usage: klaudo send <FILES>..."),
     ] {
         let help = run(asked);
         assert!(help.status.success(), "{asked:?}");
@@ -1554,7 +1554,7 @@ fn the_command_line_explains_itself() {
     }
     let help = run(&["--help"]);
     assert!(
-        String::from_utf8_lossy(&help.stdout).contains("\n\nUsage: klaude send <FILES>...\n\n"),
+        String::from_utf8_lossy(&help.stdout).contains("\n\nUsage: klaudo send <FILES>...\n\n"),
         "{help:?}"
     );
 
@@ -1574,16 +1574,16 @@ fn the_command_line_explains_itself() {
     assert_eq!(missing.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&missing.stderr),
-        "klaude: /definitely/not/here: No such file or directory (os error 2)\n"
+        "klaudo: /definitely/not/here: No such file or directory (os error 2)\n"
     );
 
     // Nothing is listening in this root, which is what a stopped resident looks like.
     let alone = run(&["send", path]);
     assert_eq!(alone.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaude: the resident at "));
+    assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaudo: the resident at "));
 }
 
-/// The commands klaude answers are listed in the command menu of each chat, for the user
+/// The commands klaudo answers are listed in the command menu of each chat, for the user
 /// alone.
 #[test]
 fn the_commands_are_listed_for_the_user_in_both_chats() {
@@ -1685,7 +1685,7 @@ fn usage_is_answered_from_the_status_lines() {
     chat.replies(
         OWNER,
         OWNER,
-        "/usage@klaude_bot",
+        "/usage@klaudo_bot",
         &json!({
             "text": "a bbbbbbbb\n\ncontext: nothing has been sent yet",
             "entities": [{"type": "bold", "offset": 0, "length": 1}, {"type": "code", "offset": 2, "length": 8}],
@@ -1806,7 +1806,7 @@ fn clock(unix: u64) -> String {
 }
 
 /// Files a session sends land in the thread of the turn that sent them, below what the
-/// turn has said, as an album in the order they were named, and `klaude send` exits with
+/// turn has said, as an album in the order they were named, and `klaudo send` exits with
 /// how the uploads went.
 #[test]
 fn a_file_a_turn_sends_lands_in_its_thread() {
@@ -1830,7 +1830,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     std::fs::write(&file, "all green").expect("the file to send");
     let other = root.join("test.log");
     std::fs::write(&other, "all passed").expect("the file to send");
-    let sent = klaude(root)
+    let sent = klaudo(root)
         .args(["send".as_ref(), file.as_os_str(), other.as_os_str()])
         .env("CLAUDE_CODE_SESSION_ID", session)
         .output()
@@ -1865,8 +1865,8 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert_eq!(media[0]["parse_mode"], json!("HTML"));
     assert_eq!(media[1].get("caption"), None);
 
-    // A session klaude has never heard from has no thread to post in.
-    let refused = klaude(root)
+    // A session klaudo has never heard from has no thread to post in.
+    let refused = klaudo(root)
         .args(["send".as_ref(), file.as_os_str()])
         .env("CLAUDE_CODE_SESSION_ID", "ffffffff")
         .output()
@@ -1874,12 +1874,12 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert!(!refused.status.success(), "send to nowhere succeeded");
     assert_eq!(
         String::from_utf8_lossy(&refused.stderr),
-        "klaude: session ffffffff has not reported to klaude\n"
+        "klaudo: session ffffffff has not reported to klaudo\n"
     );
 
     // Run outside Claude Code, it names no session, and the directory it runs in is no
     // project listed for the group, so the file goes to the user's private chat.
-    let bare = klaude(root)
+    let bare = klaudo(root)
         .args(["send".as_ref(), file.as_os_str()])
         .current_dir(root)
         .output()
@@ -1895,7 +1895,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
 }
 
 /// A message's last flushes race the hook of the tool call that ends it, so a delta can
-/// land after klaude has already posted that message, carrying a paragraph rather than
+/// land after klaudo has already posted that message, carrying a paragraph rather than
 /// a few characters. A tool reports late for the same reason, once the run holding it
 /// is a message. Both belong in the message their segment became.
 #[test]

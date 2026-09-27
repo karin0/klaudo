@@ -7,12 +7,12 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-/// The tmux session that holds the windows klaude opens for conversations started from
-/// the chat, so one `tmux attach -t klaude` reaches all of them.
-const OWNED_SESSION: &str = "klaude";
-/// Named rather than the default buffer, so a paste klaude issues cannot consume what
+/// The tmux session that holds the windows klaudo opens for conversations started from
+/// the chat, so one `tmux attach -t klaudo` reaches all of them.
+const OWNED_SESSION: &str = "klaudo";
+/// Named rather than the default buffer, so a paste klaudo issues cannot consume what
 /// the user copied.
-const BUFFER: &str = "klaude";
+const BUFFER: &str = "klaudo";
 /// The kernel registers all 2^20 pseudo-terminals under this one major, so a minor is
 /// the number under `/dev/pts`.
 const PTS_MAJOR: u32 = 136;
@@ -102,7 +102,7 @@ impl Pane {
             .args(["paste-buffer", "-b", BUFFER, "-t", &self.id, "-p", "-d"]))
     }
 
-    /// What the pane is showing, for reporting a session that stopped where klaude
+    /// What the pane is showing, for reporting a session that stopped where klaudo
     /// cannot type, such as the dialog that asks whether a folder is trusted.
     pub fn screen(&self) -> Option<String> {
         let output = self
@@ -194,8 +194,8 @@ mod tests {
 
     #[test]
     fn a_pane_takes_its_server_from_the_first_field_of_tmux() {
-        let pane = Pane::new("/tmp/tmux-1000/klaudeprobe,153856,0", "%0");
-        assert_eq!(pane.server, "/tmp/tmux-1000/klaudeprobe");
+        let pane = Pane::new("/tmp/tmux-1000/klaudoprobe,153856,0", "%0");
+        assert_eq!(pane.server, "/tmp/tmux-1000/klaudoprobe");
         assert_eq!(pane.id, "%0");
     }
 
@@ -244,7 +244,7 @@ mod tests {
     /// submitted rather than only that the text arrived.
     #[test]
     fn a_reply_submits_in_a_pane_the_reader_left_in_copy_mode() {
-        let socket = std::env::temp_dir().join(format!("klaude-test-{}", std::process::id()));
+        let socket = std::env::temp_dir().join(format!("klaudo-test-{}", std::process::id()));
         let tmux = |args: &[&str]| {
             let output = Command::new("tmux")
                 .arg("-S")

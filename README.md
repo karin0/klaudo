@@ -1,15 +1,18 @@
-# klaude
+# Klaŭdo
 
 Carries a Claude Code session's turns to a Telegram private chat or group and carries
 what you type there back into the session's terminal, so a long turn can be left alone, picked up
 from the phone, and answered from there.
+
+Klaŭdo is Esperanto for Claude. Its commands, paths and names in the system are spelled
+`klaudo`, the Esperanto h-system's spelling of ŭ as u.
 
 ## What lands in the chat
 
 A turn opens with the prompt, quoted and without a sound, so a chat scrolled through
 tells the asks from the answers by their shape alone. Every message the turn sends
 afterwards is a Telegram reply to that one, so a chat that collects many turns reads as
-a thread per turn. A prompt klaude typed is already in the chat as the message that
+a thread per turn. A prompt klaudo typed is already in the chat as the message that
 asked for it, and its turn threads under that message. A prompt deleted from the chat
 leaves the rest of its turn arriving as messages of their own.
 
@@ -55,7 +58,7 @@ as markdown. A description reads as the sentence it is, and so does every other 
 a person or a tool wrote, its markdown characters escaped on the way out. What Claude
 Code answered is markdown and reads as markdown.
 
-Telegram's message drafts do the same job in one call, and klaude was built on them
+Telegram's message drafts do the same job in one call, and klaudo was built on them
 first. A draft is ephemeral: it expires thirty seconds after its last frame, no method
 retires it, and sending the message it was previewing leaves it standing. Clients differ
 on what happens when the message arrives beside it, from a clean transition to a
@@ -69,7 +72,7 @@ no message, so nothing orders the two. Those words therefore reach the chat belo
 the call joined. Words Claude Code shows as narration are a thinking block in the
 transcript, fire no `MessageDisplay`, and stay out of the chat.
 
-A flush later than that lands after klaude has posted the message it belongs to, and a
+A flush later than that lands after klaudo has posted the message it belongs to, and a
 tool can report once the run holding it is already a message. Both are written into the
 message their segment became, which is why a turn keeps its segments and the message
 each of them turned into until it ends.
@@ -118,7 +121,7 @@ message is a few thousand characters of one paragraph.
 ## What you can send
 
 What a message replies to is where it goes. A message replying to nothing goes to the
-session klaude heard from last among those in the chat and topic it was sent in, and the
+session klaudo heard from last among those in the chat and topic it was sent in, and the
 turn it starts threads under it, whose head names the session that took it. A session is
 where its running turn is posted, and between turns in its project's chat, in the topic
 its last message there went to. So a project listed for one chat stays out of reach of
@@ -150,8 +153,8 @@ so a chat scrolled back shows which asks were accepted.
 `/new <directory>` posts an anchor naming that directory and starts nothing, and so
 does `/new@<bot> <directory>`, which is how a group's command menu writes it. Replying to
 the anchor opens a window running `claude` there and types the reply as its first
-prompt. Those windows live in a tmux session called `klaude`, one window per
-conversation, so `tmux attach -t klaude` reaches a conversation that began on the phone.
+prompt. Those windows live in a tmux session called `klaudo`, one window per
+conversation, so `tmux attach -t klaudo` reaches a conversation that began on the phone.
 
 Every anchor carries Telegram's `ForceReply`, so a client opens the reply box on it as it
 arrives, with where the reply goes as the placeholder, and the next message typed
@@ -205,22 +208,22 @@ into a dialog. Answer that once locally and the directory stays trusted.
 
 Only one person is answered: a message is acted on when `USER_ID` sent it, in `CHAT_ID`
 or in that person's private chat with the bot. A turn a message started is posted in
-the chat and topic the message came from, and so is whatever klaude says back to a message; a
+the chat and topic the message came from, and so is whatever klaudo says back to a message; a
 turn started in the terminal goes to `CHAT_ID` when its project is listed in
 `CHAT_PROJECTS`, and to the private chat otherwise. In a group, a bot in Telegram's default privacy mode receives only commands
-and replies to its own messages, so a message replying to nothing reaches klaude only
+and replies to its own messages, so a message replying to nothing reaches klaudo only
 once privacy mode is turned off with BotFather's `/setprivacy` or the bot is made an
 admin. A channel is not supported: a post there carries no sender to check.
 
 ## Topics
 
 A private chat with the bot is split into topics once topic mode is on for the bot in
-BotFather, and a group is when it is a forum. The user creates the topics. Every message klaude sends names the topic of
+BotFather, and a group is when it is a forum. The user creates the topics. Every message klaudo sends names the topic of
 the message it answers or of the session it comes from, because Telegram puts a message
 naming no topic outside every topic, even one replying to a message inside a topic, and
 drops the reply from a message that replies into another topic. A message in a forum's
 topic that replies to nothing arrives replying to the service message that opened the
-topic, which klaude reads as replying to nothing. A private chat in topic mode takes no
+topic, which klaudo reads as replying to nothing. A private chat in topic mode takes no
 message outside every topic: one sent there opens a topic of its own, and the service
 message opening it marks the name as implicit. A message replying to nothing in such a
 topic, when no session is there, goes to the session heard from last outside every
@@ -232,15 +235,15 @@ so the conversation it starts stays there.
 
 ## Sending a file
 
-`klaude send <file>...` posts the files as documents in the thread of the turn that ran
+`klaudo send <file>...` posts the files as documents in the thread of the turn that ran
 the command, below what the turn has said so far, and where the session is between
 turns. Up to ten files form one album, whose first document alone
 carries the caption, so a reply to that one reaches the session. Claude Code puts
 `CLAUDE_CODE_SESSION_ID` in the environment of every command it runs, which is how the
 command finds its session. Run anywhere else, the command sends the files without a
 caption to the chat of the directory it runs in. It is the one command run by hand,
-so `klaude --help` says so and ends with its usage, and a line in
-`~/.claude/CLAUDE.md` pointing at `klaude --help` is enough for Claude to learn it.
+so `klaudo --help` says so and ends with its usage, and a line in
+`~/.claude/CLAUDE.md` pointing at `klaudo --help` is enough for Claude to learn it.
 
 The command checks every path, asks the resident once where the files go and uploads
 them itself, so a mistyped path posts nothing, the exit status says whether every file
@@ -261,7 +264,7 @@ reply to the captioned file reaches the session like a reply to any message of t
 Claude Code's own local messaging socket delivers text to a running session too, and
 what arrives there is labelled as coming from another Claude session, carrying the
 instruction to treat it as a peer's request and never as the user's approval. That is a
-deliberate guardrail against permission laundering, so klaude does not go through it.
+deliberate guardrail against permission laundering, so klaudo does not go through it.
 `send-keys` reaches the input box, which is the path a person's own typing takes, so the
 prompt is the user's because the keystrokes are.
 
@@ -281,14 +284,14 @@ window its output appears in belongs to the session that launched it.
 
 ## Hooks
 
-One command, `exec klaude`, answers every event. `settings.json` runs it under each event
-klaude handles and runs `klaude status` as the status line, to be merged into
-`~/.claude/settings.json`. The command finds the binary on `PATH`, so klaude is
-installed as `/usr/local/bin/klaude`, a directory on the `PATH` Claude Code runs hooks
+One command, `exec klaudo`, answers every event. `settings.json` runs it under each event
+klaudo handles and runs `klaudo status` as the status line, to be merged into
+`~/.claude/settings.json`. The command finds the binary on `PATH`, so klaudo is
+installed as `/usr/local/bin/klaudo`, a directory on the `PATH` Claude Code runs hooks
 with. The `Notification` matcher names the notifications that ask for you; an idle
 prompt or a finished auth is left out.
 
-The hook writes the event to the unix datagram socket `$XDG_RUNTIME_DIR/klaude/listen.sock`
+The hook writes the event to the unix datagram socket `$XDG_RUNTIME_DIR/klaudo/listen.sock`
 and exits. `$XDG_RUNTIME_DIR` belongs to the user alone, and a session without it
 reaches no resident: its hooks post for themselves, and the resident refuses to start. Along with the event it
 carries `$TMUX`, `$TMUX_PANE` and its own parent process id, which is where the resident
@@ -297,7 +300,7 @@ hands the shell Claude Code starts the command in over to the binary, which leav
 session as the parent the binary reports.
 
 The status line is the one place Claude Code reports a session's context and the plan's
-limits. `klaude status` forwards its input to the same socket and prints nothing, so the
+limits. `klaudo status` forwards its input to the same socket and prints nothing, so the
 line under the input box stays empty.
 
 `SessionStart` fires once the session is ready for input, after the trust dialog, so it
@@ -307,14 +310,14 @@ chat knows when to type its first prompt.
 ## Configuration
 
 `BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` and `CHAT_PROJECTS` come from
-`$XDG_CONFIG_HOME/klaude/env`, which defaults to `~/.config/klaude/env`. That file is the whole of where they come from, so a token
+`$XDG_CONFIG_HOME/klaudo/env`, which defaults to `~/.config/klaudo/env`. That file is the whole of where they come from, so a token
 changed there is the token every session uses from its next event on, and a value
 exported in a shell reaches nothing. A file that cannot be read, or a name missing from
 it, stops the process and names the file. `CHAT_ID` is the integer id of the chat, and
-`USER_ID` is the integer id of the person klaude answers. A private chat's id is its person's id, so `USER_ID` defaults to
+`USER_ID` is the integer id of the person klaudo answers. A private chat's id is its person's id, so `USER_ID` defaults to
 `CHAT_ID`. A group's id is negative, and a group `CHAT_ID` without `USER_ID` stops the
-process. A message klaude ignores is logged with its chat's id and title
-and its sender's id, so `journalctl --user -u klaude` after a message sent in a group
+process. A message klaudo ignores is logged with its chat's id and title
+and its sender's id, so `journalctl --user -u klaudo` after a message sent in a group
 shows the ids to write here.
 
 `CHAT_PROJECTS` lists the projects whose turns started in the terminal go to `CHAT_ID`,
@@ -334,12 +337,12 @@ as Telegram sent it, which shows the fields a message carries.
 `API_BASE` is optional and defaults to `https://api.telegram.org`; the test writes it
 into a file of its own, pointing at a server of its own.
 
-`klaude.service` runs the resident and reads the same file:
+`klaudo.service` runs the resident and reads the same file:
 
 ```sh
-sudo ln -s "$PWD/target/release/klaude" /usr/local/bin/klaude
-mkdir -p ~/.config/klaude && ln -s <secrets file> ~/.config/klaude/env
-systemctl --user enable --now "$PWD/klaude.service"
+sudo ln -s "$PWD/target/release/klaudo" /usr/local/bin/klaudo
+mkdir -p ~/.config/klaudo && ln -s <secrets file> ~/.config/klaudo/env
+systemctl --user enable --now "$PWD/klaudo.service"
 ```
 
 The link points at the release build, so rebuilding updates what the hooks and the
@@ -350,7 +353,7 @@ unit run.
 The `MessageDisplay` hook runs on every flush of streamed text and the terminal draws
 that text only once the hook returns, so nothing that touches the network can happen in
 the hook process. That budget is why the hook is a compiled binary: on the machine
-klaude was written for, the shell scripts it replaced cost 9.4 ms per invocation,
+klaudo was written for, the shell scripts it replaced cost 9.4 ms per invocation,
 against 0.5 ms for the same handoff.
 
 The process at the other end runs for as long as the machine does, one per machine.
@@ -389,7 +392,7 @@ the chat within that time.
 
 Where each session is, when it was last heard from, and where and when each exited one ran,
 along with the latest prompt of each and the last message it left in the chat with its topic, are
-written to `$XDG_RUNTIME_DIR/klaude/state.json` after every event but streamed text and
+written to `$XDG_RUNTIME_DIR/klaudo/state.json` after every event but streamed text and
 tool calls, and read back when the resident starts. A session idle through a restart
 sends nothing until its next prompt, so without this file a message from the chat would
 find no session until then. Writing as the state changes keeps it through a crash, and
@@ -431,7 +434,7 @@ holds up the call it announces until the hook returns.
 lint levels live in `Cargo.toml`, so a bare `cargo clippy` and whatever an editor runs
 in the background enforce the same set rather than only this script.
 
-The release build is what the hook runs, so `systemctl --user restart klaude` belongs
+The release build is what the hook runs, so `systemctl --user restart klaudo` belongs
 after it: the resident keeps the image it started with, and a hook newer than the
 resident forwards events the resident has no arm for, which reach the chat as the
 verbatim report an unrecognised event falls back to.
@@ -455,10 +458,10 @@ follows them; that a delta landing after its own `Stop` leaves the answer last; 
 flush and a
 tool outcome arriving after their segment went out rewrite that message; that a turn
 whose session was killed stops reading as running with no further event; that a file
-`klaude send` posts the files it names as an album in order, replying to the prompt of its turn, one from a session klaude has not
+`klaudo send` posts the files it names as an album in order, replying to the prompt of its turn, one from a session klaudo has not
 heard from fails the command, and one sent outside Claude Code from a directory not in
 `CHAT_PROJECTS` goes to the private chat; that the commands are listed for the user in both chats; that `--help` and a call the binary cannot
-act on print the usage, `klaude --help` ending with how `klaude send` is called, and a missing file or a stopped resident is named without a
+act on print the usage, `klaudo --help` ending with how `klaudo send` is called, and a missing file or a stopped resident is named without a
 panic; that an idle session and an exited one stay reachable after the resident is
 killed and started again; that a message in a topic reaches only a session posting
 there, is answered in that topic, and in a topic with an implicit name that holds no
