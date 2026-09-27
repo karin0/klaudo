@@ -58,6 +58,11 @@ impl Pane {
         (output.status.success() && !tty.is_empty()).then_some(tty)
     }
 
+    /// False once the pane has closed, as a window does when its command exits.
+    pub fn open(&self) -> bool {
+        self.tty().is_some()
+    }
+
     /// True while this pane is still showing the session that claimed it. A session
     /// that exited leaves its pane to a shell, where the same text would run as a
     /// command, so this is checked before every delivery.
@@ -119,10 +124,10 @@ impl Pane {
     }
 }
 
-/// Opens a window running a session in `cwd`, the one `resume` names or a new one. The
-/// pane it lands in is learned from that session's own `SessionStart`, which is also
-/// what says the session is ready to type into, so nothing here waits for it.
-pub fn open(cwd: &Path, resume: Option<&str>) -> Result<(), String> {
+/// Opens a window running a session in `cwd`, the one `resume` names or a new one, and
+/// returns its pane. That session's own `SessionStart` says it is ready to type into,
+/// so nothing here waits for it.
+pub fn open(cwd: &Path, resume: Option<&str>) -> Result<Pane, String> {
     let exact = format!("={OWNED_SESSION}");
     // `new-session -A` attaches to a session already there even with `-d`, and this
     // process has no terminal to attach with, so the first window opens the session.
@@ -141,9 +146,17 @@ pub fn open(cwd: &Path, resume: Option<&str>) -> Result<(), String> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("claude");
-    run(command
+    let output = command
+        .args(["-P", "-F", "#{pane_id} #{socket_path}"])
         .args(["-c", directory, "-n", name, "claude"])
-        .args(resume.map(|id| ["--resume", id]).into_iter().flatten()))
+        .args(resume.map(|id| ["--resume", id]).into_iter().flatten())
+        .output()
+        .map_err(|error| format!("tmux: {error}"))?;
+    let printed = String::from_utf8_lossy(&output.stdout);
+    match printed.trim_end().split_once(' ') {
+        Some((pane, server)) if output.status.success() => Ok(Pane::new(server, pane)),
+        _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+    }
 }
 
 fn pieces(text: &str) -> Vec<&str> {
