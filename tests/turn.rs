@@ -804,6 +804,8 @@ struct Call {
     /// The message the call acts on, for a rewrite or a deletion.
     target: Option<i64>,
     chat: Option<i64>,
+    /// The whole request, for what the fields above leave out.
+    body: serde_json::Value,
     /// What the server answered with, which is what a later message replies to.
     id: i64,
 }
@@ -1091,6 +1093,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
                 reply: body["reply_parameters"].clone(),
                 target: body["message_id"].as_i64(),
                 chat: body["chat_id"].as_i64(),
+                body: body.clone(),
                 id,
             })
             .expect("record");
@@ -1169,6 +1172,35 @@ fn the_command_line_explains_itself() {
     assert!(String::from_utf8_lossy(&alone.stderr).starts_with("klaude: the resident at "));
 }
 
+/// The commands klaude answers are listed in the command menu of each chat, for the user
+/// alone.
+#[test]
+fn the_commands_are_listed_for_the_user_in_both_chats() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("commands", port);
+    let resident = resident(temporary.path());
+
+    let made = collect(&calls, |call| call.body["scope"]["type"] == "chat_member");
+    let registered: Vec<_> = made
+        .iter()
+        .filter(|call| call.label == "setMyCommands")
+        .collect();
+    assert!(
+        registered
+            .iter()
+            .all(|call| call.body["commands"][0]["command"] == "new")
+    );
+    let scopes: Vec<_> = registered.iter().map(|call| &call.body["scope"]).collect();
+    assert_eq!(
+        scopes,
+        [
+            &json!({"type": "chat", "chat_id": OWNER}),
+            &json!({"type": "chat_member", "chat_id": GROUP, "user_id": OWNER}),
+        ]
+    );
+    drop(resident);
+}
+
 /// A file a session sends lands in the thread of the turn that sent it, below what the
 /// turn has said, and `klaude send` exits with how the upload went.
 #[test]
@@ -1203,7 +1235,11 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
     assert_eq!(document.label, "sendDocument silent");
     assert_eq!(document.document.as_deref(), Some("all green"));
     assert_eq!(document.chat, Some(GROUP));
-    assert_eq!(document.reply, replying_to(made[0].id));
+    let prompt = made
+        .iter()
+        .find(|call| call.label.starts_with("sendRichMessage"))
+        .expect("the prompt");
+    assert_eq!(document.reply, replying_to(prompt.id));
     assert!(
         document
             .markdown
