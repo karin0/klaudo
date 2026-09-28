@@ -1,7 +1,7 @@
 //! What status lines report of the context and the plan's limits, which `/usage` and
 //! the answer closing a turn show.
 
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,7 +10,7 @@ use crate::hook;
 use crate::telegram::Place;
 
 use super::chat::{NEW, ago};
-use super::{Machine, unix_millis};
+use super::{Machine, now_millis};
 
 /// What Claude Code hands a session's status line, as `klaudo status` forwards it. Both
 /// parts are absent until the session's first API call returns.
@@ -57,7 +57,7 @@ impl Machine {
     /// A status line reports whenever the session redraws it, which is too often for the
     /// state file and cheap to wait for again after a restart.
     pub(super) fn status(&mut self, status: Status) {
-        let now = unix_millis(SystemTime::now()) / 1000;
+        let now = now_millis() / 1000;
         if let Some(limits) = status.rate_limits {
             self.limits = Some((limits, now));
         }
@@ -83,7 +83,7 @@ impl Machine {
                 .iter()
                 .find(|(id, _)| id.starts_with(&address))
         });
-        let now = unix_millis(SystemTime::now()) / 1000;
+        let now = now_millis() / 1000;
         let mut rows = Vec::new();
         let mut ages = Vec::new();
         if let Some((_, session)) = reached {
@@ -192,7 +192,7 @@ pub(super) fn status_line(
     window: Option<&(Window, u64)>,
     limits: Option<&(Limits, u64)>,
 ) -> Option<String> {
-    let now = unix_millis(SystemTime::now()) / 1000;
+    let now = now_millis() / 1000;
     let context = window.and_then(|(window, _)| {
         let usage = window.current_usage.as_ref()?;
         Some(format!(

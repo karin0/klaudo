@@ -122,7 +122,7 @@ pub fn run() {
             .sessions
             .into_iter()
             .map(|Running { known, pid, pane }| {
-                let mut session = Session::new(known.dir, pid, pane, instant(known.seen));
+                let mut session = Session::new(known.dir, pid, pane, known.seen);
                 session.trail = known.trail;
                 (known.id, session)
             })
@@ -190,10 +190,7 @@ fn acquire(lock: &File) -> bool {
 fn poll(target: &Path) {
     let telegram = Telegram::new();
     telegram.register(COMMANDS);
-    let started = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_secs();
+    let started = now_millis() / 1000;
     let socket = UnixDatagram::unbound().expect("socket");
     let mut offset = 0;
     loop {
@@ -242,8 +239,8 @@ struct Session {
     /// The turn that finished most recently, so its stragglers do not open it again.
     done: Option<String>,
     /// When this session was last heard from, which is what an unaddressed message from
-    /// the chat is delivered by.
-    seen: Instant,
+    /// the chat is delivered by, in Unix milliseconds.
+    seen: u64,
     trail: Trail,
     /// The context its status line last reported, and when, in Unix seconds.
     window: Option<(Window, u64)>,
@@ -258,7 +255,7 @@ struct Trail {
 }
 
 impl Session {
-    fn new(dir: PathBuf, pid: u32, pane: Option<Pane>, seen: Instant) -> Self {
+    fn new(dir: PathBuf, pid: u32, pane: Option<Pane>, seen: u64) -> Self {
         Self {
             dir,
             pid,
@@ -356,17 +353,13 @@ fn load(path: &Path) -> Saved {
     })
 }
 
-fn unix_millis(at: SystemTime) -> u64 {
-    at.duration_since(UNIX_EPOCH).map_or(0, |since| {
-        u64::try_from(since.as_millis()).expect("a date before 2^64 ms")
-    })
-}
-
-/// The moment `unix_millis` names, on this process's clock.
-fn instant(millis: u64) -> Instant {
-    let age = unix_millis(SystemTime::now()).saturating_sub(millis);
-    let now = Instant::now();
-    now.checked_sub(Duration::from_millis(age)).unwrap_or(now)
+/// The time now in Unix milliseconds.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).expect("a date before 2^64 ms")
+        })
 }
 
 /// What the chat asked, waiting for the session of the window the daemon opened for it.
@@ -412,11 +405,11 @@ impl Machine {
             self.ended.retain(|ended| ended.id != id);
         }
         let session = self.sessions.entry(id.clone()).or_insert_with(|| {
-            Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), Instant::now())
+            Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), now_millis())
         });
         session.pid = pid;
         session.pane = pane;
-        session.seen = Instant::now();
+        session.seen = now_millis();
         if let Some(directory) = directory {
             session.dir = directory;
         }
@@ -447,7 +440,6 @@ impl Machine {
     }
 
     fn save(&self) {
-        let now = SystemTime::now();
         let saved = Saved {
             sessions: self
                 .sessions
@@ -456,7 +448,7 @@ impl Machine {
                     known: Known {
                         id: id.clone(),
                         dir: session.dir.clone(),
-                        seen: unix_millis(now - session.seen.elapsed()),
+                        seen: session.seen,
                         trail: session.trail.clone(),
                     },
                     pid: session.pid,
@@ -599,7 +591,7 @@ impl Machine {
         self.ended.push_back(Known {
             id: id.to_owned(),
             dir: session.dir,
-            seen: unix_millis(SystemTime::now() - session.seen.elapsed()),
+            seen: session.seen,
             trail: session.trail,
         });
         if self.ended.len() > ENDED_MAX {

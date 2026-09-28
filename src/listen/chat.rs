@@ -1,7 +1,7 @@
 //! Messages and presses from the chat, and the terminals they are typed into.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -12,7 +12,7 @@ use crate::tmux;
 
 use super::render::code;
 use super::turn::Ask;
-use super::{Machine, Opening, Trail, unix_millis};
+use super::{Machine, Opening, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
@@ -251,12 +251,15 @@ impl Machine {
     /// Every session the daemon knows of, running or exited, with where it ran, when
     /// it was last heard from in Unix milliseconds, and its trail.
     fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
-        let now = SystemTime::now();
         self.sessions
             .iter()
-            .map(move |(id, session)| {
-                let seen = unix_millis(now - session.seen.elapsed());
-                (id.as_str(), session.dir.as_path(), seen, &session.trail)
+            .map(|(id, session)| {
+                (
+                    id.as_str(),
+                    session.dir.as_path(),
+                    session.seen,
+                    &session.trail,
+                )
             })
             .chain(self.ended.iter().map(|ended| {
                 (
@@ -289,7 +292,7 @@ impl Machine {
             self.say(place, &format!("{} is not a directory", code(label)));
             return None;
         };
-        let now = unix_millis(SystemTime::now());
+        let now = now_millis();
         let mut sessions: Vec<_> = self.known().filter(|(_, ran, _, _)| *ran == dir).collect();
         sessions.sort_by_key(|(_, _, seen, _)| std::cmp::Reverse(*seen));
         let mut buttons: Vec<(String, String)> = sessions
