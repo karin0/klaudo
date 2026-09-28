@@ -100,10 +100,10 @@ directories of the last thousand exited sessions.
 
 `/new <directory>` posts an anchor, and replying to it opens a window running `claude`
 there with the reply as its first prompt. `/new` alone offers a menu of the chat's
-projects. The windows live in the tmux session `klaudo`, so `tmux attach -t klaudo`
-reaches a conversation that began on the phone. An anchor carries `ForceReply`, which
-Telegram attaches only to a message being sent, so an anchor is always a message of its
-own.
+projects, led by the project of the session the message would reach. The windows live
+in the tmux session `klaudo`, so `tmux attach -t klaudo` reaches a conversation that
+began on the phone. An anchor carries `ForceReply`, which Telegram attaches only to a
+message being sent, so an anchor is always a message of its own.
 
 tmux runs `claude` through its `default-shell` as a non-interactive shell with the tmux
 server's environment, so `claude` has to be on the `PATH` that shell ends up with. A
@@ -115,9 +115,10 @@ A session that opens a directory for the first time stops at the trust dialog an
 reports what it shows to the chat. Answer it once locally and the directory stays
 trusted.
 
-`/resume` offers the same menu, then that project's sessions. The anchor it posts
-replies to the last message the session left, since a private chat has no link to a
-single message.
+`/resume` goes straight to the sessions of the project the message would reach, with a
+button back to the menu of projects, which it offers first when the message reaches no
+session. The anchor it posts replies to the last message the session left, since a
+private chat has no link to a single message.
 
 `/usage` answers with the plan's limits and the context of the session a message would
 reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as

@@ -93,6 +93,10 @@ const RESUME: &str = "resume";
 const USAGE: &str = "usage";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
 const SESSION: &str = "session";
+/// What the button leading a `/resume` menu of sessions back to its projects carries.
+const PROJECTS: &str = "projects";
+/// What a `/resume` menu of projects reads.
+const RESUMING: &str = "Resume a conversation in:";
 /// What the chat's command menu offers, each with the line it is listed under.
 const COMMANDS: &[(&str, &str)] = &[
     (NEW, "Open a conversation in a directory"),
@@ -1499,7 +1503,11 @@ impl Machine {
         let replied = &message["reply_to_message"];
         match command(text) {
             Some((NEW, "")) => {
-                self.menu(place, NEW, "Open a conversation in:");
+                let lead = self.reached(place, replied);
+                if let Some(buttons) = self.choices(place, NEW, lead) {
+                    self.telegram
+                        .menu(place, "Open a conversation in:", &buttons);
+                }
                 return;
             }
             Some((NEW, argument)) => {
@@ -1507,7 +1515,7 @@ impl Machine {
                 return;
             }
             Some((RESUME, _)) => {
-                self.menu(place, RESUME, "Resume a conversation in:");
+                self.resume(place, self.reached(place, replied));
                 return;
             }
             Some((USAGE, _)) => {
@@ -1560,6 +1568,14 @@ impl Machine {
             .ok_or("the message replied to names no session")
     }
 
+    /// The directory of the session a message would reach, which leads a menu it asks for.
+    fn reached(&self, place: Place, replied: &Value) -> Option<&Path> {
+        let id = self.addressee(place, replied).ok()??;
+        self.known()
+            .find(|(known, _, _, _)| known.starts_with(&id))
+            .map(|(_, dir, _, _)| dir)
+    }
+
     /// Where a message came from, when it is one to act on.
     fn admitted(&self, sender: &Value, message: &Value) -> Option<Place> {
         let place = self.telegram.accepts(sender, message);
@@ -1589,6 +1605,12 @@ impl Machine {
         let Some(label) = label(&press.message, &press.data) else {
             return;
         };
+        if press.data == PROJECTS {
+            if let Some(buttons) = self.choices(place, RESUME, None) {
+                self.telegram.remenu(place.chat, menu, RESUMING, &buttons);
+            }
+            return;
+        }
         match press.data.split_once(' ') {
             // An anchor opens the reply box only as it arrives, so it is a message of
             // its own, and a menu left behind is one mistaken press from a second one.
@@ -1597,7 +1619,11 @@ impl Machine {
                     self.telegram.delete(place.chat, menu);
                 }
             }
-            Some((RESUME, _)) => self.conversations(place, menu, &label),
+            Some((RESUME, _)) => {
+                if let Some((text, buttons)) = self.conversations(place, &label) {
+                    self.telegram.remenu(place.chat, menu, &text, &buttons);
+                }
+            }
             Some((SESSION, id)) => {
                 if self.resumption(place, id).is_some() {
                     self.telegram.delete(place.chat, menu);
@@ -1607,21 +1633,19 @@ impl Machine {
         }
     }
 
-    /// The directories the sessions of `chat` ran in, the one heard from last first.
-    fn projects(&self, chat: i64) -> Vec<PathBuf> {
-        let now = SystemTime::now();
-        let mut seen: Vec<(u64, &PathBuf)> = self
-            .sessions
-            .values()
-            .map(|session| (unix_millis(now - session.seen.elapsed()), &session.dir))
-            .chain(self.ended.iter().map(|ended| (ended.seen, &ended.dir)))
-            .filter(|(_, dir)| self.telegram.chat(dir) == chat && dir.is_dir())
-            .collect();
+    /// The directories the sessions of `chat` ran in, `lead` first and then the one heard
+    /// from last.
+    fn projects(&self, chat: i64, lead: Option<&Path>) -> Vec<PathBuf> {
+        let mut seen: Vec<(u64, &Path)> =
+            self.known().map(|(_, dir, seen, _)| (seen, dir)).collect();
         seen.sort_by_key(|(seen, _)| std::cmp::Reverse(*seen));
         let mut projects: Vec<PathBuf> = Vec::new();
-        for (_, dir) in seen {
-            if !projects.contains(dir) {
-                projects.push(dir.clone());
+        for dir in lead.into_iter().chain(seen.into_iter().map(|(_, dir)| dir)) {
+            if self.telegram.chat(dir) == chat
+                && dir.is_dir()
+                && !projects.iter().any(|project| project == dir)
+            {
+                projects.push(dir.to_owned());
             }
         }
         projects.truncate(MENU_MAX);
@@ -1648,17 +1672,31 @@ impl Machine {
             }))
     }
 
-    /// The menu of a project's sessions a `/resume` menu leads to once the project is
-    /// picked, rewritten over it.
-    fn conversations(&self, place: Place, menu: i64, label: &str) {
+    /// A `/resume` menu: the sessions of the project `lead`, or with none, the projects
+    /// of the chat `place` is in.
+    fn resume(&self, place: Place, lead: Option<&Path>) {
+        let menu = match lead {
+            Some(dir) => self.conversations(place, &tilde(dir)),
+            None => self
+                .choices(place, RESUME, None)
+                .map(|buttons| (RESUMING.to_owned(), buttons)),
+        };
+        if let Some((text, buttons)) = menu {
+            self.telegram.menu(place, &text, &buttons);
+        }
+    }
+
+    /// The text and buttons of a menu of a project's sessions, the last button leading
+    /// back to the projects.
+    fn conversations(&self, place: Place, label: &str) -> Option<(String, Vec<(String, String)>)> {
         let Some(dir) = expand(label) else {
             self.say(place, &format!("{} is not a directory", code(label)));
-            return;
+            return None;
         };
         let now = unix_millis(SystemTime::now());
         let mut sessions: Vec<_> = self.known().filter(|(_, ran, _, _)| *ran == dir).collect();
         sessions.sort_by_key(|(_, _, seen, _)| std::cmp::Reverse(*seen));
-        let buttons: Vec<(String, String)> = sessions
+        let mut buttons: Vec<(String, String)> = sessions
             .iter()
             .take(MENU_MAX)
             .map(|(id, _, seen, trail)| {
@@ -1673,14 +1711,10 @@ impl Machine {
             .collect();
         if buttons.is_empty() {
             self.say(place, &format!("no session has run in {}", code(label)));
-            return;
+            return None;
         }
-        self.telegram.remenu(
-            place.chat,
-            menu,
-            &format!("Resume a conversation in {label}:"),
-            &buttons,
-        );
+        buttons.push(("« Projects".to_owned(), PROJECTS.to_owned()));
+        Some((format!("Resume a conversation in {label}:"), buttons))
     }
 
     /// An anchor addressed to session `id`, replying to the last message it left in this
@@ -1703,11 +1737,16 @@ impl Machine {
         self.telegram.anchor(place, &message, &placeholder, last)
     }
 
-    /// A menu of the projects of the chat `place` is in, each button carrying `command`
-    /// and its place in the menu.
-    fn menu(&self, place: Place, command: &str, text: &str) {
+    /// The buttons of a menu of the projects of the chat `place` is in, `lead` first,
+    /// each carrying `command` and its place in the menu.
+    fn choices(
+        &self,
+        place: Place,
+        command: &str,
+        lead: Option<&Path>,
+    ) -> Option<Vec<(String, String)>> {
         let buttons: Vec<(String, String)> = self
-            .projects(place.chat)
+            .projects(place.chat, lead)
             .iter()
             .enumerate()
             .map(|(index, dir)| (tilde(dir), format!("{command} {index}")))
@@ -1717,9 +1756,9 @@ impl Machine {
                 place,
                 "no project has run here yet; `/new <directory>` opens one",
             );
-            return;
+            return None;
         }
-        self.telegram.menu(place, text, &buttons);
+        Some(buttons)
     }
 
     /// The session in `place` heard from last, which is where a message that replies to

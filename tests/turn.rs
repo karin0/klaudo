@@ -957,8 +957,9 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
     drop(daemon);
 }
 
-/// `/new` alone offers the projects that ran in its chat, the one heard from last first and
-/// an exited one among them, and a press on one rewrites the menu into the anchor for it.
+/// `/new` alone offers the projects that ran in its chat, an exited one among them, led by
+/// the project of the session the message would reach and then the one heard from last,
+/// and a press on one rewrites the menu into the anchor for it.
 #[test]
 fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     let (port, calls, chat) = recorder();
@@ -991,8 +992,19 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
         .collect();
     let a = root.join("a").display().to_string();
     let b = root.join("b").display().to_string();
-    assert_eq!(labels, [a.clone(), b.clone()]);
+    // Session a exited last, and a message replying to nothing reaches session b.
+    assert_eq!(labels, [b.clone(), a.clone()]);
     assert_eq!(menu.chat, Some(OWNER));
+
+    let from_a =
+        json!({"text": "aaaaaaaa", "entities": [{"type": "code", "offset": 0, "length": 8}]});
+    chat.replies(OWNER, OWNER, "/new", &from_a);
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    let menu = made.last().expect("the menu");
+    assert_eq!(
+        menu.body["reply_markup"]["inline_keyboard"][0][0]["text"],
+        a.as_str()
+    );
 
     chat.presses(OWNER, menu, "new 1");
     let made = collect(&calls, |call| call.label == "deleteMessage");
@@ -1034,9 +1046,10 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     drop(daemon);
 }
 
-/// `/resume` offers the projects of its chat, then the sessions of the one picked, the one
-/// heard from last first, and a press on a session posts an anchor addressed to it that
-/// replies to the last message it left, taking the menu back.
+/// `/resume` offers the sessions of the project a message would reach, the one heard from
+/// last first, with a way back to the projects of its chat, and a press on a session
+/// posts an anchor addressed to it that replies to the last message it left, taking the
+/// menu back.
 #[test]
 fn a_conversation_is_resumed_from_a_menu_of_its_project() {
     let (port, calls, chat) = recorder();
@@ -1060,7 +1073,16 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
 
     chat.says(OWNER, OWNER, "/resume");
     let made = collect(&calls, |call| call.label == "sendMessage");
-    chat.presses(OWNER, made.last().expect("the menu"), "resume 0");
+    let sessions = made.last().expect("the sessions");
+    assert_eq!(
+        sessions.markdown,
+        format!("Resume a conversation in {}:", root.display())
+    );
+    chat.presses(OWNER, sessions, "projects");
+    let made = collect(&calls, |call| call.label == "editMessageText");
+    let projects = made.last().expect("the projects");
+    assert_eq!(projects.markdown, "Resume a conversation in:");
+    chat.presses(OWNER, projects, "resume 0");
     let made = collect(&calls, |call| call.label == "editMessageText");
     let menu = made.last().expect("the sessions");
     assert_eq!(
@@ -1078,7 +1100,7 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
             )
         })
         .collect();
-    let [(latest, _), (earlier, data)] = buttons[..] else {
+    let [(latest, _), (earlier, data), (_, "projects")] = buttons[..] else {
         panic!("the menu holds {buttons:?}");
     };
     assert!(latest.starts_with("22222222 · "), "{latest:?}");
