@@ -122,6 +122,9 @@ const FAILED: char = '×';
 /// A line ends where the next call begins. Two spaces before the newline is what keeps
 /// them apart, because a lone newline joins the lines into one paragraph.
 const BREAK: &str = "  \n";
+/// How long the finished calls of a run read together before they are folded: three
+/// lines of a phone's screen, which is what a folded quotation still shows.
+const FOLD_OVER: usize = 120;
 /// The first line of what a failed tool reported, past which it stops reading at a
 /// glance.
 const WHY_MAX: usize = 60;
@@ -384,11 +387,15 @@ impl Call {
     /// where the eye finds them and a long command wraps without pushing the time away.
     /// The tool and the time are bold, so the eye finds a call and its cost down a run
     /// of lines whose middles are of every length.
-    fn line(&self) -> String {
+    fn line(&self, markup: &Markup) -> String {
         let (mark, took, why) = match &self.outcome {
             Outcome::Running => (RUNNING, String::new(), None),
-            Outcome::Done(took) => (DONE, format!(" **{}**", spent(*took)), None),
-            Outcome::Failed(took, why) => (FAILED, format!(" **{}**", spent(*took)), Some(why)),
+            Outcome::Done(took) => (DONE, format!(" {}", (markup.bold)(&spent(*took))), None),
+            Outcome::Failed(took, why) => (
+                FAILED,
+                format!(" {}", (markup.bold)(&spent(*took))),
+                Some(why),
+            ),
         };
         let agent = match &self.agent {
             Some(agent) => format!("[{agent}] "),
@@ -399,25 +406,53 @@ impl Call {
         // is what holds its name apart from the words that follow it.
         let (said, under) = match (self.description.as_str(), self.subject.as_str()) {
             ("", "") => (String::new(), None),
-            ("", subject) => (format!("  {}", code(subject)), None),
-            (description, "") => (format!("  {}", hook::prose(description)), None),
+            ("", subject) => (format!("  {}", (markup.code)(subject)), None),
+            (description, "") => (format!("  {}", (markup.text)(description)), None),
             (description, subject) => (
-                format!("  {}", hook::prose(description)),
-                Some(code(subject)),
+                format!("  {}", (markup.text)(description)),
+                Some((markup.code)(subject)),
             ),
         };
-        let head = format!("{mark} {agent}**{}**{said}{took}", self.name);
+        let head = format!("{mark} {agent}{}{said}{took}", (markup.bold)(&self.name));
         [
             Some(head),
             under.map(|under| format!("⎿ {under}")),
-            why.map(|why| format!("⎿ {}", hook::prose(why))),
+            why.map(|why| format!("⎿ {}", (markup.text)(why))),
         ]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
-        .join(BREAK)
+        .join(markup.newline)
+    }
+
+    /// How long the call reads, by the words that wrap on a phone.
+    fn length(&self) -> usize {
+        self.description.chars().count() + self.subject.chars().count()
     }
 }
+
+/// How a call's line is written: as the markdown a message is, or as HTML, which is
+/// all a folded quotation parses inside it.
+struct Markup {
+    bold: fn(&str) -> String,
+    code: fn(&str) -> String,
+    text: fn(&str) -> String,
+    newline: &'static str,
+}
+
+const MARKDOWN: Markup = Markup {
+    bold: |text| format!("**{text}**"),
+    code,
+    text: hook::prose,
+    newline: BREAK,
+};
+
+const HTML: Markup = Markup {
+    bold: |text| format!("<b>{}</b>", hook::html(text)),
+    code: |text| format!("<code>{}</code>", hook::html(text)),
+    text: hook::html,
+    newline: "<br>",
+};
 
 /// A command reads as markdown where the message is markdown, so it travels as a code
 /// span, whose backticks have to outlast any run of them the command carries.
@@ -480,14 +515,37 @@ impl Segment {
 }
 
 /// A run of tool calls, a line per call. The oldest are counted rather than listed past
-/// the cap, so what is running now stays in a message Telegram will take.
+/// the cap, so what is running now stays in a message Telegram will take. The calls
+/// that finished ahead of the first one still running fold into one quotation once
+/// they read long, leaving what a reader is waiting on in view.
 fn listing(calls: &[Call]) -> String {
     let elided = calls.len().saturating_sub(RUN_MAX);
-    let head = (elided > 0).then(|| format!("… {elided} earlier"));
-    head.into_iter()
-        .chain(calls[elided..].iter().map(Call::line))
+    let shown = &calls[elided..];
+    let running = shown
+        .iter()
+        .position(|call| matches!(call.outcome, Outcome::Running))
+        .unwrap_or(shown.len());
+    let (finished, open) = shown.split_at(running);
+    let folded = finished.iter().map(Call::length).sum::<usize>() > FOLD_OVER;
+    let markup = if folded { &HTML } else { &MARKDOWN };
+    let early = (elided > 0)
+        .then(|| format!("… {elided} earlier"))
+        .into_iter()
+        .chain(finished.iter().map(|call| call.line(markup)));
+    let open: Vec<String> = open.iter().map(|call| call.line(&MARKDOWN)).collect();
+    if !folded {
+        return early.chain(open).collect::<Vec<_>>().join(BREAK);
+    }
+    let quote = format!(
+        "<blockquote expandable>{}</blockquote>",
+        early.collect::<Vec<_>>().join(HTML.newline)
+    );
+    // A block HTML tag runs to the next blank line, so one keeps the quotation apart
+    // from the markdown under it.
+    std::iter::once(quote)
+        .chain((!open.is_empty()).then(|| open.join(BREAK)))
         .collect::<Vec<_>>()
-        .join(BREAK)
+        .join("\n\n")
 }
 
 /// The place a turn is posted in and the message there carrying what was asked, which
@@ -2108,7 +2166,7 @@ fn running(text: &str, status: &str) -> String {
     if text.is_empty() {
         status.to_owned()
     } else {
-        format!("{text}{BREAK}{status}")
+        format!("{text}\n\n{status}")
     }
 }
 
@@ -2219,7 +2277,7 @@ mod tests {
     #[test]
     fn a_call_reads_as_its_tool_its_subject_and_how_it_went() {
         assert_eq!(
-            call("Read", "src/listen.rs", Outcome::Running).line(),
+            call("Read", "src/listen.rs", Outcome::Running).line(&MARKDOWN),
             "○ **Read**  `src/listen.rs`"
         );
         assert_eq!(
@@ -2228,7 +2286,7 @@ mod tests {
                 "cargo test",
                 Outcome::Done(Duration::from_millis(1400))
             )
-            .line(),
+            .line(&MARKDOWN),
             "● **Bash**  `cargo test` **1s**"
         );
         assert_eq!(
@@ -2237,7 +2295,7 @@ mod tests {
                 "cargo test",
                 Outcome::Done(Duration::from_millis(12))
             )
-            .line(),
+            .line(&MARKDOWN),
             "● **Bash**  `cargo test` **12ms**"
         );
         // What a failure reported reads on a line of its own.
@@ -2247,7 +2305,7 @@ mod tests {
                 "cargo test",
                 Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
             )
-            .line(),
+            .line(&MARKDOWN),
             "× **Bash**  `cargo test` **4s**  \n⎿ Exit code 1"
         );
         // A tool that describes its calls says that first and shows the command under it.
@@ -2260,7 +2318,7 @@ mod tests {
             )
         };
         assert_eq!(
-            described.line(),
+            described.line(&MARKDOWN),
             "× **Bash**  run the tests **4s**  \n⎿ `cargo test`  \n⎿ Exit code 1"
         );
         let markup = Call {
@@ -2268,14 +2326,14 @@ mod tests {
             ..call("Grep", "fn seal", Outcome::Running)
         };
         assert_eq!(
-            markup.line(),
+            markup.line(&MARKDOWN),
             "○ **Grep**  find \\*\\.rs in \\_src\\_  \n⎿ `fn seal`"
         );
         let subagent = Call {
             agent: Some("Explore".to_owned()),
             ..call("Grep", "fn seal", Outcome::Running)
         };
-        assert_eq!(subagent.line(), "○ [Explore] **Grep**  `fn seal`");
+        assert_eq!(subagent.line(&MARKDOWN), "○ [Explore] **Grep**  `fn seal`");
     }
 
     #[test]
@@ -2293,6 +2351,40 @@ mod tests {
         assert_eq!(
             listed,
             "○ **Read**  `src/listen.rs`  \n● **Bash**  `cargo test` **1s**"
+        );
+    }
+
+    #[test]
+    fn finished_calls_fold_once_they_read_long_together() {
+        let done = |subject: &str| call("Bash", subject, Outcome::Done(Duration::from_secs(1)));
+        let x = "x".repeat(FOLD_OVER / 2);
+        let listed = listing(&[
+            Call {
+                description: "a < b".to_owned(),
+                ..done(&x)
+            },
+            done(&x),
+            call("Read", "src/listen.rs", Outcome::Running),
+            done("ls"),
+        ]);
+        assert_eq!(
+            listed,
+            format!(
+                "<blockquote expandable>\
+                 ● <b>Bash</b>  a &lt; b <b>1s</b><br>⎿ <code>{x}</code><br>\
+                 ● <b>Bash</b>  <code>{x}</code> <b>1s</b>\
+                 </blockquote>\n\n\
+                 ○ **Read**  `src/listen.rs`  \n\
+                 ● **Bash**  `ls` **1s**"
+            )
+        );
+        // A run that has all finished folds whole.
+        let whole = listing(&[done(&x), done(&x), done("ls")]);
+        assert!(whole.starts_with("<blockquote expandable>") && whole.ends_with("</blockquote>"));
+        // Finished calls that read short stay on their lines.
+        assert_eq!(
+            listing(&[done(&x), call("Read", &x, Outcome::Running)]),
+            format!("● **Bash**  `{x}` **1s**  \n○ **Read**  `{x}`")
         );
     }
 
