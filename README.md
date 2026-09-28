@@ -13,18 +13,20 @@ A turn opens with its prompt, quoted and silent, and every later message of the 
 replies to it, so the chat reads as a thread per turn. A prompt Klaŭdo typed is already
 in the chat as the message that asked for it, and its turn threads under that one.
 
-A turn is a sequence of segments, each either an assistant message with text or the run
-of tool calls between two of those. The open segment is shown in one message at the
-foot of the turn, rewritten as it grows, with a status line of a word from Claude Code's
-vocabulary and the elapsed time. In a group it is rewritten at most every ten seconds,
-because Telegram counts a rewrite against the twenty messages a minute a bot may send
-there. A `date_time` entity would keep the time current without rewrites, but clients
-show one inside a rich message as its fallback text.
+A turn is a sequence of segments, each an assistant message's text and the run of tool
+calls it goes on to make, under that text in the same message. A run that would push
+the message past Telegram's limit goes on in a message of its own. The open segment is
+shown in one message at the foot of the turn, rewritten as it grows, with a status line
+of a word from Claude Code's vocabulary and the elapsed time. In a group it is rewritten
+at most every ten seconds, because Telegram counts a rewrite against the twenty messages
+a minute a bot may send there. A `date_time` entity would keep the time current without
+rewrites, but clients show one inside a rich message as its fallback text.
 
 The last segment keeps no message of its own: `Stop` carries its text, and the message
 showing it is taken back once the answer is posted. That text reaches the daemon
 milliseconds before `Stop`, so new text waits a tenth of a second of quiet before it is
-shown. Only the answer and a `Notification` make a sound, and only the answer carries
+shown. A turn that ends on a run keeps that last message, and the answer repeats its
+text. Only the answer and a `Notification` make a sound, and only the answer carries
 the `#claude` tag.
 
 A run of tool calls is a line per call:
