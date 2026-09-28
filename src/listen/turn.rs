@@ -9,8 +9,7 @@ use crate::hook::{self, Event};
 use crate::telegram::{MAX_CHARS, Place, Sound};
 
 use super::Machine;
-use super::chat::glimpse;
-use super::render::{Call, Outcome, listing, took, why};
+use super::render::{Call, Outcome, first_line, listing, took};
 use super::usage::status_line;
 
 /// The longest the message showing an open segment goes without its clock advancing,
@@ -74,6 +73,11 @@ const WORDS: &[&str] = &[
 /// What a message carries around a segment's text, its title and status line, with room
 /// to spare.
 const FRAME: usize = 1024;
+/// How much of a session's latest prompt its button in a `/resume` menu shows.
+const PROMPT_MAX: usize = 40;
+/// How much of the first line of what a failed tool reported its call shows, past which
+/// it stops reading at a glance.
+const WHY_MAX: usize = 60;
 
 /// One stretch of a turn: an assistant message and the run of tool calls it goes on to
 /// make. It is written into the turn's open message until the next one starts and that
@@ -185,6 +189,24 @@ impl Turn {
 }
 
 impl Machine {
+    fn turn_mut(&mut self, id: &str) -> Option<&mut Turn> {
+        self.sessions.get_mut(id)?.turn.as_mut()
+    }
+
+    /// Writes `text` into a turn's live message, or posts it in the turn's thread while
+    /// there is none.
+    fn post_live(&self, thread: Thread, live: Option<i64>, text: &str) -> Option<i64> {
+        match live {
+            Some(message) => {
+                self.telegram.edit(thread.place.chat, message, text);
+                Some(message)
+            }
+            None => self
+                .telegram
+                .send(thread.place, text, Sound::Silent, thread.prompt),
+        }
+    }
+
     pub(super) fn submitted(&mut self, id: &str, event: &Event) {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -227,7 +249,7 @@ impl Machine {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        session.trail.prompt = glimpse(event.prompt.as_deref().unwrap_or_default());
+        session.trail.prompt = first_line(event.prompt.as_deref().unwrap_or_default(), PROMPT_MAX);
         session.left(thread.place, thread.prompt);
         if running {
             session.queued.push_back(thread);
@@ -293,7 +315,7 @@ impl Machine {
         if !self.turn(id, event.prompt_id.as_deref()) {
             return;
         }
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let Some(turn) = self.turn_mut(id) else {
             return;
         };
         if let Some(segment) = turn
@@ -314,7 +336,7 @@ impl Machine {
         {
             self.seal(id);
         }
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let Some(turn) = self.turn_mut(id) else {
             return;
         };
         let segment = turn.segment.get_or_insert_with(Segment::new);
@@ -330,7 +352,7 @@ impl Machine {
     /// A run that would overflow the message of the words introducing it goes on in one
     /// of its own, and the words keep theirs.
     fn part(&mut self, id: &str) {
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let Some(turn) = self.turn_mut(id) else {
             return;
         };
         let Some(segment) = turn
@@ -346,7 +368,7 @@ impl Machine {
             ..Segment::new()
         };
         self.seal(id);
-        if let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) {
+        if let Some(turn) = self.turn_mut(id) {
             turn.segment = Some(run);
         }
     }
@@ -360,7 +382,7 @@ impl Machine {
         if !self.turn(id, event.prompt_id.as_deref()) {
             return;
         }
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let Some(turn) = self.turn_mut(id) else {
             return;
         };
         turn.pending.push((
@@ -380,7 +402,7 @@ impl Machine {
     /// the words that introduce them, so a turn that talked, worked and talked again
     /// leaves two messages in the chat, the first of them holding the run.
     pub(super) fn place(&mut self, id: &str) {
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let Some(turn) = self.turn_mut(id) else {
             return;
         };
         let ready = turn
@@ -407,11 +429,14 @@ impl Machine {
         };
         let took = Duration::from_millis(event.duration_ms.unwrap_or_default());
         let outcome = if event.hook_event_name == "PostToolUseFailure" {
-            Outcome::Failed(took, why(event.error.as_deref().unwrap_or("failed")))
+            Outcome::Failed(
+                took,
+                first_line(event.error.as_deref().unwrap_or("failed"), WHY_MAX),
+            )
         } else {
             Outcome::Done(took)
         };
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let Some(turn) = self.turn_mut(id) else {
             return;
         };
         // A tool this quick reports before its call has been filed.
@@ -459,16 +484,8 @@ impl Machine {
         let head = session.head(id, Some(&prompt_id));
         // The tag marks a finished turn, and this segment is the middle of one.
         let done = hook::compose(&head, &took(elapsed), "", &text);
-        let message = match live {
-            Some(message) => {
-                self.telegram.edit(thread.place.chat, message, &done);
-                Some(message)
-            }
-            // A segment that ran its course inside one rewrite has no message yet.
-            None => self
-                .telegram
-                .send(thread.place, &done, Sound::Silent, thread.prompt),
-        };
+        // A segment that ran its course inside one rewrite has no message yet.
+        let message = self.post_live(thread, live, &done);
         segment.posted = message.map(|message| (message, elapsed));
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -622,16 +639,8 @@ impl Machine {
             "",
             &running(&text, &status(elapsed, turn.seed)),
         );
-        let message = match live {
-            Some(message) => {
-                self.telegram.edit(thread.place.chat, message, &shown);
-                Some(message)
-            }
-            None => self
-                .telegram
-                .send(thread.place, &shown, Sound::Silent, thread.prompt),
-        };
-        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+        let message = self.post_live(thread, live, &shown);
+        let Some(turn) = self.turn_mut(id) else {
             return;
         };
         turn.live = message;

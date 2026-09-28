@@ -35,8 +35,6 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ),
     ("compact", "Compact the conversation it replies to"),
 ];
-/// How much of a session's latest prompt its button in a `/resume` menu shows.
-const PROMPT_MAX: usize = 40;
 
 /// How many choices a menu offers, which a phone shows without scrolling.
 const MENU_MAX: usize = 8;
@@ -517,18 +515,6 @@ fn plain(node: &Value) -> String {
         Value::Object(_) => plain(&node["text"]),
         _ => String::new(),
     }
-}
-
-/// The start of a prompt's first line, as a button has room for.
-pub(super) fn glimpse(prompt: &str) -> String {
-    let line = prompt.lines().next().unwrap_or_default().trim();
-    if line.chars().count() <= PROMPT_MAX {
-        return line.to_owned();
-    }
-    line.chars()
-        .take(PROMPT_MAX)
-        .chain("\u{2026}".chars())
-        .collect()
 }
 
 /// How long ago, in the largest unit it fills.
