@@ -239,9 +239,11 @@ that posts.
 
 A reply is routed by the address read back out of the message it replies to, so a
 restarted daemon still routes replies to messages it never posted. The daemon writes
-the pane of each session and the directory of each exited one to
-`$XDG_RUNTIME_DIR/klaudo/state.json` as they change, so an idle session stays reachable
-across a restart. A turn in flight is lost.
+the pane of each session to `$XDG_RUNTIME_DIR/klaudo/state.json` as it changes, so an
+idle session stays reachable across a restart, and the directory of each exited one to
+`$XDG_STATE_HOME/klaudo/ended.json`, so a reply resumes it after a reboot too. The
+daemon keeps that record itself, since the transcripts under `~/.claude/projects` are in
+a format Claude Code has not published. A turn in flight is lost.
 
 A session is forgotten at its `SessionEnd`, or once `/proc/<pid>` is gone for one that
 was killed first.

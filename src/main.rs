@@ -96,6 +96,14 @@ fn fail(message: &str) -> ! {
     std::process::exit(1);
 }
 
+/// A base directory of the XDG specification, under `$HOME` when its variable is unset.
+fn xdg_home(variable: &str, fallback: &str) -> PathBuf {
+    match std::env::var_os(variable) {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(fallback),
+    }
+}
+
 fn hook(event: &Event, raw: &[u8]) {
     match event.hook_event_name.as_str() {
         // A subagent's text stays out of the chat.
