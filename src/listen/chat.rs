@@ -12,7 +12,7 @@ use crate::tmux;
 
 use super::render::code;
 use super::turn::Ask;
-use super::{Machine, Opening, Trail, now_millis};
+use super::{Machine, Opening, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
@@ -408,12 +408,17 @@ impl Machine {
         });
     }
 
+    /// The running session whose id starts with `address`, which is how a message names
+    /// one.
+    pub(super) fn addressed(&self, address: &str) -> Option<(&String, &Session)> {
+        self.sessions.iter().find(|(id, _)| id.starts_with(address))
+    }
+
     /// Types into the session whose id starts with `address`, resuming it first when it
     /// has exited.
     fn send(&mut self, address: &str, ask: Ask) {
         let place = ask.place;
-        let Some((id, session)) = self.sessions.iter().find(|(id, _)| id.starts_with(address))
-        else {
+        let Some((id, session)) = self.addressed(address) else {
             match self
                 .ended
                 .iter()

@@ -78,11 +78,7 @@ impl Machine {
             Ok(address) => address.filter(|address| address != NEW),
             Err(error) => return self.say(place, error),
         };
-        let reached = address.and_then(|address| {
-            self.sessions
-                .iter()
-                .find(|(id, _)| id.starts_with(&address))
-        });
+        let reached = address.and_then(|address| self.addressed(&address));
         let now = now_millis() / 1000;
         let mut rows = Vec::new();
         let mut ages = Vec::new();
