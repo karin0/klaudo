@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hook::{self, Event};
-use crate::telegram::{Place, Sound, Telegram};
+use crate::telegram::{MAX_CHARS, Place, Sound, Telegram};
 use crate::tmux::{self, Pane};
 
 /// The longest the message showing an open segment goes without its clock advancing,
@@ -125,6 +125,9 @@ const BREAK: &str = "  \n";
 /// How long the finished calls of a run read together before they are folded: three
 /// lines of a phone's screen, which is what a folded quotation still shows.
 const FOLD_OVER: usize = 120;
+/// What a message carries around a segment's text, its title and status line, with room
+/// to spare.
+const FRAME: usize = 1024;
 /// The first line of what a failed tool reported, past which it stops reading at a
 /// glance.
 const WHY_MAX: usize = 60;
@@ -471,21 +474,15 @@ fn code(subject: &str) -> String {
     }
 }
 
-/// What a stretch of a turn holds: an assistant message being streamed, or the run of
-/// tool calls between two of them.
-enum Body {
-    /// Deltas by index, because three hook processes run at once and one can arrive
-    /// ahead of its predecessor.
-    Text(BTreeMap<u32, String>),
-    Tools(Vec<Call>),
-}
-
-/// One stretch of a turn, written into the turn's open message until the next one
-/// starts and that message is its own. A turn opens with an empty text segment, so what
-/// stands in the chat while nothing has been said is the status line.
+/// One stretch of a turn: an assistant message and the run of tool calls it goes on to
+/// make. It is written into the turn's open message until the next one starts and that
+/// message is its own. A turn opens with an empty segment, so what stands in the chat
+/// while nothing has been said is the status line.
 struct Segment {
-    id: String,
-    body: Body,
+    calls: Vec<Call>,
+    /// The assistant message's id and its deltas by index, because three hook processes
+    /// run at once and one can arrive ahead of its predecessor.
+    said: Option<(String, BTreeMap<u32, String>)>,
     /// What the open message was last written with and when, absent until it exists.
     written: Option<(String, Instant)>,
     /// The message this segment finished in and the elapsed time stamped on it, which
@@ -496,20 +493,33 @@ struct Segment {
 }
 
 impl Segment {
-    fn new(id: &str, body: Body) -> Self {
+    fn new() -> Self {
         Self {
-            id: id.to_owned(),
-            body,
+            calls: Vec::new(),
+            said: None,
             written: None,
             posted: None,
             heard: Instant::now(),
         }
     }
 
+    /// True for the assistant message or tool call `id` names.
+    fn holds(&self, id: &str) -> bool {
+        self.said.as_ref().is_some_and(|(said, _)| said == id)
+            || self.calls.iter().any(|call| call.id == id)
+    }
+
+    /// The words, then the run they introduce.
     fn text(&self) -> String {
-        match &self.body {
-            Body::Text(chunks) => chunks.values().map(String::as_str).collect(),
-            Body::Tools(calls) => listing(calls),
+        let words: String = self
+            .said
+            .iter()
+            .flat_map(|(_, chunks)| chunks.values().map(String::as_str))
+            .collect();
+        match (words.as_str(), self.calls.as_slice()) {
+            (_, []) => words,
+            ("", calls) => listing(calls),
+            (_, calls) => format!("{words}\n\n{}", listing(calls)),
         }
     }
 }
@@ -597,22 +607,13 @@ impl Turn {
         }
     }
 
-    /// True while the open segment is a run of tool calls rather than an assistant
-    /// message.
-    fn running_tools(&self) -> bool {
-        matches!(&self.segment, Some(segment) if matches!(segment.body, Body::Tools(_)))
-    }
-
     /// The run a tool call belongs to, which is the open one until the turn moves past
     /// it and the call reports from the chat.
     fn holding(&mut self, tool_use_id: &str) -> Option<&mut Segment> {
         self.segment
             .iter_mut()
             .chain(self.sealed.iter_mut())
-            .find(|segment| match &segment.body {
-                Body::Tools(calls) => calls.iter().any(|call| call.id == tool_use_id),
-                Body::Text(_) => false,
-            })
+            .find(|segment| segment.calls.iter().any(|call| call.id == tool_use_id))
     }
 }
 
@@ -940,7 +941,7 @@ impl Machine {
         } else {
             let prompt_id = event.prompt_id.clone().unwrap_or_default();
             session.turn = Some(Turn {
-                segment: Some(Segment::new(&prompt_id, Body::Text(BTreeMap::new()))),
+                segment: Some(Segment::new()),
                 seed: seed(&prompt_id),
                 prompt_id,
                 started: Instant::now(),
@@ -983,7 +984,7 @@ impl Machine {
                 prompt: None,
             }),
             live: None,
-            segment: Some(Segment::new(named, Body::Text(BTreeMap::new()))),
+            segment: Some(Segment::new()),
             sealed: Vec::new(),
             pending: Vec::new(),
         });
@@ -1005,9 +1006,9 @@ impl Machine {
         if let Some(segment) = turn
             .sealed
             .iter_mut()
-            .find(|sealed| sealed.id == *message_id)
+            .find(|sealed| sealed.holds(message_id))
         {
-            if let Body::Text(chunks) = &mut segment.body {
+            if let Some((_, chunks)) = &mut segment.said {
                 chunks.insert(index, delta.clone());
             }
             self.amend(id, message_id);
@@ -1016,25 +1017,44 @@ impl Machine {
         if turn
             .segment
             .as_ref()
-            .is_none_or(|open| open.id != *message_id)
+            .is_none_or(|open| !open.holds(message_id))
         {
             self.seal(id);
-            let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
-                return;
-            };
-            turn.segment = Some(Segment::new(message_id, Body::Text(BTreeMap::new())));
         }
-        let Some(segment) = self
-            .sessions
-            .get_mut(id)
-            .and_then(|s| s.turn.as_mut())
-            .and_then(|t| t.segment.as_mut())
+        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+            return;
+        };
+        let segment = turn.segment.get_or_insert_with(Segment::new);
+        segment
+            .said
+            .get_or_insert_with(|| (message_id.clone(), BTreeMap::new()))
+            .1
+            .insert(index, delta.clone());
+        segment.heard = Instant::now();
+        self.part(id);
+    }
+
+    /// A run that would overflow the message of the words introducing it goes on in one
+    /// of its own, and the words keep theirs.
+    fn part(&mut self, id: &str) {
+        let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
+            return;
+        };
+        let Some(segment) = turn
+            .segment
+            .as_mut()
+            .filter(|segment| segment.said.is_some() && !segment.calls.is_empty())
+            .filter(|segment| segment.text().chars().count() + FRAME > MAX_CHARS)
         else {
             return;
         };
-        if let Body::Text(chunks) = &mut segment.body {
-            chunks.insert(index, delta.clone());
-            segment.heard = Instant::now();
+        let run = Segment {
+            calls: std::mem::take(&mut segment.calls),
+            ..Segment::new()
+        };
+        self.seal(id);
+        if let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) {
+            turn.segment = Some(run);
         }
     }
 
@@ -1063,10 +1083,9 @@ impl Machine {
         ));
     }
 
-    /// Files the calls that have waited long enough. They join the run that is open,
-    /// opening one when the turn was saying something instead. A run reads as one
-    /// message, so a turn that talked, worked and talked again leaves those three in
-    /// the chat in order.
+    /// Files the calls that have waited long enough. They join the open segment, under
+    /// the words that introduce them, so a turn that talked, worked and talked again
+    /// leaves two messages in the chat, the first of them holding the run.
     fn place(&mut self, id: &str) {
         let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
             return;
@@ -1080,28 +1099,15 @@ impl Machine {
             return;
         }
         let filed: Vec<Call> = turn.pending.drain(..ready).map(|(_, call)| call).collect();
-        if !turn.running_tools() {
-            let opening = filed[0].id.clone();
-            self.seal(id);
-            let Some(turn) = self.sessions.get_mut(id).and_then(|s| s.turn.as_mut()) else {
-                return;
-            };
-            turn.segment = Some(Segment::new(&opening, Body::Tools(Vec::new())));
-        }
-        let Some(Body::Tools(calls)) = self
-            .sessions
-            .get_mut(id)
-            .and_then(|s| s.turn.as_mut())
-            .and_then(|t| t.segment.as_mut())
-            .map(|segment| &mut segment.body)
-        else {
-            return;
-        };
-        calls.extend(filed);
+        turn.segment
+            .get_or_insert_with(Segment::new)
+            .calls
+            .extend(filed);
+        self.part(id);
     }
 
-    /// How a call went, which reaches the run it belongs to. A run already posted takes
-    /// no more outcomes, so a call it holds stays as it was when the turn moved on.
+    /// How a call went, which reaches the run it belongs to, and the message that run
+    /// was posted in once the turn has moved on.
     fn called(&mut self, id: &str, event: &Event) {
         let Some(tool_use_id) = event.tool_use_id.as_deref() else {
             return;
@@ -1127,16 +1133,12 @@ impl Machine {
         let Some(segment) = turn.holding(tool_use_id) else {
             return;
         };
-        let Body::Tools(calls) = &mut segment.body else {
-            return;
-        };
-        let Some(call) = calls.iter_mut().find(|call| call.id == tool_use_id) else {
+        let Some(call) = segment.calls.iter_mut().find(|call| call.id == tool_use_id) else {
             return;
         };
         call.outcome = outcome;
-        let sealed = segment.posted.is_some().then(|| segment.id.clone());
-        if let Some(segment_id) = sealed {
-            self.amend(id, &segment_id);
+        if segment.posted.is_some() {
+            self.amend(id, tool_use_id);
         }
     }
 
@@ -1189,14 +1191,14 @@ impl Machine {
     /// afterwards. A message's last flushes race the hook of the tool call that ends
     /// it, and a tool reports after the run it belongs to has been left behind, so both
     /// land on a segment the chat already has.
-    fn amend(&mut self, id: &str, segment_id: &str) {
+    fn amend(&mut self, id: &str, member: &str) {
         let Some(session) = self.sessions.get(id) else {
             return;
         };
         let Some(turn) = session.turn.as_ref() else {
             return;
         };
-        let Some(segment) = turn.sealed.iter().find(|sealed| sealed.id == segment_id) else {
+        let Some(segment) = turn.sealed.iter().find(|sealed| sealed.holds(member)) else {
             return;
         };
         let Some((message, elapsed)) = segment.posted else {
@@ -1215,13 +1217,14 @@ impl Machine {
         if !self.turn(id, event.prompt_id.as_deref()) {
             return;
         }
-        // A run of tool calls is a message of its own, and only an assistant message is
+        // A segment holding a run keeps its message, and only an assistant message is
         // what this event repeats.
         if self
             .sessions
             .get(id)
             .and_then(|s| s.turn.as_ref())
-            .is_some_and(Turn::running_tools)
+            .and_then(|t| t.segment.as_ref())
+            .is_some_and(|segment| !segment.calls.is_empty())
         {
             self.seal(id);
         }
@@ -2253,14 +2256,20 @@ mod tests {
 
     #[test]
     fn deltas_arriving_out_of_order_still_read_in_order() {
-        let mut segment = Segment::new("msg_1", Body::Text(BTreeMap::new()));
-        let Body::Text(chunks) = &mut segment.body else {
-            panic!("a text segment")
-        };
+        let mut segment = Segment::new();
+        let (_, chunks) = segment.said.insert(("msg_1".to_owned(), BTreeMap::new()));
         chunks.insert(2, "third".to_owned());
         chunks.insert(0, "first ".to_owned());
         chunks.insert(1, "second ".to_owned());
         assert_eq!(segment.text(), "first second third");
+        // The run the words introduce stands under them.
+        segment
+            .calls
+            .push(call("Read", "a", Outcome::Done(Duration::from_secs(1))));
+        assert_eq!(
+            segment.text(),
+            "first second third\n\n● **Read**  `a` **1s**"
+        );
     }
 
     fn call(name: &str, subject: &str, outcome: Outcome) -> Call {

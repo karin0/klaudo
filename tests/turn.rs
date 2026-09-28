@@ -336,10 +336,10 @@ fn a_compaction_reports_its_summary() {
     drop(daemon);
 }
 
-/// A turn that talked, worked and talked again leaves three messages in order, and the
-/// run of tool calls is the middle one.
+/// A run of tool calls stands under the words that introduce it, so a turn that talked,
+/// worked, talked and worked again leaves two messages ahead of its answer.
 #[test]
-fn a_run_of_tool_calls_is_a_message_of_its_own() {
+fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("tools", port);
     let root = temporary.path();
@@ -358,7 +358,12 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
         json!({"hook_event_name": "PostToolUseFailure", "tool_use_id": "t1", "tool_name": "Bash",
                "duration_ms": 4187, "error": "Exit code 1\nassertion failed"}),
         json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "one test fails"}),
-        json!({"hook_event_name": "Stop", "last_assistant_message": "one test fails"}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t3", "tool_name": "Edit",
+               "tool_input": {"file_path": "/src/hook.rs"}}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t3", "tool_name": "Edit",
+               "duration_ms": 20}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m3", "index": 0, "delta": "fixed"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "fixed"}),
     ];
     for mut event in turn {
         event["session_id"] = json!(session);
@@ -373,29 +378,81 @@ fn a_run_of_tool_calls_is_a_message_of_its_own() {
     assert_eq!(
         holding(&made),
         [
-            ("silent", ">run the tests".to_owned()),
-            ("silent", "on it".to_owned()),
+            ("silent", ">run the tests"),
             (
                 "silent",
-                "× **Bash**  `cargo test` **4s**  \n⎿ Exit code 1  \n● [Explore] **Read**  `/src/listen.rs` **12ms**"
-                    .to_owned()
+                "on it\n\n\
+                 × **Bash**  `cargo test` **4s**  \n⎿ Exit code 1  \n\
+                 ● [Explore] **Read**  `/src/listen.rs` **12ms**"
             ),
-            ("ring", "one test fails".to_owned()),
+            (
+                "silent",
+                "one test fails\n\n● **Edit**  `/src/hook.rs` **20ms**"
+            ),
+            ("ring", "fixed"),
         ]
+        .map(|(sound, body)| (sound, body.to_owned()))
     );
     let sent: Vec<&Call> = made
         .iter()
         .filter(|call| call.label.starts_with("sendRichMessage "))
         .collect();
     assert!(
-        sent[2].markdown.starts_with("**project** `01234567/"),
+        sent[1].markdown.starts_with("**project** `01234567/"),
         "the run's head reads {:?}",
-        sent[2].markdown
+        sent[1].markdown
     );
     assert_eq!(
-        sent[2].reply,
+        sent[1].reply,
         replying_to(sent[0].id),
         "the run threads under the prompt"
+    );
+    drop(daemon);
+}
+
+/// A run that would not fit under the words introducing it leaves them their message
+/// and goes on in one of its own.
+#[test]
+fn a_run_outgrowing_the_words_it_follows_goes_on_in_its_own_message() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("parted", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let session = "0123456789abcdef";
+    let long = "x".repeat(32_000);
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": long}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+               "tool_input": {"command": "cargo test"}}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t2", "tool_name": "Bash",
+               "tool_input": {"command": "cargo build"}}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t2", "duration_ms": 40}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "done"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(project(root));
+        hook(root, &event);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    assert_eq!(
+        holding(&made),
+        [
+            ("silent", ">go".to_owned()),
+            ("silent", long.clone()),
+            (
+                "silent",
+                "● **Bash**  `cargo test` **30ms**  \n● **Bash**  `cargo build` **40ms**"
+                    .to_owned()
+            ),
+            ("ring", "done".to_owned()),
+        ]
     );
     drop(daemon);
 }
@@ -437,8 +494,10 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
         holding(&made),
         [
             ("silent", ">go".to_owned()),
-            ("silent", "let me check".to_owned()),
-            ("silent", "● **Bash**  `cargo test` **30ms**".to_owned()),
+            (
+                "silent",
+                "let me check\n\n● **Bash**  `cargo test` **30ms**".to_owned()
+            ),
             ("ring", "checked".to_owned()),
         ]
     );
@@ -1166,7 +1225,7 @@ fn showing(markdown: &str, text: &str) {
         body
     } else {
         body.strip_prefix(text)
-            .and_then(|rest| rest.strip_prefix("  \n"))
+            .and_then(|rest| rest.strip_prefix("\n\n"))
             .expect("what was said and a status line")
     };
     let status = status.strip_prefix("✻ ").expect("the mark");
@@ -1980,10 +2039,9 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
         holding(&made),
         [
             ("silent", ">go"),
-            // The flush that lost the race is written into the message it belongs to.
-            ("silent", "on it now"),
-            // So is the outcome of a call that reported after its run went out.
-            ("silent", "● **Bash**  `cargo test` **30ms**"),
+            // The flush that lost the race is written into the message it belongs to, and
+            // so is the outcome of a call that reported after that message went out.
+            ("silent", "on it now\n\n● **Bash**  `cargo test` **30ms**"),
             ("ring", "done"),
         ]
         .map(|(sound, body)| (sound, body.to_owned()))
