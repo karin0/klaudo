@@ -121,9 +121,8 @@ pub fn run() {
         sessions: saved
             .sessions
             .into_iter()
-            .map(|known| {
-                let mut session =
-                    Session::new(known.dir, known.pid, known.pane, instant(known.seen));
+            .map(|Running { known, pid, pane }| {
+                let mut session = Session::new(known.dir, pid, pane, instant(known.seen));
                 session.trail = known.trail;
                 (known.id, session)
             })
@@ -304,7 +303,7 @@ struct Machine {
     sessions: BTreeMap<String, Session>,
     opening: Vec<Opening>,
     /// Every exited session, oldest first.
-    ended: VecDeque<Ended>,
+    ended: VecDeque<Known>,
     swept: Instant,
     /// Where `Saved` is written.
     state: PathBuf,
@@ -317,30 +316,30 @@ struct Machine {
 /// exited one ran. A turn in flight and what the chat asked of a window are left behind.
 #[derive(Serialize, Deserialize, Default)]
 struct Saved {
-    sessions: Vec<Known>,
-    ended: VecDeque<Ended>,
+    sessions: Vec<Running>,
+    ended: VecDeque<Known>,
 }
 
-/// A session that exited: where it ran, which is where a reply to it resumes it, and
-/// when it was last heard from, which is how recent its project is.
+/// A session the daemon has heard from: where it ran, which is where a reply to it
+/// resumes it once it has exited, and when it was last heard from, which is how recent
+/// its project is.
 #[derive(Serialize, Deserialize, Clone)]
-struct Ended {
-    id: String,
-    dir: PathBuf,
-    /// Unix milliseconds.
-    seen: u64,
-    trail: Trail,
-}
-
-#[derive(Serialize, Deserialize)]
 struct Known {
     id: String,
     dir: PathBuf,
-    pid: u32,
-    pane: Option<Pane>,
     /// Unix milliseconds.
     seen: u64,
     trail: Trail,
+}
+
+/// A running session, with the process and the pane a message from the chat is typed
+/// into.
+#[derive(Serialize, Deserialize)]
+struct Running {
+    #[serde(flatten)]
+    known: Known,
+    pid: u32,
+    pane: Option<Pane>,
 }
 
 /// A state file a different version wrote may not parse, and it only saves the sessions
@@ -453,13 +452,15 @@ impl Machine {
             sessions: self
                 .sessions
                 .iter()
-                .map(|(id, session)| Known {
-                    id: id.clone(),
-                    dir: session.dir.clone(),
+                .map(|(id, session)| Running {
+                    known: Known {
+                        id: id.clone(),
+                        dir: session.dir.clone(),
+                        seen: unix_millis(now - session.seen.elapsed()),
+                        trail: session.trail.clone(),
+                    },
                     pid: session.pid,
                     pane: session.pane.clone(),
-                    seen: unix_millis(now - session.seen.elapsed()),
-                    trail: session.trail.clone(),
                 })
                 .collect(),
             ended: self.ended.clone(),
@@ -595,7 +596,7 @@ impl Machine {
             self.telegram.delete(chat, message);
         }
         let session = self.sessions.remove(id).expect("a session that ended");
-        self.ended.push_back(Ended {
+        self.ended.push_back(Known {
             id: id.to_owned(),
             dir: session.dir,
             seen: unix_millis(SystemTime::now() - session.seen.elapsed()),
