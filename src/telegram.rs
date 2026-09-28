@@ -456,11 +456,7 @@ fn clamp(markdown: &str) -> String {
 /// token changed there is the token every session uses from its next event on, and a
 /// hook command is the binary's own path.
 fn env_file() -> PathBuf {
-    let config = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".config"),
-    };
-    config.join("klaudo").join("env")
+    crate::xdg_home("XDG_CONFIG_HOME", ".config").join("klaudo/env")
 }
 
 /// What a credentials file assigns. A file that cannot be read stops the process, and

@@ -639,17 +639,14 @@ fn a_topic_holds_its_own_conversations() {
     std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
     std::fs::write(
         root.join("run/klaudo/state.json"),
-        json!({
-            "sessions": [{
-                "id": session,
-                "dir": project(root),
-                "pid": std::process::id(),
-                "pane": null,
-                "seen": seen,
-                "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
-            }],
-            "ended": [],
-        })
+        json!([{
+            "id": session,
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "seen": seen,
+            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+        }])
         .to_string(),
     )
     .expect("the state");
@@ -722,17 +719,14 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
     std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
     std::fs::write(
         root.join("run/klaudo/state.json"),
-        json!({
-            "sessions": [{
-                "id": "0123456789abcdef",
-                "dir": project(root),
-                "pid": std::process::id(),
-                "pane": null,
-                "seen": seen,
-                "trail": {"prompt": "", "last": null},
-            }],
-            "ended": [],
-        })
+        json!([{
+            "id": "0123456789abcdef",
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "seen": seen,
+            "trail": {"prompt": "", "last": null},
+        }])
         .to_string(),
     )
     .expect("the state");
@@ -803,7 +797,8 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
 
 /// A session idle through a restart of the daemon stays reachable, and so does one that
 /// ended before it, though the daemon that heard them was killed with no chance to
-/// write anything on its way out.
+/// write anything on its way out. The one that ended stays reachable after a reboot
+/// too, which clears the runtime directory.
 #[test]
 fn what_the_daemon_knows_outlives_a_restart() {
     let (port, calls, chat) = recorder();
@@ -843,12 +838,30 @@ fn what_the_daemon_knows_outlives_a_restart() {
     collect(&calls, |call| {
         call.chat == Some(GROUP) && call.markdown.starts_with("`01234567` ")
     });
-    let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
-    assert!(
-        log.lines()
-            .any(|line| line.starts_with("new-session")
-                && line.ends_with("--resume fedcba9876543210")),
-        "tmux was called as {log:?}"
+    let resumed = || {
+        std::fs::read_to_string(root.join("tmux.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.ends_with("--resume fedcba9876543210"))
+            .count()
+    };
+    assert_eq!(resumed(), 1);
+    drop(daemon);
+
+    std::fs::remove_dir_all(root.join("run")).expect("the runtime directory");
+    std::fs::create_dir(root.join("run")).expect("a fresh runtime directory");
+    let daemon = self::daemon(root);
+    chat.replies(
+        OWNER,
+        OWNER,
+        "pick it up again",
+        &json!({"rich_message": {"blocks": [
+            {"type": "paragraph", "text": [{"type": "code", "text": "fedcba98"}]},
+        ]}}),
+    );
+    wait_for(
+        || resumed() == 2,
+        "the exited session was forgotten at the reboot",
     );
     drop(daemon);
 }
@@ -1378,7 +1391,7 @@ fn klaudo(root: &Path) -> Command {
     within(root, env!("CARGO_BIN_EXE_klaudo"))
 }
 
-/// Both directories the binary resolves what it needs from point into the throwaway
+/// Every directory the binary resolves what it needs from point into the throwaway
 /// root, and so does the first `tmux` on the path.
 fn within(root: &Path, program: &str) -> Command {
     let path = std::env::join_paths(std::iter::once(root.join("bin")).chain(
@@ -1390,6 +1403,7 @@ fn within(root: &Path, program: &str) -> Command {
         .env("PATH", path)
         .env("XDG_RUNTIME_DIR", root.join("run"))
         .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_STATE_HOME", root.join("state"))
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .env_remove("CLAUDE_CODE_SESSION_ID")

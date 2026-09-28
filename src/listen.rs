@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -113,13 +114,23 @@ pub fn run() {
     std::thread::spawn(move || poll(&path));
     let arrivals = read(socket);
 
-    let state = directory.join("state.json");
-    let saved = load(&state);
+    let running_file = directory.join("state.json");
+    // A list a different version wrote may not parse, and it only saves the sessions
+    // from waiting for their next event, so that costs a warning.
+    let running: Vec<Running> = load(&running_file).unwrap_or_else(|error| {
+        eprintln!("{}: {error}", running_file.display());
+        Vec::new()
+    });
+    // The next save would overwrite a record that does not parse.
+    let kept = crate::xdg_home("XDG_STATE_HOME", ".local/state").join("klaudo");
+    fs::create_dir_all(&kept).expect("state directory");
+    let ended_file = kept.join("ended.json");
+    let ended =
+        load(&ended_file).unwrap_or_else(|error| panic!("{}: {error}", ended_file.display()));
     let mut machine = Machine {
         telegram: Telegram::new(),
         answers,
-        sessions: saved
-            .sessions
+        sessions: running
             .into_iter()
             .map(|Running { known, pid, pane }| {
                 let mut session = Session::new(known.dir, pid, pane, known.seen);
@@ -128,9 +139,10 @@ pub fn run() {
             })
             .collect(),
         opening: Vec::new(),
-        ended: saved.ended,
+        ended,
         swept: Instant::now(),
-        state,
+        running_file,
+        ended_file,
         limits: None,
     };
     // Whatever exited while nothing was listening.
@@ -302,19 +314,13 @@ struct Machine {
     /// Every exited session, oldest first.
     ended: VecDeque<Known>,
     swept: Instant,
-    /// Where `Saved` is written.
-    state: PathBuf,
+    /// Where the running sessions are written. A reboot clears it, along with the
+    /// processes and panes it names.
+    running_file: PathBuf,
+    /// Where `ended` is written, which outlives a reboot.
+    ended_file: PathBuf,
     /// The limits a status line last reported, and when, in Unix seconds.
     limits: Option<(Limits, u64)>,
-}
-
-/// What of the daemon outlives a restart, so a session idle through one is still
-/// reachable: where each session is and when it was last heard from, and where each
-/// exited one ran. A turn in flight and what the chat asked of a window are left behind.
-#[derive(Serialize, Deserialize, Default)]
-struct Saved {
-    sessions: Vec<Running>,
-    ended: VecDeque<Known>,
 }
 
 /// A session the daemon has heard from: where it ran, which is where a reply to it
@@ -330,7 +336,9 @@ struct Known {
 }
 
 /// A running session, with the process and the pane a message from the chat is typed
-/// into.
+/// into. What the daemon saves of it outlives a restart, so a session idle through one
+/// is still reachable, while a turn in flight and what the chat asked of a window are
+/// left behind.
 #[derive(Serialize, Deserialize)]
 struct Running {
     #[serde(flatten)]
@@ -339,18 +347,22 @@ struct Running {
     pane: Option<Pane>,
 }
 
-/// A state file a different version wrote may not parse, and it only saves the sessions
-/// from waiting for their next event, so that costs a warning.
-fn load(path: &Path) -> Saved {
-    let raw = match fs::read(path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Saved::default(),
+/// A file not written yet holds nothing.
+fn load<T: DeserializeOwned + Default>(path: &Path) -> serde_json::Result<T> {
+    match fs::read(path) {
+        Ok(raw) => serde_json::from_slice(&raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(error) => panic!("{}: {error}", path.display()),
-    };
-    serde_json::from_slice(&raw).unwrap_or_else(|error| {
-        eprintln!("{}: {error}", path.display());
-        Saved::default()
-    })
+    }
+}
+
+/// Renamed into place, so a daemon killed mid-write leaves the last version whole.
+fn store(path: &Path, value: &impl Serialize) {
+    let written = path.with_extension("tmp");
+    let raw = serde_json::to_vec(value).expect("the state serializes");
+    if let Err(error) = fs::write(&written, raw).and_then(|()| fs::rename(&written, path)) {
+        eprintln!("save {}: {error}", path.display());
+    }
 }
 
 /// The time now in Unix milliseconds.
@@ -402,7 +414,11 @@ impl Machine {
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
         let directory = event.directory();
         if !self.sessions.contains_key(&id) {
+            let before = self.ended.len();
             self.ended.retain(|ended| ended.id != id);
+            if self.ended.len() < before {
+                self.save_ended();
+            }
         }
         let session = self.sessions.entry(id.clone()).or_insert_with(|| {
             Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), now_millis())
@@ -440,31 +456,27 @@ impl Machine {
     }
 
     fn save(&self) {
-        let saved = Saved {
-            sessions: self
-                .sessions
-                .iter()
-                .map(|(id, session)| Running {
-                    known: Known {
-                        id: id.clone(),
-                        dir: session.dir.clone(),
-                        seen: session.seen,
-                        trail: session.trail.clone(),
-                    },
-                    pid: session.pid,
-                    pane: session.pane.clone(),
-                })
-                .collect(),
-            ended: self.ended.clone(),
-        };
-        // Renamed into place, so a daemon killed mid-write leaves the last state whole.
-        let written = self.state.with_extension("tmp");
-        let raw = serde_json::to_vec(&saved).expect("the state serializes");
-        if let Err(error) =
-            fs::write(&written, raw).and_then(|()| fs::rename(&written, &self.state))
-        {
-            eprintln!("save {}: {error}", self.state.display());
-        }
+        let running: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|(id, session)| Running {
+                known: Known {
+                    id: id.clone(),
+                    dir: session.dir.clone(),
+                    seen: session.seen,
+                    trail: session.trail.clone(),
+                },
+                pid: session.pid,
+                pane: session.pane.clone(),
+            })
+            .collect();
+        store(&self.running_file, &running);
+    }
+
+    /// Written only when `ended` changes, since it is on disk and far larger than the
+    /// running sessions.
+    fn save_ended(&self) {
+        store(&self.ended_file, &self.ended);
     }
 
     /// Where a file the session asks to show goes: the thread of its turn, below
@@ -597,6 +609,7 @@ impl Machine {
         if self.ended.len() > ENDED_MAX {
             self.ended.pop_front();
         }
+        self.save_ended();
     }
 
     fn say(&self, place: Place, text: &str) {
