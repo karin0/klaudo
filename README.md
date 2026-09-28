@@ -40,6 +40,12 @@ Klaŭdo puts a call's command, path or pattern in a code span, so markdown insid
 stays literal, and escapes the markdown in every other sentence a person or a tool
 wrote. Claude Code answers in markdown, and Klaŭdo posts that markdown as it is.
 
+The calls that finished ahead of the first one still running fold into one expandable
+quotation once their descriptions and subjects together run past 120 characters, three
+lines of a phone's screen. The running calls stay under it in view. Markdown isn't
+parsed inside a block HTML tag, so the folded calls are written in HTML, and a blank
+line keeps the quotation apart from the lines under it.
+
 Telegram's message drafts would do the open segment's job in one call, and Klaŭdo was
 built on them first. A draft expires thirty seconds after its last frame, no method
 retires it, and clients differ on what they do when the real message arrives beside it,
