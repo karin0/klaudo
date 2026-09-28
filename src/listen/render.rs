@@ -18,9 +18,6 @@ const BREAK: &str = "  \n";
 /// How long the finished calls of a run read together before they are folded: three
 /// lines of a phone's screen, which is what a folded quotation still shows.
 const FOLD_OVER: usize = 120;
-/// The first line of what a failed tool reported, past which it stops reading at a
-/// glance.
-const WHY_MAX: usize = 60;
 
 /// How a tool call went, and how long it took getting there.
 pub(super) enum Outcome {
@@ -173,17 +170,13 @@ fn spent(elapsed: Duration) -> String {
     }
 }
 
-/// What a failed tool reported, in one line.
-pub(super) fn why(error: &str) -> String {
-    let first = error.lines().next().unwrap_or_default().trim();
-    if first.chars().count() <= WHY_MAX {
+/// The first line of `text`, cut to `max` characters and an ellipsis past that.
+pub(super) fn first_line(text: &str, max: usize) -> String {
+    let first = text.lines().next().unwrap_or_default().trim();
+    if first.chars().count() <= max {
         return first.to_owned();
     }
-    first
-        .chars()
-        .take(WHY_MAX)
-        .chain("\u{2026}".chars())
-        .collect()
+    first.chars().take(max).chain("\u{2026}".chars()).collect()
 }
 
 pub(super) fn took(elapsed: Duration) -> String {
@@ -358,8 +351,9 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_reports_its_first_line_alone() {
-        assert_eq!(why("Exit code 1\nError: nope"), "Exit code 1");
-        assert_eq!(why(&"x".repeat(WHY_MAX + 5)).chars().count(), WHY_MAX + 1);
+    fn a_first_line_is_cut_to_its_room() {
+        assert_eq!(first_line(" Exit code 1\nError: nope", 60), "Exit code 1");
+        assert_eq!(first_line(&"x".repeat(9), 5), "xxxxx\u{2026}");
+        assert_eq!(first_line("xxxxx", 5), "xxxxx");
     }
 }
