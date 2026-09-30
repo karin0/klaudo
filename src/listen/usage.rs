@@ -6,7 +6,9 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::hook;
-use crate::telegram::{Message, Place};
+use kuriero::Message;
+
+use crate::telegram::Place;
 
 use super::chat::{NEW, ago};
 use super::{Machine, now_millis};

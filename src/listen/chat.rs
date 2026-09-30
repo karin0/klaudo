@@ -3,8 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use kuriero::{CallbackQuery, Entity, Message, RichText, User};
+
 use crate::hook;
-use crate::telegram::{CallbackQuery, Entity, Message, Place, RichText, User};
+use crate::telegram::Place;
 use crate::tmux;
 
 use super::render::code;
@@ -178,20 +180,23 @@ impl Machine {
     /// restart still works.
     pub(super) fn press(&mut self, press: &CallbackQuery) {
         self.telegram.answer(&press.id);
-        let Some(place) = self.admitted(Some(&press.from), &press.message) else {
+        let (Some(message), Some(data)) = (&press.message, press.data.as_deref()) else {
             return;
         };
-        let menu = press.message.id;
-        let Some(label) = label(&press.message, &press.data) else {
+        let Some(place) = self.admitted(Some(&press.from), message) else {
             return;
         };
-        if press.data == PROJECTS {
+        let menu = message.id;
+        let Some(label) = label(message, data) else {
+            return;
+        };
+        if data == PROJECTS {
             if let Some(buttons) = self.choices(place, RESUME, None) {
                 self.telegram.remenu(place.chat, menu, RESUMING, &buttons);
             }
             return;
         }
-        match press.data.split_once(' ') {
+        match data.split_once(' ') {
             // An anchor opens the reply box only as it arrives, so it is a message of
             // its own, and a menu left behind is one mistaken press from a second one.
             Some((NEW, _)) => {
@@ -209,7 +214,7 @@ impl Machine {
                     self.telegram.delete(place.chat, menu);
                 }
             }
-            _ => eprintln!("press: {}", press.data),
+            _ => eprintln!("press: {data}"),
         }
     }
 
