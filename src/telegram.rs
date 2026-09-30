@@ -3,8 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use kuriero::{Client, Message, Sent, Update, User};
-use serde::de::{DeserializeOwned, IgnoredAny};
+use kuriero::{
+    AnswerCallbackQuery, BotCommand, Button, Client, CommandScope, Content, DeleteMessage,
+    EditMessageText, Keyboard, Message, Method, ParseMode, Reaction, ReplyMarkup, ReplyParameters,
+    RichInput, SendMessage, SendRichMessage, SetMessageReaction, SetMyCommands, Update, User,
+};
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ureq::unversioned::multipart::{Form, Part};
@@ -46,13 +50,6 @@ impl Place {
         Self {
             chat: message.chat.id,
             topic: message.topic(),
-        }
-    }
-
-    fn address(self, body: &mut Value) {
-        body["chat_id"] = json!(self.chat);
-        if let Some(topic) = self.topic {
-            body["message_thread_id"] = json!(topic);
         }
     }
 }
@@ -97,8 +94,8 @@ impl Telegram {
         sound: Sound,
         reply_to: Option<i64>,
     ) -> Option<i64> {
-        let body = rich(place, markdown, sound, reply_to);
-        self.call::<Sent>("sendRichMessage", &body)
+        let markdown = clamp(markdown);
+        self.call(&rich(place, &markdown, sound, reply_to))
             .map(|sent| sent.id)
     }
 
@@ -112,13 +109,16 @@ impl Telegram {
         placeholder: &str,
         reply_to: Option<i64>,
     ) -> Option<i64> {
-        let mut body = rich(place, markdown, Sound::Silent, reply_to);
-        body["reply_markup"] = json!({
-            "force_reply": true,
-            "input_field_placeholder": placeholder.chars().take(PLACEHOLDER_MAX).collect::<String>(),
-        });
-        self.call::<Sent>("sendRichMessage", &body)
-            .map(|sent| sent.id)
+        let markdown = clamp(markdown);
+        let placeholder: String = placeholder.chars().take(PLACEHOLDER_MAX).collect();
+        let body = SendRichMessage {
+            reply_markup: Some(ReplyMarkup::ForceReply {
+                force_reply: true,
+                input_field_placeholder: &placeholder,
+            }),
+            ..rich(place, &markdown, Sound::Silent, reply_to)
+        };
+        self.call(&body).map(|sent| sent.id)
     }
 
     /// Posts files without a sound, under an HTML caption where one is given, since a
@@ -133,7 +133,9 @@ impl Telegram {
     ) -> Option<()> {
         let chat = place.chat.to_string();
         let topic = place.topic.map(|topic| topic.to_string());
-        let reply = reply_to.map(|message_id| replying(message_id).to_string());
+        let reply = reply_to.map(|message_id| {
+            serde_json::to_string(&replying(message_id)).expect("reply parameters")
+        });
         let names: Vec<String> = (0..paths.len())
             .map(|index| format!("file{index}"))
             .collect();
@@ -188,39 +190,31 @@ impl Telegram {
     /// Rewrites a message the daemon posted, for a segment that received more after it
     /// went out, or a menu that leads to the next choice.
     pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
-        self.call::<IgnoredAny>(
-            "editMessageText",
-            &json!({
-                "chat_id": chat,
-                "message_id": message_id,
-                "rich_message": {"markdown": clamp(markdown)},
-            }),
-        );
+        self.call(&EditMessageText {
+            chat_id: chat,
+            message_id,
+            content: Content::Rich(RichInput::Markdown(&clamp(markdown))),
+            reply_markup: None,
+        });
     }
 
     /// Takes back a message the daemon posted, which is how the one showing a turn's
     /// last segment goes once the answer repeating it is in the chat.
     pub fn delete(&self, chat: i64, message_id: i64) {
-        self.call::<IgnoredAny>(
-            "deleteMessage",
-            &json!({
-                "chat_id": chat,
-                "message_id": message_id,
-            }),
-        );
+        self.call(&DeleteMessage {
+            chat_id: chat,
+            message_id,
+        });
     }
 
     /// Marks a message the daemon typed into a terminal, which is what tells its sender
     /// the prompt was accepted while the turn is still working.
     pub fn acknowledge(&self, chat: i64, message_id: i64) {
-        self.call::<IgnoredAny>(
-            "setMessageReaction",
-            &json!({
-                "chat_id": chat,
-                "message_id": message_id,
-                "reaction": [{"type": "emoji", "emoji": SEEN}],
-            }),
-        );
+        self.call(&SetMessageReaction {
+            chat_id: chat,
+            message_id,
+            reaction: &[Reaction::Emoji { emoji: SEEN }],
+        });
     }
 
     /// Where a turn of the project at `dir` goes when nobody asked for it from the chat.
@@ -245,64 +239,67 @@ impl Telegram {
     /// A plain message with a button on each row, each button carrying `(label, data)`.
     /// The menu is what to pick from, so it arrives without a sound.
     pub fn menu(&self, place: Place, text: &str, buttons: &[(String, String)]) -> Option<i64> {
-        let mut body = json!({
-            "text": text,
-            "disable_notification": true,
-            "reply_markup": keyboard(buttons),
-        });
-        place.address(&mut body);
-        self.call::<Sent>("sendMessage", &body).map(|sent| sent.id)
+        let body = SendMessage {
+            disable_notification: true,
+            reply_markup: Some(keyboard(buttons)),
+            ..SendMessage::new(place.chat, place.topic, text)
+        };
+        self.call(&body).map(|sent| sent.id)
     }
 
     /// A silent message in Telegram's HTML, for what markdown has no syntax for, such as a
     /// time each reader's client writes in their own zone.
     pub fn html(&self, place: Place, html: &str, reply_to: i64) -> Option<i64> {
-        let mut body = json!({
-            "text": html,
-            "parse_mode": "HTML",
-            "disable_notification": true,
-            "reply_parameters": replying(reply_to),
-        });
-        place.address(&mut body);
-        self.call::<Sent>("sendMessage", &body).map(|sent| sent.id)
+        let body = SendMessage {
+            parse_mode: Some(ParseMode::Html),
+            disable_notification: true,
+            reply_parameters: Some(replying(reply_to)),
+            ..SendMessage::new(place.chat, place.topic, html)
+        };
+        self.call(&body).map(|sent| sent.id)
     }
 
     /// Rewrites a menu into the next choice it leads to.
     pub fn remenu(&self, chat: i64, message_id: i64, text: &str, buttons: &[(String, String)]) {
-        self.call::<IgnoredAny>(
-            "editMessageText",
-            &json!({
-                "chat_id": chat,
-                "message_id": message_id,
-                "text": text,
-                "reply_markup": keyboard(buttons),
-            }),
-        );
+        self.call(&EditMessageText {
+            chat_id: chat,
+            message_id,
+            content: Content::Text(text),
+            reply_markup: Some(keyboard(buttons)),
+        });
     }
 
     /// Stops the client's progress bar on a pressed button, which it shows until this.
     pub fn answer(&self, query: &str) {
-        self.call::<IgnoredAny>("answerCallbackQuery", &json!({"callback_query_id": query}));
+        self.call(&AnswerCallbackQuery {
+            callback_query_id: query,
+        });
     }
 
     /// Lists `commands` in the command menu of both chats Klaŭdo answers in, shown to
     /// the user alone, since nobody else is answered.
     pub fn register(&self, commands: &[(&str, &str)]) {
-        let commands: Vec<Value> = commands
+        let commands: Vec<BotCommand> = commands
             .iter()
-            .map(|(command, description)| json!({"command": command, "description": description}))
+            .map(|&(command, description)| BotCommand {
+                command,
+                description,
+            })
             .collect();
-        let mut scopes = vec![json!({"type": "chat", "chat_id": self.user_id})];
+        let mut scopes = vec![CommandScope::Chat {
+            chat_id: self.user_id,
+        }];
         if self.chat_id != self.user_id {
-            scopes.push(
-                json!({"type": "chat_member", "chat_id": self.chat_id, "user_id": self.user_id}),
-            );
+            scopes.push(CommandScope::ChatMember {
+                chat_id: self.chat_id,
+                user_id: self.user_id,
+            });
         }
         for scope in scopes {
-            self.call::<IgnoredAny>(
-                "setMyCommands",
-                &json!({"commands": commands, "scope": scope}),
-            );
+            self.call(&SetMyCommands {
+                commands: &commands,
+                scope,
+            });
         }
     }
 
@@ -314,8 +311,8 @@ impl Telegram {
         )
     }
 
-    fn call<R: DeserializeOwned>(&self, method: &str, body: &Value) -> Option<R> {
-        logged(method, self.client.call(method, body))
+    fn call<M: Method>(&self, body: &M) -> Option<M::Response> {
+        logged(M::NAME, self.client.send(body))
     }
 }
 
@@ -326,32 +323,33 @@ fn logged<R>(method: &str, result: Result<R, kuriero::Error>) -> Option<R> {
         .ok()
 }
 
-fn rich(place: Place, markdown: &str, sound: Sound, reply_to: Option<i64>) -> Value {
-    let mut body = json!({
-        "disable_notification": matches!(sound, Sound::Silent),
-        "rich_message": {"markdown": clamp(markdown)},
-    });
-    place.address(&mut body);
-    if let Some(message_id) = reply_to {
-        body["reply_parameters"] = replying(message_id);
+fn rich(place: Place, markdown: &str, sound: Sound, reply_to: Option<i64>) -> SendRichMessage<'_> {
+    SendRichMessage {
+        disable_notification: matches!(sound, Sound::Silent),
+        reply_parameters: reply_to.map(replying),
+        ..SendRichMessage::new(place.chat, place.topic, RichInput::Markdown(markdown))
     }
-    body
 }
 
-fn keyboard(buttons: &[(String, String)]) -> Value {
-    let rows: Vec<Value> = buttons
+fn keyboard(buttons: &[(String, String)]) -> ReplyMarkup<'static> {
+    let inline_keyboard = buttons
         .iter()
-        .map(|(label, data)| json!([{"text": label, "callback_data": data}]))
+        .map(|(label, data)| {
+            vec![Button {
+                text: label.clone(),
+                callback_data: Some(data.clone()),
+            }]
+        })
         .collect();
-    json!({"inline_keyboard": rows})
+    ReplyMarkup::Keyboard(Keyboard { inline_keyboard })
 }
 
 /// A prompt the user deleted must not take the answer to it down as well.
-fn replying(message_id: i64) -> Value {
-    json!({
-        "message_id": message_id,
-        "allow_sending_without_reply": true,
-    })
+fn replying(message_id: i64) -> ReplyParameters {
+    ReplyParameters {
+        message_id,
+        allow_sending_without_reply: true,
+    }
 }
 
 fn clamp(markdown: &str) -> String {
@@ -500,16 +498,5 @@ mod tests {
     #[should_panic(expected = "USER_ID is needed")]
     fn a_group_without_a_user_stops_the_process() {
         user(-1001, None);
-    }
-
-    #[test]
-    fn a_place_addresses_its_chat_and_topic() {
-        let mut body = json!({});
-        Place {
-            chat: 7,
-            topic: Some(77),
-        }
-        .address(&mut body);
-        assert_eq!(body, json!({"chat_id": 7, "message_thread_id": 77}));
     }
 }

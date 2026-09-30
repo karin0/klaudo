@@ -1686,7 +1686,13 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
                 id,
             })
             .expect("record");
-        json!({"ok": true, "result": {"message_id": id}}).to_string()
+        let result = match method.as_str() {
+            "setMyCommands" | "deleteMessage" | "setMessageReaction" | "answerCallbackQuery" => {
+                json!(true)
+            }
+            _ => json!({"message_id": id}),
+        };
+        json!({"ok": true, "result": result}).to_string()
     };
     // A daemon killed while its poll was held has left nobody to answer.
     let _ = write!(
