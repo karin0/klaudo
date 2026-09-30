@@ -3,11 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
-use serde_json::Value;
-
 use crate::hook;
-use crate::telegram::Place;
+use crate::telegram::{CallbackQuery, Entity, Message, Place, RichText, User};
 use crate::tmux;
 
 use super::render::code;
@@ -38,16 +35,6 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
 
 /// How many choices a menu offers, which a phone shows without scrolling.
 const MENU_MAX: usize = 8;
-
-/// A button the chat pressed on a menu the daemon posted. The menu is the message the
-/// button hangs from, and `data` names the button.
-#[derive(Deserialize)]
-pub(super) struct Press {
-    pub(super) id: String,
-    from: Value,
-    pub(super) message: Value,
-    data: String,
-}
 
 impl Machine {
     /// A session is ready for input once it says so, which is after the dialog that
@@ -81,18 +68,16 @@ impl Machine {
     /// session reaches that session, and the message `/new` left behind opens a
     /// conversation in the directory it names. A message replying to nothing goes to
     /// the session heard from last in its place.
-    pub(super) fn chat(&mut self, message: &Value) {
-        let Some(place) = self.admitted(&message["from"], message) else {
+    pub(super) fn chat(&mut self, message: &Message) {
+        let Some(place) = self.admitted(message.from.as_ref(), message) else {
             return;
         };
-        let text = message["text"].as_str().unwrap_or_default().trim();
+        let text = message.text.as_deref().unwrap_or_default().trim();
         if text.is_empty() {
             return;
         }
-        let Some(carrier) = message["message_id"].as_i64() else {
-            return;
-        };
-        let replied = &message["reply_to_message"];
+        let carrier = message.id;
+        let replied = message.replied.as_deref();
         match command(text) {
             Some((NEW, "")) => {
                 let lead = self.reached(place, replied);
@@ -124,7 +109,7 @@ impl Machine {
         // A session that exited without saying so is resumed rather than typed into.
         self.sweep();
         match self.addressee(place, replied) {
-            Ok(Some(address)) if address == NEW => match body(replied) {
+            Ok(Some(address)) if address == NEW => match replied.and_then(body) {
                 Some(cwd) => self.open(PathBuf::from(cwd), None, ask),
                 None => self.say(place, "that anchor names no directory"),
             },
@@ -145,27 +130,29 @@ impl Machine {
     pub(super) fn addressee(
         &self,
         place: Place,
-        replied: &Value,
+        replied: Option<&Message>,
     ) -> Result<Option<String>, &'static str> {
         // A message in a topic that replies to nothing replies to the service message
         // that opened the topic.
-        let opened = &replied["forum_topic_created"];
-        if replied.is_null() || opened.is_object() {
-            let outside = (opened["is_name_implicit"] == Value::Bool(true)).then_some(Place {
-                topic: None,
-                ..place
-            });
-            return Ok(self
-                .latest(place)
-                .or_else(|| outside.and_then(|outside| self.latest(outside))));
+        if let Some(replied) = replied.filter(|replied| replied.opened.is_none()) {
+            return address(replied)
+                .map(Some)
+                .ok_or("the message replied to names no session");
         }
-        address(replied)
-            .map(Some)
-            .ok_or("the message replied to names no session")
+        let implicit = replied
+            .and_then(|replied| replied.opened.as_ref())
+            .is_some_and(|opened| opened.implicit);
+        let outside = implicit.then_some(Place {
+            topic: None,
+            ..place
+        });
+        Ok(self
+            .latest(place)
+            .or_else(|| outside.and_then(|outside| self.latest(outside))))
     }
 
     /// The directory of the session a message would reach, which leads a menu it asks for.
-    fn reached(&self, place: Place, replied: &Value) -> Option<&Path> {
+    fn reached(&self, place: Place, replied: Option<&Message>) -> Option<&Path> {
         let id = self.addressee(place, replied).ok()??;
         self.known()
             .find(|(known, _, _, _)| known.starts_with(&id))
@@ -173,16 +160,15 @@ impl Machine {
     }
 
     /// Where a message came from, when it is one to act on.
-    fn admitted(&self, sender: &Value, message: &Value) -> Option<Place> {
+    fn admitted(&self, sender: Option<&User>, message: &Message) -> Option<Place> {
         let place = self.telegram.accepts(sender, message);
         if place.is_none() {
             // The ids to put in the env file are read from here.
-            let chat = &message["chat"];
             eprintln!(
-                "ignored: chat {} {:?} from {}",
-                chat["id"],
-                chat["title"].as_str().unwrap_or_default(),
-                sender["id"]
+                "ignored: chat {} {:?} from {:?}",
+                message.chat.id,
+                message.chat.title.as_deref().unwrap_or_default(),
+                sender.map(|sender| sender.id)
             );
         }
         place
@@ -190,14 +176,12 @@ impl Machine {
 
     /// A button pressed on a menu. Its label is what it picks, so a menu posted before a
     /// restart still works.
-    pub(super) fn press(&mut self, press: &Press) {
+    pub(super) fn press(&mut self, press: &CallbackQuery) {
         self.telegram.answer(&press.id);
-        let Some(place) = self.admitted(&press.from, &press.message) else {
+        let Some(place) = self.admitted(Some(&press.from), &press.message) else {
             return;
         };
-        let Some(menu) = press.message["message_id"].as_i64() else {
-            return;
-        };
+        let menu = press.message.id;
         let Some(label) = label(&press.message, &press.data) else {
             return;
         };
@@ -474,34 +458,33 @@ impl Machine {
 
 /// The address in the head of a message Klaŭdo posted, which is the session it belongs
 /// to or the anchor of a conversation that has not started.
-fn address(message: &Value) -> Option<String> {
+fn address(message: &Message) -> Option<String> {
     let code = headed(message)
-        .or_else(|| coded(&message["caption"], &message["caption_entities"]))
-        .or_else(|| coded(&message["text"], &message["entities"]))?;
+        .or_else(|| coded(message.caption.as_deref(), &message.caption_entities))
+        .or_else(|| coded(message.text.as_deref(), &message.entities))?;
     let session = code.split('/').next()?;
     (!session.is_empty()).then(|| session.to_owned())
 }
 
-fn headed(message: &Value) -> Option<String> {
-    let spans = paragraph(message, 0)?.as_array()?;
-    let code = spans.iter().find(|span| span["type"] == "code")?;
-    Some(plain(&code["text"]))
+fn headed(message: &Message) -> Option<String> {
+    let RichText::Pieces(pieces) = paragraph(message, 0)? else {
+        return None;
+    };
+    pieces.iter().find_map(|piece| match piece {
+        RichText::Span(span) if span.kind == "code" => span.text.as_deref().map(plain),
+        _ => None,
+    })
 }
 
 /// The code span of a message Klaŭdo posted as text with entities: a file, whose head
 /// is its caption, or an HTML message. Entities count UTF-16 code units.
-fn coded(text: &Value, entities: &Value) -> Option<String> {
-    let text: Vec<u16> = text.as_str()?.encode_utf16().collect();
-    let code = entities
-        .as_array()?
-        .iter()
-        .find(|entity| entity["type"] == "code")?;
-    let start = usize::try_from(code["offset"].as_u64()?).ok()?;
-    let end = start + usize::try_from(code["length"].as_u64()?).ok()?;
-    String::from_utf16(text.get(start..end)?).ok()
+fn coded(text: Option<&str>, entities: &[Entity]) -> Option<String> {
+    let text: Vec<u16> = text?.encode_utf16().collect();
+    let code = entities.iter().find(|entity| entity.kind == "code")?;
+    String::from_utf16(text.get(code.offset..code.offset + code.length)?).ok()
 }
 
-fn body(message: &Value) -> Option<String> {
+fn body(message: &Message) -> Option<String> {
     let body = plain(paragraph(message, 1)?);
     let body = body.trim();
     (!body.is_empty()).then(|| body.to_owned())
@@ -509,19 +492,17 @@ fn body(message: &Value) -> Option<String> {
 
 /// A message Klaŭdo posted comes back as the blocks Telegram rendered its markdown
 /// into, so its head and its body are the first two paragraphs of that.
-fn paragraph(message: &Value, index: usize) -> Option<&Value> {
-    let block = message["rich_message"]["blocks"].get(index)?;
-    (block["type"] == "paragraph").then(|| &block["text"])
+fn paragraph(message: &Message, index: usize) -> Option<&RichText> {
+    let block = message.rich.as_ref()?.blocks.get(index)?;
+    (block.kind == "paragraph").then_some(block.text.as_ref()?)
 }
 
-/// The text of a paragraph, or of one span of it, which Telegram writes as a bare
-/// string wherever it carries no formatting of its own.
-fn plain(node: &Value) -> String {
-    match node {
-        Value::String(text) => text.clone(),
-        Value::Array(spans) => spans.iter().map(plain).collect(),
-        Value::Object(_) => plain(&node["text"]),
-        _ => String::new(),
+/// The text of a paragraph, or of one span of it.
+fn plain(text: &RichText) -> String {
+    match text {
+        RichText::Plain(text) => text.clone(),
+        RichText::Pieces(pieces) => pieces.iter().map(plain).collect(),
+        RichText::Span(span) => span.text.as_deref().map(plain).unwrap_or_default(),
     }
 }
 
@@ -556,14 +537,14 @@ fn unaddressed(text: &str) -> String {
 }
 
 /// The label of the button in a menu that carries `data`.
-fn label(menu: &Value, data: &str) -> Option<String> {
-    menu["reply_markup"]["inline_keyboard"]
-        .as_array()?
+fn label(menu: &Message, data: &str) -> Option<String> {
+    menu.keyboard
+        .as_ref()?
+        .inline_keyboard
         .iter()
-        .flat_map(|row| row.as_array().into_iter().flatten())
-        .find(|button| button["callback_data"] == data)?["text"]
-        .as_str()
-        .map(str::to_owned)
+        .flatten()
+        .find(|button| button.callback_data.as_deref() == Some(data))
+        .map(|button| button.text.clone())
 }
 
 /// A directory as it would be typed in the chat, which `expand` reads back.
@@ -591,15 +572,25 @@ fn expand(argument: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
+    /// `message` with the fields Telegram puts on every message it delivers.
+    fn delivered(mut message: Value) -> Message {
+        message["message_id"] = serde_json::json!(1);
+        message["date"] = serde_json::json!(0);
+        message["chat"] = serde_json::json!({"id": 7});
+        serde_json::from_value(message).expect("a message")
+    }
+
     /// A message Klaŭdo posted, as Telegram hands it back in the reply to it.
-    fn posted(paragraphs: &[Value]) -> Value {
+    fn posted(paragraphs: &[Value]) -> Message {
         let blocks: Vec<Value> = paragraphs
             .iter()
             .map(|text| serde_json::json!({"type": "paragraph", "text": text}))
             .collect();
-        serde_json::json!({"rich_message": {"blocks": blocks}})
+        delivered(serde_json::json!({"rich_message": {"blocks": blocks}}))
     }
 
     fn head_of(address: &str) -> Value {
@@ -619,16 +610,16 @@ mod tests {
         let anchor = posted(&[head_of(NEW), "/home/u/p".into()]);
         assert_eq!(address(&anchor).as_deref(), Some(NEW));
         assert_eq!(address(&posted(&["plain".into()])), None);
-        let document = serde_json::json!({
+        let document = delivered(serde_json::json!({
             "caption": "🐱 01234567/fedcba98 5s",
             "caption_entities": [
                 {"type": "bold", "offset": 0, "length": 2},
                 {"type": "code", "offset": 3, "length": 17},
             ],
-        });
+        }));
         assert_eq!(address(&document).as_deref(), Some("01234567"));
         assert_eq!(
-            address(&serde_json::json!({"text": "from the phone"})),
+            address(&delivered(serde_json::json!({"text": "from the phone"}))),
             None
         );
     }
@@ -689,10 +680,10 @@ mod tests {
 
     #[test]
     fn a_pressed_button_is_found_by_the_data_it_carries() {
-        let menu = serde_json::json!({"reply_markup": {"inline_keyboard": [
+        let menu = delivered(serde_json::json!({"reply_markup": {"inline_keyboard": [
             [{"text": "~/a", "callback_data": "new 0"}],
             [{"text": "~/b", "callback_data": "new 1"}],
-        ]}});
+        ]}}));
         assert_eq!(label(&menu, "new 1").as_deref(), Some("~/b"));
         assert_eq!(label(&menu, "new 2"), None);
     }

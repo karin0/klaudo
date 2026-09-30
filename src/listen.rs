@@ -17,13 +17,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::hook::{self, Event};
-use crate::telegram::{Place, Sound, Telegram};
+use crate::telegram::{CallbackQuery, Message, Place, Sound, Telegram};
 use crate::tmux::Pane;
 
-use chat::{COMMANDS, Press, tilde};
+use chat::{COMMANDS, tilde};
 use render::{code, took};
 use turn::{Ask, SETTLE, Thread, Turn};
 use usage::{Limits, Status, Window};
@@ -76,13 +75,13 @@ struct Handoff {
 enum Arrival {
     Hook(Box<Handoff>),
     Press {
-        press: Press,
+        press: CallbackQuery,
     },
     Status {
         status: Status,
     },
     Chat {
-        message: Value,
+        message: Message,
     },
     Locate {
         session: Option<String>,
@@ -202,7 +201,8 @@ fn acquire(lock: &File) -> bool {
 fn poll(target: &Path) {
     let telegram = Telegram::new();
     telegram.register(COMMANDS);
-    let started = now_millis() / 1000;
+    let started =
+        i64::try_from(now_millis() / 1000).expect("any u64 of milliseconds fits an i64 in seconds");
     let socket = UnixDatagram::unbound().expect("socket");
     let mut offset = 0;
     loop {
@@ -211,20 +211,15 @@ fn poll(target: &Path) {
             continue;
         };
         for update in updates {
-            if let Some(id) = update["update_id"].as_i64() {
-                offset = id + 1;
-            }
+            offset = update.id + 1;
             // A press only redraws a menu or posts an anchor, so a backlog of them
             // replays nothing a terminal would take.
-            let handoff = if update["callback_query"].is_object() {
-                serde_json::json!({"press": update["callback_query"]})
-            } else {
-                let message = &update["message"];
-                let sent = message["date"].as_i64().unwrap_or_default();
-                if message.is_null() || sent < i64::try_from(started).unwrap_or(i64::MAX) {
-                    continue;
+            let handoff = match (update.callback_query, update.message) {
+                (Some(press), _) => serde_json::json!({"press": press}),
+                (None, Some(message)) if message.date >= started => {
+                    serde_json::json!({"message": message})
                 }
-                serde_json::json!({"message": message})
+                _ => continue,
             }
             .to_string();
             if let Err(error) = socket.send_to(handoff.as_bytes(), target) {

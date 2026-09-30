@@ -1503,6 +1503,11 @@ impl Chat {
 
     /// A reply to `replied`, a message Klaŭdo posted as Telegram hands it back.
     fn replies(&self, chat: i64, sender: i64, text: &str, replied: &serde_json::Value) {
+        let replied = if replied.is_null() {
+            serde_json::Value::Null
+        } else {
+            delivered(replied.clone(), chat)
+        };
         self.push(json!({
             "chat": {"id": chat},
             "from": {"id": sender},
@@ -1534,22 +1539,20 @@ impl Chat {
             "text": text,
             "message_thread_id": topic,
             "is_topic_message": true,
-            "reply_to_message": {
-                "message_id": topic,
-                "message_thread_id": topic,
-                "forum_topic_created": opened,
-            },
+            "reply_to_message": delivered(
+                json!({
+                    "message_id": topic,
+                    "message_thread_id": topic,
+                    "forum_topic_created": opened,
+                }),
+                chat,
+            ),
         }));
     }
 
     fn push(&self, mut message: serde_json::Value) {
         message["message_id"] = json!(9000);
-        message["date"] = json!(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("a clock after 1970")
-                .as_secs()
-        );
+        message["date"] = json!(now());
         self.deliver(json!({"message": message}));
     }
 
@@ -1562,6 +1565,7 @@ impl Chat {
                 "from": {"id": sender},
                 "message": {
                     "message_id": menu.target.unwrap_or(menu.id),
+                    "date": now(),
                     "chat": {"id": menu.chat},
                     "text": menu.markdown,
                     "reply_markup": menu.body["reply_markup"],
@@ -1589,6 +1593,23 @@ impl Chat {
             .expect("the chat");
         updates[skipped.min(updates.len())..].to_vec()
     }
+}
+
+/// `message` in `chat` with the fields Telegram puts on every message it delivers, where
+/// the test left them out.
+fn delivered(mut message: serde_json::Value, chat: i64) -> serde_json::Value {
+    let fields = message.as_object_mut().expect("a message");
+    fields.entry("message_id").or_insert(json!(1));
+    fields.entry("date").or_insert(json!(now()));
+    fields.entry("chat").or_insert(json!({"id": chat}));
+    message
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs()
 }
 
 fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {

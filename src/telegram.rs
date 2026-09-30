@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{DeserializeOwned, IgnoredAny};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use ureq::unversioned::multipart::{Form, Part};
 
@@ -50,13 +51,11 @@ impl Place {
     /// The place of a message Telegram delivered. `message_thread_id` also numbers the
     /// reply threads of a group without topics, where nothing can be sent to one, so
     /// only a topic message's counts.
-    fn of(message: &Value) -> Option<Self> {
-        Some(Self {
-            chat: message["chat"]["id"].as_i64()?,
-            topic: message["message_thread_id"]
-                .as_i64()
-                .filter(|_| message["is_topic_message"] == Value::Bool(true)),
-        })
+    fn of(message: &Message) -> Self {
+        Self {
+            chat: message.chat.id,
+            topic: message.thread.filter(|_| message.in_topic),
+        }
     }
 
     fn address(self, body: &mut Value) {
@@ -65,6 +64,161 @@ impl Place {
             body["message_thread_id"] = json!(topic);
         }
     }
+}
+
+/// One update of a poll. A message or a press that does not read as the types below is
+/// logged and left out, so the update still moves the poll past it.
+#[derive(Deserialize)]
+pub struct Update {
+    #[serde(rename = "update_id")]
+    pub id: i64,
+    #[serde(default, deserialize_with = "lenient")]
+    pub message: Option<Message>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub callback_query: Option<CallbackQuery>,
+}
+
+/// A message as Telegram delivers it, with the fields Klaŭdo reads. The poller forwards
+/// it to the daemon's socket, so it serializes under Telegram's names.
+#[derive(Serialize, Deserialize)]
+pub struct Message {
+    #[serde(rename = "message_id")]
+    pub id: i64,
+    pub date: i64,
+    pub chat: Chat,
+    pub from: Option<User>,
+    #[serde(rename = "message_thread_id")]
+    thread: Option<i64>,
+    #[serde(rename = "is_topic_message", default)]
+    in_topic: bool,
+    pub text: Option<String>,
+    #[serde(default)]
+    pub entities: Vec<Entity>,
+    pub caption: Option<String>,
+    #[serde(default)]
+    pub caption_entities: Vec<Entity>,
+    #[serde(rename = "reply_to_message")]
+    pub replied: Option<Box<Message>>,
+    #[serde(rename = "forum_topic_created")]
+    pub opened: Option<TopicCreated>,
+    #[serde(rename = "rich_message")]
+    pub rich: Option<Rich>,
+    #[serde(rename = "reply_markup")]
+    pub keyboard: Option<Keyboard>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Chat {
+    pub id: i64,
+    pub title: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct User {
+    pub id: i64,
+}
+
+/// A span of formatting in a text or a caption, counted in UTF-16 code units.
+#[derive(Serialize, Deserialize)]
+pub struct Entity {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub offset: usize,
+    pub length: usize,
+}
+
+/// The service message that opened a topic.
+#[derive(Serialize, Deserialize)]
+pub struct TopicCreated {
+    #[serde(rename = "is_name_implicit", default)]
+    pub implicit: bool,
+}
+
+/// The blocks Telegram rendered a rich message's markdown into.
+#[derive(Serialize, Deserialize)]
+pub struct Rich {
+    #[serde(default)]
+    pub blocks: Vec<Block>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Block {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub text: Option<RichText>,
+}
+
+/// Rich text, which Telegram writes as a bare string wherever it carries no formatting
+/// of its own, and as an array of such pieces where it does.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RichText {
+    Plain(String),
+    Pieces(Vec<RichText>),
+    Span(Span),
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Span {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub text: Option<Box<RichText>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Keyboard {
+    pub inline_keyboard: Vec<Vec<Button>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Button {
+    pub text: String,
+    pub callback_data: Option<String>,
+}
+
+/// A button the chat pressed on a menu the daemon posted. The menu is the message the
+/// button hangs from, and `data` names the button.
+#[derive(Serialize, Deserialize)]
+pub struct CallbackQuery {
+    pub id: String,
+    pub from: User,
+    pub message: Message,
+    pub data: String,
+}
+
+/// Telegram's answer to a call, which on a rejection names its code and, for a burst,
+/// the wait it wants.
+#[derive(Deserialize)]
+struct Answer<R> {
+    ok: bool,
+    result: Option<R>,
+    error_code: Option<u16>,
+    description: Option<String>,
+    parameters: Option<Parameters>,
+}
+
+#[derive(Deserialize)]
+struct Parameters {
+    retry_after: Option<u64>,
+}
+
+/// The part of a message the daemon sent that a later message replies to.
+#[derive(Deserialize)]
+struct Sent {
+    #[serde(rename = "message_id")]
+    id: i64,
+}
+
+/// A field that does not read as its type costs that field alone, with the reason
+/// logged.
+fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value)
+        .inspect_err(|error| eprintln!("update: {error}"))
+        .ok()
+        .flatten())
 }
 
 pub struct Telegram {
@@ -117,7 +271,8 @@ impl Telegram {
         reply_to: Option<i64>,
     ) -> Option<i64> {
         let body = rich(place, markdown, sound, reply_to);
-        self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
+        self.call::<Sent>("sendRichMessage", &body)
+            .map(|sent| sent.id)
     }
 
     /// A silent message the next message typed replies to, since clients open the reply
@@ -135,7 +290,8 @@ impl Telegram {
             "force_reply": true,
             "input_field_placeholder": placeholder.chars().take(PLACEHOLDER_MAX).collect::<String>(),
         });
-        self.call("sendRichMessage", &body)?["result"]["message_id"].as_i64()
+        self.call::<Sent>("sendRichMessage", &body)
+            .map(|sent| sent.id)
     }
 
     /// Posts files without a sound, under an HTML caption where one is given, since a
@@ -174,7 +330,7 @@ impl Telegram {
             "sendMediaGroup"
         };
         let timeout = UPLOAD_TIMEOUT * u32::try_from(paths.len()).expect("an album's size");
-        self.attempt(method, timeout, |request| {
+        self.attempt::<IgnoredAny>(method, timeout, |request| {
             let mut form = Form::new()
                 .text("chat_id", &chat)
                 .text("disable_notification", "true");
@@ -203,7 +359,7 @@ impl Telegram {
     /// Rewrites a message the daemon posted, for a segment that received more after it
     /// went out, or a menu that leads to the next choice.
     pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
-        self.call(
+        self.call::<IgnoredAny>(
             "editMessageText",
             &json!({
                 "chat_id": chat,
@@ -216,7 +372,7 @@ impl Telegram {
     /// Takes back a message the daemon posted, which is how the one showing a turn's
     /// last segment goes once the answer repeating it is in the chat.
     pub fn delete(&self, chat: i64, message_id: i64) {
-        self.call(
+        self.call::<IgnoredAny>(
             "deleteMessage",
             &json!({
                 "chat_id": chat,
@@ -228,7 +384,7 @@ impl Telegram {
     /// Marks a message the daemon typed into a terminal, which is what tells its sender
     /// the prompt was accepted while the turn is still working.
     pub fn acknowledge(&self, chat: i64, message_id: i64) {
-        self.call(
+        self.call::<IgnoredAny>(
             "setMessageReaction",
             &json!({
                 "chat_id": chat,
@@ -250,11 +406,11 @@ impl Telegram {
     /// Where a message the chat sent was sent, when it is one to act on: the user's own,
     /// sent in `CHAT_ID` or in the user's private chat with the bot, whose id is the
     /// user's.
-    pub fn accepts(&self, sender: &Value, message: &Value) -> Option<Place> {
-        Place::of(message).filter(|place| {
-            sender["id"].as_i64() == Some(self.user_id)
-                && (place.chat == self.chat_id || place.chat == self.user_id)
-        })
+    pub fn accepts(&self, sender: Option<&User>, message: &Message) -> Option<Place> {
+        let place = Place::of(message);
+        (sender.map(|sender| sender.id) == Some(self.user_id)
+            && (place.chat == self.chat_id || place.chat == self.user_id))
+            .then_some(place)
     }
 
     /// A plain message with a button on each row, each button carrying `(label, data)`.
@@ -266,7 +422,7 @@ impl Telegram {
             "reply_markup": keyboard(buttons),
         });
         place.address(&mut body);
-        self.call("sendMessage", &body)?["result"]["message_id"].as_i64()
+        self.call::<Sent>("sendMessage", &body).map(|sent| sent.id)
     }
 
     /// A silent message in Telegram's HTML, for what markdown has no syntax for, such as a
@@ -279,12 +435,12 @@ impl Telegram {
             "reply_parameters": replying(reply_to),
         });
         place.address(&mut body);
-        self.call("sendMessage", &body)?["result"]["message_id"].as_i64()
+        self.call::<Sent>("sendMessage", &body).map(|sent| sent.id)
     }
 
     /// Rewrites a menu into the next choice it leads to.
     pub fn remenu(&self, chat: i64, message_id: i64, text: &str, buttons: &[(String, String)]) {
-        self.call(
+        self.call::<IgnoredAny>(
             "editMessageText",
             &json!({
                 "chat_id": chat,
@@ -297,7 +453,7 @@ impl Telegram {
 
     /// Stops the client's progress bar on a pressed button, which it shows until this.
     pub fn answer(&self, query: &str) {
-        self.call("answerCallbackQuery", &json!({"callback_query_id": query}));
+        self.call::<IgnoredAny>("answerCallbackQuery", &json!({"callback_query_id": query}));
     }
 
     /// Lists `commands` in the command menu of both chats Klaŭdo answers in, shown to
@@ -314,7 +470,7 @@ impl Telegram {
             );
         }
         for scope in scopes {
-            self.call(
+            self.call::<IgnoredAny>(
                 "setMyCommands",
                 &json!({"commands": commands, "scope": scope}),
             );
@@ -322,9 +478,11 @@ impl Telegram {
     }
 
     /// One long poll for what the chat has sent since `offset`. Telegram holds the
-    /// request open until something arrives, so the timeout has to outlast that.
-    pub fn updates(&self, offset: i64) -> Option<Vec<Value>> {
-        let answer = self.call(
+    /// request open until something arrives, so the timeout has to outlast that. Each
+    /// update is read on its own, so the trace shows it as Telegram sent it, fields
+    /// Klaŭdo has no type for included.
+    pub fn updates(&self, offset: i64) -> Option<Vec<Update>> {
+        let updates: Vec<Value> = self.call(
             "getUpdates",
             &json!({
                 "offset": offset,
@@ -332,16 +490,22 @@ impl Telegram {
                 "allowed_updates": ["message", "callback_query"],
             }),
         )?;
-        let updates = answer["result"].as_array()?.clone();
-        if self.trace {
-            for update in &updates {
-                eprintln!("{update}");
-            }
-        }
-        Some(updates)
+        Some(
+            updates
+                .into_iter()
+                .filter_map(|update| {
+                    if self.trace {
+                        eprintln!("{update}");
+                    }
+                    serde_json::from_value(update)
+                        .inspect_err(|error| eprintln!("update: {error}"))
+                        .ok()
+                })
+                .collect(),
+        )
     }
 
-    fn call(&self, method: &str, body: &Value) -> Option<Value> {
+    fn call<R: DeserializeOwned>(&self, method: &str, body: &Value) -> Option<R> {
         // Telegram holds a poll open for the wait the request itself names, so one
         // attempt is bounded by that wait plus the patience every call gets.
         let held = Duration::from_secs(body["timeout"].as_u64().unwrap_or_default());
@@ -349,14 +513,14 @@ impl Telegram {
     }
 
     /// Makes a request up to `ATTEMPTS` times, each bounded by `timeout`.
-    fn attempt(
+    fn attempt<R: DeserializeOwned>(
         &self,
         method: &str,
         timeout: Duration,
         send: impl Fn(
             ureq::RequestBuilder<ureq::typestate::WithBody>,
         ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-    ) -> Option<Value> {
+    ) -> Option<R> {
         let url = format!("{}/bot{}/{method}", self.base, self.token);
         for attempt in 1..=ATTEMPTS {
             let request = self
@@ -366,11 +530,22 @@ impl Telegram {
                 .timeout_global(Some(timeout))
                 .build();
             let outcome =
-                send(request).and_then(|mut response| response.body_mut().read_json::<Value>());
+                send(request).and_then(|mut response| response.body_mut().read_json::<Answer<R>>());
             let wait = match outcome {
-                Ok(answer) if answer["ok"] == Value::Bool(true) => return Some(answer),
+                Ok(Answer {
+                    ok: true,
+                    result: Some(result),
+                    ..
+                }) => return Some(result),
                 Ok(answer) => {
-                    self.report(method, &answer.to_string());
+                    self.report(
+                        method,
+                        &format!(
+                            "{} {}",
+                            answer.error_code.unwrap_or_default(),
+                            answer.description.as_deref().unwrap_or_default()
+                        ),
+                    );
                     // A rejection of the request itself ends the call.
                     retry_after(&answer, attempt)?
                 }
@@ -424,11 +599,13 @@ fn replying(message_id: i64) -> Value {
 /// How long before asking again, for a rejection that asking again can answer
 /// differently: a burst Telegram wants slowed down, which names the wait it wants, or a
 /// failure on its own side.
-fn retry_after(answer: &Value, attempt: u32) -> Option<Duration> {
-    match answer["error_code"].as_u64()? {
+fn retry_after<R>(answer: &Answer<R>, attempt: u32) -> Option<Duration> {
+    match answer.error_code? {
         429 => Some(
-            answer["parameters"]["retry_after"]
-                .as_u64()
+            answer
+                .parameters
+                .as_ref()
+                .and_then(|parameters| parameters.retry_after)
                 .map_or_else(|| backoff(attempt), Duration::from_secs),
         ),
         500..600 => Some(backoff(attempt)),
@@ -591,21 +768,28 @@ mod tests {
 
     #[test]
     fn a_message_is_placed_in_its_topic_and_only_a_topic_counts() {
-        let topic = json!({"chat": {"id": 7}, "message_thread_id": 77, "is_topic_message": true});
+        let delivered = |mut message: Value| -> Message {
+            message["message_id"] = json!(1);
+            message["date"] = json!(0);
+            serde_json::from_value(message).expect("a message")
+        };
+        let topic = delivered(
+            json!({"chat": {"id": 7}, "message_thread_id": 77, "is_topic_message": true}),
+        );
         assert_eq!(
             Place::of(&topic),
-            Some(Place {
+            Place {
                 chat: 7,
                 topic: Some(77)
-            })
+            }
         );
-        let reply_thread = json!({"chat": {"id": -1001}, "message_thread_id": 5});
+        let reply_thread = delivered(json!({"chat": {"id": -1001}, "message_thread_id": 5}));
         assert_eq!(
             Place::of(&reply_thread),
-            Some(Place {
+            Place {
                 chat: -1001,
                 topic: None
-            })
+            }
         );
         let mut body = json!({});
         Place {
@@ -617,16 +801,35 @@ mod tests {
     }
 
     #[test]
+    fn a_message_that_does_not_read_leaves_its_update_to_move_the_poll() {
+        let update: Update = serde_json::from_value(
+            json!({"update_id": 5, "message": {"message_id": 1, "text": "no chat"}}),
+        )
+        .expect("an update");
+        assert_eq!(update.id, 5);
+        assert!(update.message.is_none());
+    }
+
+    #[test]
     fn a_rejection_is_asked_about_again_only_when_the_answer_can_differ() {
-        let rejection = |answer: Value| retry_after(&answer, 1);
+        let rejection = |answer: Value| {
+            let answer: Answer<IgnoredAny> = serde_json::from_value(answer).expect("an answer");
+            retry_after(&answer, 1)
+        };
         assert_eq!(
-            rejection(json!({"error_code": 429, "parameters": {"retry_after": 7}})),
+            rejection(json!({"ok": false, "error_code": 429, "parameters": {"retry_after": 7}})),
             Some(Duration::from_secs(7))
         );
-        assert_eq!(rejection(json!({"error_code": 429})), Some(BACKOFF));
-        assert_eq!(rejection(json!({"error_code": 502})), Some(BACKOFF));
-        assert_eq!(rejection(json!({"error_code": 400})), None);
-        assert_eq!(rejection(json!({})), None);
+        assert_eq!(
+            rejection(json!({"ok": false, "error_code": 429})),
+            Some(BACKOFF)
+        );
+        assert_eq!(
+            rejection(json!({"ok": false, "error_code": 502})),
+            Some(BACKOFF)
+        );
+        assert_eq!(rejection(json!({"ok": false, "error_code": 400})), None);
+        assert_eq!(rejection(json!({"ok": false})), None);
         assert_eq!(backoff(3), BACKOFF * 4);
     }
 }
