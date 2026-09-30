@@ -284,18 +284,6 @@ impl Session {
         }
     }
 
-    /// Where the session posts between turns: its project's chat, in the topic its last
-    /// message there went to, so a topic stays one conversation across the turns the
-    /// terminal starts.
-    fn home(&self, telegram: &Telegram) -> Place {
-        let chat = telegram.chat(&self.dir);
-        let topic = self
-            .trail
-            .last
-            .and_then(|(place, _)| place.topic.filter(|_| place.chat == chat));
-        Place { chat, topic }
-    }
-
     fn head(&self, id: &str, prompt: Option<&str>) -> String {
         hook::head(&hook::project(&self.dir), id, prompt)
     }
@@ -513,11 +501,35 @@ impl Machine {
         })
     }
 
+    /// Where a session posts between turns: its project's chat, in the topic its last
+    /// message there went to, so a topic stays one conversation across the turns the
+    /// terminal starts. A session yet to post there takes the topic of the session of its
+    /// project heard from last, so a conversation restarted in the project stays too.
+    fn home(&self, session: &Session) -> Place {
+        let chat = self.telegram.chat(&session.dir);
+        let posted = |trail: &Trail| {
+            trail
+                .last
+                .filter(|(place, _)| place.chat == chat)
+                .map(|(place, _)| place.topic)
+        };
+        let topic = posted(&session.trail)
+            .or_else(|| {
+                self.known()
+                    .filter(|(_, dir, _, _)| *dir == session.dir)
+                    .filter_map(|(_, _, seen, trail)| Some((seen, posted(trail)?)))
+                    .max_by_key(|(seen, _)| *seen)
+                    .map(|(_, topic)| topic)
+            })
+            .flatten();
+        Place { chat, topic }
+    }
+
     /// Where a session's messages go: its turn's thread, or its home between turns.
     fn thread(&self, session: &Session) -> Thread {
         session.turn.as_ref().map_or(
             Thread {
-                place: session.home(&self.telegram),
+                place: self.home(session),
                 prompt: None,
             },
             |turn| turn.thread,
