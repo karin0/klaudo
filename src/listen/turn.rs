@@ -237,9 +237,10 @@ impl Machine {
             } else {
                 event.prompt_id.as_deref()
             };
+            let session = &self.sessions[id];
             let head = session.head(id, prompt);
             let message = hook::message(event, &head, "");
-            let place = session.home(&self.telegram);
+            let place = self.home(session);
             // The phone's owner asked this, so it arrives without a sound.
             Thread {
                 place,
@@ -286,10 +287,10 @@ impl Machine {
             Some(_) => self.seal(id),
             None => {}
         }
+        let place = self.home(&self.sessions[id]);
         let Some(session) = self.sessions.get_mut(id) else {
             return false;
         };
-        let place = session.home(&self.telegram);
         session.turn = Some(Turn {
             prompt_id: named.to_owned(),
             seed: seed(named),

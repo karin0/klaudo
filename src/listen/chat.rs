@@ -239,7 +239,7 @@ impl Machine {
 
     /// Every session the daemon knows of, running or exited, with where it ran, when
     /// it was last heard from in Unix milliseconds, and its trail.
-    fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
+    pub(super) fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
         self.sessions
             .iter()
             .map(|(id, session)| {

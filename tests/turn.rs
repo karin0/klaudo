@@ -755,6 +755,47 @@ fn a_resumed_session_returns_to_its_topic() {
     drop(daemon);
 }
 
+/// A session that has not posted yet goes to the topic of the session of its project
+/// heard from last.
+#[test]
+fn a_new_session_takes_the_topic_of_its_project() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("project-topic", port);
+    let root = temporary.path();
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([{
+            "id": "0123456789abcdef",
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "seen": 0,
+            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+        }])
+        .to_string(),
+    )
+    .expect("the state");
+    let daemon = daemon(root);
+
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "fedcba9876543210",
+            "cwd": project(root),
+            "prompt": "from a new terminal",
+        }),
+    );
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let prompt = made
+        .iter()
+        .find(|call| call.label.starts_with("sendRichMessage"))
+        .expect("the prompt");
+    assert_eq!(prompt.body["message_thread_id"], json!(77));
+    drop(daemon);
+}
+
 /// A message outside every topic of a private chat in topic mode opens a topic of its
 /// own, which reaches the session heard from last outside every topic, while a topic the
 /// user named reaches no session outside it.
