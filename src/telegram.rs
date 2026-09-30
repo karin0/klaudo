@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use kuriero::{Client, Message, Sent, Update, User};
 use serde::de::{DeserializeOwned, IgnoredAny};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ureq::unversioned::multipart::{Form, Part};
 
-const TIMEOUT: Duration = Duration::from_secs(30);
 /// An upload of a file is as large as the 50 MB Telegram accepts from a bot, over
 /// whatever uplink the machine has.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
@@ -20,12 +20,6 @@ const POLL_SECONDS: u64 = 50;
 /// truncated notification beats a rejected one. The markup a body carries is counted
 /// here along with the text it renders, which leaves the count on the safe side.
 pub const MAX_CHARS: usize = 32768;
-/// A rejection Telegram would answer the same way stands, and the rest are worth asking
-/// about again this many times. A retry can post a message twice when the answer to the
-/// first was lost, which is the smaller harm, because the message a turn's thread hangs
-/// from cannot be recovered once it is gone.
-const ATTEMPTS: u32 = 3;
-const BACKOFF: Duration = Duration::from_secs(1);
 /// The longest placeholder Telegram shows in an input field.
 const PLACEHOLDER_MAX: usize = 64;
 /// What the daemon leaves on a message whose text reached a session's input box.
@@ -48,13 +42,10 @@ pub struct Place {
 }
 
 impl Place {
-    /// The place of a message Telegram delivered. `message_thread_id` also numbers the
-    /// reply threads of a group without topics, where nothing can be sent to one, so
-    /// only a topic message's counts.
     fn of(message: &Message) -> Self {
         Self {
             chat: message.chat.id,
-            topic: message.thread.filter(|_| message.in_topic),
+            topic: message.topic(),
         }
     }
 
@@ -66,164 +57,8 @@ impl Place {
     }
 }
 
-/// One update of a poll. A message or a press that does not read as the types below is
-/// logged and left out, so the update still moves the poll past it.
-#[derive(Deserialize)]
-pub struct Update {
-    #[serde(rename = "update_id")]
-    pub id: i64,
-    #[serde(default, deserialize_with = "lenient")]
-    pub message: Option<Message>,
-    #[serde(default, deserialize_with = "lenient")]
-    pub callback_query: Option<CallbackQuery>,
-}
-
-/// A message as Telegram delivers it, with the fields Klaŭdo reads. The poller forwards
-/// it to the daemon's socket, so it serializes under Telegram's names.
-#[derive(Serialize, Deserialize)]
-pub struct Message {
-    #[serde(rename = "message_id")]
-    pub id: i64,
-    pub date: i64,
-    pub chat: Chat,
-    pub from: Option<User>,
-    #[serde(rename = "message_thread_id")]
-    thread: Option<i64>,
-    #[serde(rename = "is_topic_message", default)]
-    in_topic: bool,
-    pub text: Option<String>,
-    #[serde(default)]
-    pub entities: Vec<Entity>,
-    pub caption: Option<String>,
-    #[serde(default)]
-    pub caption_entities: Vec<Entity>,
-    #[serde(rename = "reply_to_message")]
-    pub replied: Option<Box<Message>>,
-    #[serde(rename = "forum_topic_created")]
-    pub opened: Option<TopicCreated>,
-    #[serde(rename = "rich_message")]
-    pub rich: Option<Rich>,
-    #[serde(rename = "reply_markup")]
-    pub keyboard: Option<Keyboard>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Chat {
-    pub id: i64,
-    pub title: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct User {
-    pub id: i64,
-}
-
-/// A span of formatting in a text or a caption, counted in UTF-16 code units.
-#[derive(Serialize, Deserialize)]
-pub struct Entity {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub offset: usize,
-    pub length: usize,
-}
-
-/// The service message that opened a topic.
-#[derive(Serialize, Deserialize)]
-pub struct TopicCreated {
-    #[serde(rename = "is_name_implicit", default)]
-    pub implicit: bool,
-}
-
-/// The blocks Telegram rendered a rich message's markdown into.
-#[derive(Serialize, Deserialize)]
-pub struct Rich {
-    #[serde(default)]
-    pub blocks: Vec<Block>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Block {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub text: Option<RichText>,
-}
-
-/// Rich text, which Telegram writes as a bare string wherever it carries no formatting
-/// of its own, and as an array of such pieces where it does.
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum RichText {
-    Plain(String),
-    Pieces(Vec<RichText>),
-    Span(Span),
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Span {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub text: Option<Box<RichText>>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Keyboard {
-    pub inline_keyboard: Vec<Vec<Button>>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Button {
-    pub text: String,
-    pub callback_data: Option<String>,
-}
-
-/// A button the chat pressed on a menu the daemon posted. The menu is the message the
-/// button hangs from, and `data` names the button.
-#[derive(Serialize, Deserialize)]
-pub struct CallbackQuery {
-    pub id: String,
-    pub from: User,
-    pub message: Message,
-    pub data: String,
-}
-
-/// Telegram's answer to a call, which on a rejection names its code and, for a burst,
-/// the wait it wants.
-#[derive(Deserialize)]
-struct Answer<R> {
-    ok: bool,
-    result: Option<R>,
-    error_code: Option<u16>,
-    description: Option<String>,
-    parameters: Option<Parameters>,
-}
-
-#[derive(Deserialize)]
-struct Parameters {
-    retry_after: Option<u64>,
-}
-
-/// The part of a message the daemon sent that a later message replies to.
-#[derive(Deserialize)]
-struct Sent {
-    #[serde(rename = "message_id")]
-    id: i64,
-}
-
-/// A field that does not read as its type costs that field alone, with the reason
-/// logged.
-fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned>(
-    deserializer: D,
-) -> Result<Option<T>, D::Error> {
-    let value = Value::deserialize(deserializer)?;
-    Ok(serde_json::from_value(value)
-        .inspect_err(|error| eprintln!("update: {error}"))
-        .ok()
-        .flatten())
-}
-
 pub struct Telegram {
-    base: String,
-    token: String,
+    client: Client,
     chat_id: i64,
     user_id: i64,
     /// The directories whose sessions post in `CHAT_ID`; every other goes to the user's
@@ -231,7 +66,6 @@ pub struct Telegram {
     projects: Vec<PathBuf>,
     /// Whether each update polled is logged as Telegram sent it.
     trace: bool,
-    agent: ureq::Agent,
 }
 
 impl Telegram {
@@ -245,19 +79,12 @@ impl Telegram {
         // The test stands a recording server in front of the daemon here.
         let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
         let trace = setting("TRACE_UPDATES").is_some();
-        let agent = ureq::Agent::config_builder()
-            // Telegram explains a rejection in the body of the failing response.
-            .http_status_as_error(false)
-            .build()
-            .into();
         Self {
-            base,
-            token,
+            client: Client::new(&base, &token),
             chat_id,
             user_id,
             projects,
             trace,
-            agent,
         }
     }
 
@@ -330,30 +157,32 @@ impl Telegram {
             "sendMediaGroup"
         };
         let timeout = UPLOAD_TIMEOUT * u32::try_from(paths.len()).expect("an album's size");
-        self.attempt::<IgnoredAny>(method, timeout, |request| {
-            let mut form = Form::new()
-                .text("chat_id", &chat)
-                .text("disable_notification", "true");
-            if let Some(topic) = &topic {
-                form = form.text("message_thread_id", topic);
-            }
-            if let Some(reply) = &reply {
-                form = form.text("reply_parameters", reply);
-            }
-            if let [path] = paths {
-                form = form.part("document", Part::file(path)?);
-                if let Some(caption) = caption {
-                    form = form.text("caption", caption).text("parse_mode", "HTML");
+        let sent = self
+            .client
+            .request::<IgnoredAny>(method, timeout, |request| {
+                let mut form = Form::new()
+                    .text("chat_id", &chat)
+                    .text("disable_notification", "true");
+                if let Some(topic) = &topic {
+                    form = form.text("message_thread_id", topic);
                 }
-            } else {
-                form = form.text("media", &media);
-                for (name, path) in names.iter().zip(paths) {
-                    form = form.part(name, Part::file(path)?);
+                if let Some(reply) = &reply {
+                    form = form.text("reply_parameters", reply);
                 }
-            }
-            request.send(form)
-        })
-        .map(drop)
+                if let [path] = paths {
+                    form = form.part("document", Part::file(path)?);
+                    if let Some(caption) = caption {
+                        form = form.text("caption", caption).text("parse_mode", "HTML");
+                    }
+                } else {
+                    form = form.text("media", &media);
+                    for (name, path) in names.iter().zip(paths) {
+                        form = form.part(name, Part::file(path)?);
+                    }
+                }
+                request.send(form)
+            });
+        logged(method, sent).map(drop)
     }
 
     /// Rewrites a message the daemon posted, for a segment that received more after it
@@ -477,95 +306,24 @@ impl Telegram {
         }
     }
 
-    /// One long poll for what the chat has sent since `offset`. Telegram holds the
-    /// request open until something arrives, so the timeout has to outlast that. Each
-    /// update is read on its own, so the trace shows it as Telegram sent it, fields
-    /// Klaŭdo has no type for included.
+    /// One long poll for what the chat has sent since `offset`.
     pub fn updates(&self, offset: i64) -> Option<Vec<Update>> {
-        let updates: Vec<Value> = self.call(
+        logged(
             "getUpdates",
-            &json!({
-                "offset": offset,
-                "timeout": POLL_SECONDS,
-                "allowed_updates": ["message", "callback_query"],
-            }),
-        )?;
-        Some(
-            updates
-                .into_iter()
-                .filter_map(|update| {
-                    if self.trace {
-                        eprintln!("{update}");
-                    }
-                    serde_json::from_value(update)
-                        .inspect_err(|error| eprintln!("update: {error}"))
-                        .ok()
-                })
-                .collect(),
+            self.client.get_updates(offset, POLL_SECONDS, self.trace),
         )
     }
 
     fn call<R: DeserializeOwned>(&self, method: &str, body: &Value) -> Option<R> {
-        // Telegram holds a poll open for the wait the request itself names, so one
-        // attempt is bounded by that wait plus the patience every call gets.
-        let held = Duration::from_secs(body["timeout"].as_u64().unwrap_or_default());
-        self.attempt(method, TIMEOUT + held, |request| request.send_json(body))
+        logged(method, self.client.call(method, body))
     }
+}
 
-    /// Makes a request up to `ATTEMPTS` times, each bounded by `timeout`.
-    fn attempt<R: DeserializeOwned>(
-        &self,
-        method: &str,
-        timeout: Duration,
-        send: impl Fn(
-            ureq::RequestBuilder<ureq::typestate::WithBody>,
-        ) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-    ) -> Option<R> {
-        let url = format!("{}/bot{}/{method}", self.base, self.token);
-        for attempt in 1..=ATTEMPTS {
-            let request = self
-                .agent
-                .post(&url)
-                .config()
-                .timeout_global(Some(timeout))
-                .build();
-            let outcome =
-                send(request).and_then(|mut response| response.body_mut().read_json::<Answer<R>>());
-            let wait = match outcome {
-                Ok(Answer {
-                    ok: true,
-                    result: Some(result),
-                    ..
-                }) => return Some(result),
-                Ok(answer) => {
-                    self.report(
-                        method,
-                        &format!(
-                            "{} {}",
-                            answer.error_code.unwrap_or_default(),
-                            answer.description.as_deref().unwrap_or_default()
-                        ),
-                    );
-                    // A rejection of the request itself ends the call.
-                    retry_after(&answer, attempt)?
-                }
-                Err(error) => {
-                    self.report(method, &error.to_string());
-                    backoff(attempt)
-                }
-            };
-            if attempt < ATTEMPTS {
-                std::thread::sleep(wait);
-            }
-        }
-        None
-    }
-
-    /// The bot token rides in every request URL, and ureq quotes the URL back in its
-    /// errors, so it is masked before anything reaches the log.
-    fn report(&self, method: &str, detail: &str) {
-        eprintln!("{method}: {}", detail.replace(&self.token, "***"));
-    }
+/// A call that failed on every attempt worth making costs its message alone.
+fn logged<R>(method: &str, result: Result<R, kuriero::Error>) -> Option<R> {
+    result
+        .inspect_err(|error| eprintln!("{method}: {error}"))
+        .ok()
 }
 
 fn rich(place: Place, markdown: &str, sound: Sound, reply_to: Option<i64>) -> Value {
@@ -594,28 +352,6 @@ fn replying(message_id: i64) -> Value {
         "message_id": message_id,
         "allow_sending_without_reply": true,
     })
-}
-
-/// How long before asking again, for a rejection that asking again can answer
-/// differently: a burst Telegram wants slowed down, which names the wait it wants, or a
-/// failure on its own side.
-fn retry_after<R>(answer: &Answer<R>, attempt: u32) -> Option<Duration> {
-    match answer.error_code? {
-        429 => Some(
-            answer
-                .parameters
-                .as_ref()
-                .and_then(|parameters| parameters.retry_after)
-                .map_or_else(|| backoff(attempt), Duration::from_secs),
-        ),
-        500..600 => Some(backoff(attempt)),
-        _ => None,
-    }
-}
-
-/// Doubling, so three attempts span a few seconds rather than a burst of their own.
-fn backoff(attempt: u32) -> Duration {
-    BACKOFF * 2u32.pow(attempt - 1)
 }
 
 fn clamp(markdown: &str) -> String {
@@ -767,30 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn a_message_is_placed_in_its_topic_and_only_a_topic_counts() {
-        let delivered = |mut message: Value| -> Message {
-            message["message_id"] = json!(1);
-            message["date"] = json!(0);
-            serde_json::from_value(message).expect("a message")
-        };
-        let topic = delivered(
-            json!({"chat": {"id": 7}, "message_thread_id": 77, "is_topic_message": true}),
-        );
-        assert_eq!(
-            Place::of(&topic),
-            Place {
-                chat: 7,
-                topic: Some(77)
-            }
-        );
-        let reply_thread = delivered(json!({"chat": {"id": -1001}, "message_thread_id": 5}));
-        assert_eq!(
-            Place::of(&reply_thread),
-            Place {
-                chat: -1001,
-                topic: None
-            }
-        );
+    fn a_place_addresses_its_chat_and_topic() {
         let mut body = json!({});
         Place {
             chat: 7,
@@ -798,38 +511,5 @@ mod tests {
         }
         .address(&mut body);
         assert_eq!(body, json!({"chat_id": 7, "message_thread_id": 77}));
-    }
-
-    #[test]
-    fn a_message_that_does_not_read_leaves_its_update_to_move_the_poll() {
-        let update: Update = serde_json::from_value(
-            json!({"update_id": 5, "message": {"message_id": 1, "text": "no chat"}}),
-        )
-        .expect("an update");
-        assert_eq!(update.id, 5);
-        assert!(update.message.is_none());
-    }
-
-    #[test]
-    fn a_rejection_is_asked_about_again_only_when_the_answer_can_differ() {
-        let rejection = |answer: Value| {
-            let answer: Answer<IgnoredAny> = serde_json::from_value(answer).expect("an answer");
-            retry_after(&answer, 1)
-        };
-        assert_eq!(
-            rejection(json!({"ok": false, "error_code": 429, "parameters": {"retry_after": 7}})),
-            Some(Duration::from_secs(7))
-        );
-        assert_eq!(
-            rejection(json!({"ok": false, "error_code": 429})),
-            Some(BACKOFF)
-        );
-        assert_eq!(
-            rejection(json!({"ok": false, "error_code": 502})),
-            Some(BACKOFF)
-        );
-        assert_eq!(rejection(json!({"ok": false, "error_code": 400})), None);
-        assert_eq!(rejection(json!({"ok": false})), None);
-        assert_eq!(backoff(3), BACKOFF * 4);
     }
 }

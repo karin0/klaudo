@@ -6,10 +6,11 @@ edition = '2024'
 [dependencies]
 clap = { version = '4.6.7', default-features = false, features = ['std', 'derive', 'help', 'usage', 'error-context'] }
 dotenvy = '0.15.7'
+kuriero = { git = 'https://github.com/karin0/kuriero.git', rev = '9275ebee81bb328091046590b48620adb3c4de84' }
 libc = '0.2.189'
 serde = { version = '1.0.229', features = ['derive'] }
 serde_json = '1.0.151'
-ureq = { version = '3.4.0', features = ['json', 'multipart'] }
+ureq = { version = '3.4.2', features = ['multipart'] }
 
 [dev-dependencies]
 httparse = '1.10.1'

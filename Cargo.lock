@@ -381,10 +381,21 @@ dependencies = [
  "clap",
  "dotenvy",
  "httparse",
+ "kuriero",
  "libc",
  "serde",
  "serde_json",
  "tempfile",
+ "ureq",
+]
+
+[[package]]
+name = "kuriero"
+version = "0.1.0"
+source = "git+https://github.com/karin0/kuriero.git?rev=9275ebee81bb328091046590b48620adb3c4de84#9275ebee81bb328091046590b48620adb3c4de84"
+dependencies = [
+ "serde",
+ "serde_json",
  "ureq",
 ]
 

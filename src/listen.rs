@@ -15,11 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use kuriero::{CallbackQuery, Message};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::hook::{self, Event};
-use crate::telegram::{CallbackQuery, Message, Place, Sound, Telegram};
+use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::Pane;
 
 use chat::{COMMANDS, tilde};
