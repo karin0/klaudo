@@ -707,6 +707,54 @@ fn a_topic_holds_its_own_conversations() {
     drop(daemon);
 }
 
+/// A session resumed in the terminal after it exited posts in the topic it last posted
+/// in before it exited.
+#[test]
+fn a_resumed_session_returns_to_its_topic() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("resumed-topic", port);
+    let root = temporary.path();
+    let session = "0123456789abcdef";
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([{
+            "id": session,
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "seen": 0,
+            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+        }])
+        .to_string(),
+    )
+    .expect("the state");
+    let daemon = daemon(root);
+
+    for event in ["SessionEnd", "SessionStart"] {
+        hook(
+            root,
+            &json!({"hook_event_name": event, "session_id": session, "cwd": project(root)}),
+        );
+    }
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session,
+            "cwd": project(root),
+            "prompt": "from the terminal",
+        }),
+    );
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let prompt = made
+        .iter()
+        .find(|call| call.label.starts_with("sendRichMessage"))
+        .expect("the prompt");
+    assert_eq!(prompt.body["message_thread_id"], json!(77));
+    drop(daemon);
+}
+
 /// A message outside every topic of a private chat in topic mode opens a topic of its
 /// own, which reaches the session heard from last outside every topic, while a topic the
 /// user named reaches no session outside it.

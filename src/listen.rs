@@ -410,15 +410,16 @@ impl Machine {
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
         let directory = event.directory();
         if !self.sessions.contains_key(&id) {
-            let before = self.ended.len();
-            self.ended.retain(|ended| ended.id != id);
-            if self.ended.len() < before {
+            let mut session =
+                Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), now_millis());
+            // A resumed session keeps its id, and with its trail its topic.
+            if let Some(index) = self.ended.iter().position(|ended| ended.id == id) {
+                session.trail = self.ended.remove(index).expect("a listed index").trail;
                 self.save_ended();
             }
+            self.sessions.insert(id.clone(), session);
         }
-        let session = self.sessions.entry(id.clone()).or_insert_with(|| {
-            Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), now_millis())
-        });
+        let session = self.sessions.get_mut(&id).expect("a session just listed");
         session.pid = pid;
         session.pane = pane;
         session.seen = now_millis();
