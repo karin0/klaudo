@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
@@ -19,6 +19,10 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// How long a test waits for what follows the call it was watching for, so a rewrite or
 /// a deletion issued right after the answer is part of what it reads.
 const GRACE: Duration = Duration::from_millis(600);
+/// How long the server holds a poll open with nothing to report. A poll answered at
+/// once has the daemon ask again at once, and the connections it closes pile up in
+/// `TIME_WAIT` until the machine runs out of local ports.
+const HOLD: Duration = Duration::from_secs(1);
 /// The chat is a group, so the chat and the user Klaŭdo answers are two ids. The user's
 /// private chat with the bot has the user's id. This repository is the project listed
 /// for the group, so a session opened here posts there.
@@ -1475,18 +1479,20 @@ fn recorder() -> (u16, Receiver<Call>, Chat) {
     let chat = Chat::default();
     let sending = chat.clone();
     std::thread::spawn(move || {
-        let mut id = 0;
-        for stream in listener.incoming() {
-            id += 1;
-            answer(stream.expect("accept"), id, &sender, &sending);
+        for (id, stream) in (1..).zip(listener.incoming()) {
+            let stream = stream.expect("accept");
+            let (sender, sending) = (sender.clone(), sending.clone());
+            // A held poll answers on its own thread, so the calls behind it go through.
+            std::thread::spawn(move || answer(stream, id, &sender, &sending));
         }
     });
     (port, receiver, chat)
 }
 
-/// What the chat has to say, which the poll for updates hands over once.
+/// Every update the chat has had, the first numbered 1. A poll hands over those from its
+/// offset on, so an update the daemon never confirmed reaches the next daemon too.
 #[derive(Clone, Default)]
-struct Chat(Arc<Mutex<Vec<serde_json::Value>>>);
+struct Chat(Arc<(Mutex<Vec<serde_json::Value>>, Condvar)>);
 
 impl Chat {
     /// A message from the phone, as Telegram delivers it. It replies to nothing, which
@@ -1544,17 +1550,13 @@ impl Chat {
                 .expect("a clock after 1970")
                 .as_secs()
         );
-        self.0
-            .lock()
-            .expect("the chat")
-            .push(json!({"update_id": 1, "message": message}));
+        self.deliver(json!({"message": message}));
     }
 
     /// A press on a button of `menu`, a menu the daemon posted or rewrote, as Telegram
     /// hands it back.
     fn presses(&self, sender: i64, menu: &Call, data: &str) {
-        self.0.lock().expect("the chat").push(json!({
-            "update_id": 1,
+        self.deliver(json!({
             "callback_query": {
                 "id": "query",
                 "from": {"id": sender},
@@ -1569,8 +1571,23 @@ impl Chat {
         }));
     }
 
-    fn drain(&self) -> Vec<serde_json::Value> {
-        std::mem::take(&mut *self.0.lock().expect("the chat"))
+    fn deliver(&self, mut update: serde_json::Value) {
+        let (updates, arrived) = &*self.0;
+        let mut updates = updates.lock().expect("the chat");
+        update["update_id"] = json!(updates.len() + 1);
+        updates.push(update);
+        arrived.notify_all();
+    }
+
+    /// The updates from `offset` on, waiting up to `HOLD` for one to arrive.
+    fn since(&self, offset: i64) -> Vec<serde_json::Value> {
+        let skipped = usize::try_from(offset.max(1) - 1).expect("an offset");
+        let (updates, arrived) = &*self.0;
+        let updates = updates.lock().expect("the chat");
+        let (updates, _) = arrived
+            .wait_timeout_while(updates, HOLD, |updates| updates.len() <= skipped)
+            .expect("the chat");
+        updates[skipped.min(updates.len())..].to_vec()
     }
 }
 
@@ -1619,7 +1636,8 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
 
     // The poll that asks what the chat said is not a call the turn made.
     let sent = if method == "getUpdates" {
-        json!({"ok": true, "result": chat.drain()}).to_string()
+        let offset = body["offset"].as_i64().expect("an offset");
+        json!({"ok": true, "result": chat.since(offset)}).to_string()
     } else {
         let sound = match method.as_str() {
             "sendRichMessage" | "sendDocument" | "sendMediaGroup"
@@ -1649,12 +1667,12 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
             .expect("record");
         json!({"ok": true, "result": {"message_id": id}}).to_string()
     };
-    write!(
+    // A daemon killed while its poll was held has left nobody to answer.
+    let _ = write!(
         stream,
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{sent}",
         sent.len()
-    )
-    .expect("answer");
+    );
 }
 
 /// A multipart form as the JSON body the same call would carry otherwise: a field that
