@@ -4,10 +4,9 @@
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::hook;
-use crate::telegram::Place;
+use crate::telegram::{Message, Place};
 
 use super::chat::{NEW, ago};
 use super::{Machine, now_millis};
@@ -73,7 +72,7 @@ impl Machine {
     /// to `replied` would reach. With such a session the answer goes under its head, so a
     /// reply to the answer reaches it too. When a limit resets is written by each reader's
     /// client, in their own zone.
-    pub(super) fn usage(&self, place: Place, asked: i64, replied: &Value) {
+    pub(super) fn usage(&self, place: Place, asked: i64, replied: Option<&Message>) {
         let address = match self.addressee(place, replied) {
             Ok(address) => address.filter(|address| address != NEW),
             Err(error) => return self.say(place, error),
