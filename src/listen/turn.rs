@@ -90,9 +90,10 @@ struct Segment {
     said: Option<(String, BTreeMap<u32, String>)>,
     /// What the open message was last written with and when, absent until it exists.
     written: Option<(String, Instant)>,
-    /// The message this segment finished in and the elapsed time stamped on it, which
-    /// is what a flush or an outcome arriving later rewrites.
-    posted: Option<(i64, Duration)>,
+    /// The chat and message this segment finished in and the elapsed time stamped on
+    /// it, which is what a flush or an outcome arriving later rewrites. The turn may
+    /// have moved to another chat since.
+    posted: Option<(i64, i64, Duration)>,
     /// When the segment last received text.
     heard: Instant,
 }
@@ -166,6 +167,18 @@ pub(super) struct Turn {
 }
 
 impl Turn {
+    /// Goes on in `thread`, leaving what it posted where it is. The message showing the
+    /// open segment is posted again there, so the one it was in, as `(chat, message)`,
+    /// is for the caller to take back.
+    pub(super) fn relocate(&mut self, thread: Thread) -> Option<(i64, i64)> {
+        let left = self.live.take().map(|live| (self.thread.place.chat, live));
+        self.thread = thread;
+        if let Some(segment) = self.segment.as_mut() {
+            segment.written = None;
+        }
+        left
+    }
+
     /// When the message showing the open segment is due to be written next, which is
     /// only to move its clock while the chat already shows what the segment says.
     pub(super) fn due(&self) -> Option<Instant> {
@@ -486,7 +499,7 @@ impl Machine {
         let done = hook::compose(&head, &took(elapsed), "", &text);
         // A segment that ran its course inside one rewrite has no message yet.
         let message = self.post_live(thread, live, &done);
-        segment.posted = message.map(|message| (message, elapsed));
+        segment.posted = message.map(|message| (thread.place.chat, message, elapsed));
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
@@ -511,13 +524,13 @@ impl Machine {
         let Some(segment) = turn.sealed.iter().find(|sealed| sealed.holds(member)) else {
             return;
         };
-        let Some((message, elapsed)) = segment.posted else {
+        let Some((chat, message, elapsed)) = segment.posted else {
             return;
         };
         let text = segment.text();
         let head = session.head(id, Some(&turn.prompt_id));
         self.telegram.edit(
-            turn.thread.place.chat,
+            chat,
             message,
             &hook::compose(&head, &took(elapsed), "", &text),
         );
