@@ -74,7 +74,8 @@ A message is posted with `sendRichMessage` and rewritten with `editMessageText`,
 carrying the body in `rich_message.markdown`. Bot API 10.1 added the method in June 2026,
 and its markdown is a dialect of its own, documented at
 <https://core.telegram.org/bots/api#rich-message-formatting-options>. `**text**` is bold
-and `*text*` italic, as in CommonMark.
+and `*text*` italic, as in CommonMark. A rich message holds up to 32768 characters of
+text and 500 blocks, against the 4096 characters of `sendMessage`.
 
 A backslash in front of a character the dialect owns is consumed. In front of any other
 character it stays, and a client copying the message hands it back, which is why
