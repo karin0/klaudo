@@ -128,8 +128,8 @@ terminal stay where they were posted, since their turns reply to them.
 `/usage` answers with the plan's limits and the context of the session a message would
 reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as
 a dialog that takes every key until dismissed, which is why the daemon answers it. The
-answer closing each turn ends with the same figures, as in
-`5% 45.6k/1m · 1% 3h30m · 56% 2d14h`.
+message showing a running turn and the answer closing it end with the same figures, as
+in `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`.
 
 `/compact` goes to a session like any other message. The daemon lists these commands
 in the command menu for the user alone.
