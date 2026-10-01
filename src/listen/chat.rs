@@ -48,22 +48,32 @@ impl Machine {
         let Some(dir) = self.sessions.get(id).map(|session| session.dir.clone()) else {
             return;
         };
-        let mut asks: Vec<Ask> = self
-            .opening
-            .extract_if(.., |opening| opening.resume.as_deref() == Some(id))
-            .map(|opening| opening.ask)
+        let waiting = self.waiting(id, &dir);
+        let asks: Vec<Ask> = waiting
+            .into_iter()
+            .rev()
+            .map(|index| self.opening.remove(index).ask)
             .collect();
-        if asks.is_empty()
-            && let Some(index) = self
-                .opening
-                .iter()
-                .position(|opening| opening.resume.is_none() && opening.dir == dir)
-        {
-            asks.push(self.opening.remove(index).ask);
-        }
-        for ask in asks {
+        for ask in asks.into_iter().rev() {
             self.send(id, ask);
         }
+    }
+
+    /// The positions in `opening` of the asks waiting for session `id` in `dir`, in
+    /// order: every one resuming it, or with none, the oldest that opened a new
+    /// conversation in `dir`.
+    pub(super) fn waiting(&self, id: &str, dir: &Path) -> Vec<usize> {
+        let resuming: Vec<usize> = (0..self.opening.len())
+            .filter(|&index| self.opening[index].resume.as_deref() == Some(id))
+            .collect();
+        if !resuming.is_empty() {
+            return resuming;
+        }
+        self.opening
+            .iter()
+            .position(|opening| opening.resume.is_none() && opening.dir == dir)
+            .into_iter()
+            .collect()
     }
 
     /// A message from the chat. What it replies to says where it goes: a message from a
