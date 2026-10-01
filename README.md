@@ -214,10 +214,11 @@ is how a window opened from the chat knows when to type its first prompt.
 ## Configuration
 
 `BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` and `CHAT_PROJECTS` come from
-`$XDG_CONFIG_HOME/klaudo/env` alone, read with `dotenvy` on every event, so a changed
-token applies from the next event and an exported variable reaches nothing. A private
-chat's id is its person's, so `USER_ID` defaults to `CHAT_ID`, and a group, whose id is
-negative, needs it set. A message Klaŭdo ignores
+`$XDG_CONFIG_HOME/klaudo/env` alone, read with `dotenvy`, so an exported variable
+reaches nothing. The daemon reads the file once as it starts, so a change to it applies
+after `systemctl --user restart klaudo`. A private chat's id is its person's, so
+`USER_ID` defaults to `CHAT_ID`, and a group, whose id is negative, needs it set. A
+message Klaŭdo ignores
 is logged with its chat's and sender's ids, so `journalctl --user -u klaudo` shows what to
 write here.
 

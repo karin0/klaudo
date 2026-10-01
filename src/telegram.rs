@@ -402,7 +402,6 @@ fn clamp(markdown: &str) -> String {
 }
 
 /// Where a machine's credentials live. It is the whole of where they come from, so a
-/// token changed there is the token every session uses from its next event on, and a
 /// hook command is the binary's own path.
 fn env_file() -> PathBuf {
     crate::xdg_home("XDG_CONFIG_HOME", ".config").join("klaudo/env")
