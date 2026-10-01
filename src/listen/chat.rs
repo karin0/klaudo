@@ -239,7 +239,7 @@ impl Machine {
 
     /// Every session the daemon knows of, running or exited, with where it ran, when
     /// it was last heard from in Unix milliseconds, and its trail.
-    pub(super) fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
+    fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
         self.sessions
             .iter()
             .map(|(id, session)| {
@@ -258,6 +258,19 @@ impl Machine {
                     &ended.trail,
                 )
             }))
+    }
+
+    /// Where a session new to the daemon in `dir` starts out: the place in the
+    /// project's chat that the session of the project heard from last posted in, so a
+    /// conversation restarted in a project stays in its topic.
+    pub(super) fn inherited(&self, dir: &Path) -> Option<(Place, Option<i64>)> {
+        let chat = self.telegram.chat(dir);
+        self.known()
+            .filter(|(_, known, _, _)| *known == dir)
+            .filter_map(|(_, _, seen, trail)| Some((seen, trail.last?.0)))
+            .filter(|(_, place)| place.chat == chat)
+            .max_by_key(|(seen, _)| *seen)
+            .map(|(_, place)| (place, None))
     }
 
     /// A `/resume` menu: the sessions of the project `lead`, or with none, the projects
@@ -320,7 +333,8 @@ impl Machine {
         let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir)));
         let last = trail
             .last
-            .and_then(|(posted, message)| (posted == place).then_some(message));
+            .filter(|(posted, _)| *posted == place)
+            .and_then(|(_, message)| message);
         let placeholder = format!("prompt for {}", hook::address(id, None));
         self.telegram.anchor(place, &message, &placeholder, last)
     }

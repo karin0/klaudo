@@ -259,7 +259,9 @@ struct Session {
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Trail {
     prompt: String,
-    last: Option<(Place, i64)>,
+    /// A session new to the daemon starts out where the session of its project heard
+    /// from last posted, with no message of its own there yet.
+    last: Option<(Place, Option<i64>)>,
 }
 
 impl Session {
@@ -280,8 +282,20 @@ impl Session {
 
     fn left(&mut self, place: Place, message: Option<i64>) {
         if let Some(message) = message {
-            self.trail.last = Some((place, message));
+            self.trail.last = Some((place, Some(message)));
         }
+    }
+
+    /// Where the session posts between turns: its project's chat, in the topic its last
+    /// message there went to, so a topic stays one conversation across the turns the
+    /// terminal starts.
+    fn home(&self, telegram: &Telegram) -> Place {
+        let chat = telegram.chat(&self.dir);
+        let topic = self
+            .trail
+            .last
+            .and_then(|(place, _)| place.topic.filter(|_| place.chat == chat));
+        Place { chat, topic }
     }
 
     fn head(&self, id: &str, prompt: Option<&str>) -> String {
@@ -398,12 +412,16 @@ impl Machine {
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
         let directory = event.directory();
         if !self.sessions.contains_key(&id) {
-            let mut session =
-                Session::new(PathBuf::from(&event.cwd), pid, pane.clone(), now_millis());
+            let dir = directory
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(&event.cwd));
+            let mut session = Session::new(dir, pid, pane.clone(), now_millis());
             // A resumed session keeps its id, and with its trail its topic.
             if let Some(index) = self.ended.iter().position(|ended| ended.id == id) {
                 session.trail = self.ended.remove(index).expect("a listed index").trail;
                 self.save_ended();
+            } else {
+                session.trail.last = self.inherited(&session.dir);
             }
             self.sessions.insert(id.clone(), session);
         }
@@ -501,35 +519,11 @@ impl Machine {
         })
     }
 
-    /// Where a session posts between turns: its project's chat, in the topic its last
-    /// message there went to, so a topic stays one conversation across the turns the
-    /// terminal starts. A session yet to post there takes the topic of the session of its
-    /// project heard from last, so a conversation restarted in the project stays too.
-    fn home(&self, session: &Session) -> Place {
-        let chat = self.telegram.chat(&session.dir);
-        let posted = |trail: &Trail| {
-            trail
-                .last
-                .filter(|(place, _)| place.chat == chat)
-                .map(|(place, _)| place.topic)
-        };
-        let topic = posted(&session.trail)
-            .or_else(|| {
-                self.known()
-                    .filter(|(_, dir, _, _)| *dir == session.dir)
-                    .filter_map(|(_, _, seen, trail)| Some((seen, posted(trail)?)))
-                    .max_by_key(|(seen, _)| *seen)
-                    .map(|(_, topic)| topic)
-            })
-            .flatten();
-        Place { chat, topic }
-    }
-
     /// Where a session's messages go: its turn's thread, or its home between turns.
     fn thread(&self, session: &Session) -> Thread {
         session.turn.as_ref().map_or(
             Thread {
-                place: self.home(session),
+                place: session.home(&self.telegram),
                 prompt: None,
             },
             |turn| turn.thread,
