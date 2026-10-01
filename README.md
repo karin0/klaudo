@@ -120,7 +120,10 @@ trusted.
 `/resume` goes straight to the sessions of the project the message would reach, with a
 button back to the menu of projects, which it offers first when the message reaches no
 session. The anchor it posts replies to the last message the session left, since a
-private chat has no link to a single message.
+private chat has no link to a single message. The anchor moves the session to where it
+is posted, without a reply: a running turn goes on there under the anchor, leaving what
+it already posted behind, and so does every later one. Prompts already queued in the
+terminal stay where they were posted, since their turns reply to them.
 
 `/usage` answers with the plan's limits and the context of the session a message would
 reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as

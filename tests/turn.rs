@@ -1309,6 +1309,133 @@ fn a_conversation_is_resumed_from_a_menu_of_its_project() {
     drop(daemon);
 }
 
+/// The anchor `/resume` posts for `session` in topic `topic` of the group, picked from
+/// the menu of the group's one project, and the calls made from the press on.
+fn summon(chat: &Chat, calls: &Receiver<Call>, session: &str, topic: i64) -> (Call, Vec<Call>) {
+    chat.says_in(GROUP, topic, OWNER, "/resume");
+    let made = collect(calls, |call| call.label == "sendMessage");
+    let projects = made.last().expect("the projects");
+    chat.presses_in(OWNER, projects, "resume 0", Some(topic));
+    let made = collect(calls, |call| call.label == "editMessageText");
+    let sessions = made.last().expect("the sessions");
+    chat.presses_in(OWNER, sessions, &format!("session {session}"), Some(topic));
+    let made = collect(calls, |call| call.label == "deleteMessage");
+    let anchor = made
+        .iter()
+        .position(|call| call.label.starts_with("sendRichMessage"))
+        .expect("the anchor");
+    (made[anchor].clone(), made)
+}
+
+/// The anchor `/resume` posts moves a session there, whether it is idle or has exited,
+/// so its next turn from the terminal is posted under the anchor's topic.
+#[test]
+fn a_session_goes_where_resume_summons_it() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("summon", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let (idle, ended) = ("1111111111111111", "2222222222222222");
+    for event in [
+        json!({"hook_event_name": "UserPromptSubmit", "session_id": idle, "cwd": project(root), "prompt": "a"}),
+        json!({"hook_event_name": "Stop", "session_id": idle, "last_assistant_message": "done a"}),
+        json!({"hook_event_name": "UserPromptSubmit", "session_id": ended, "cwd": project(root), "prompt": "b"}),
+        json!({"hook_event_name": "Stop", "session_id": ended, "last_assistant_message": "done b"}),
+        json!({"hook_event_name": "SessionEnd", "session_id": ended, "cwd": project(root)}),
+    ] {
+        hook(root, &event);
+    }
+    collect(&calls, |call| call.markdown.ends_with("done b"));
+
+    let anchors = [
+        summon(&chat, &calls, idle, 78).0,
+        summon(&chat, &calls, ended, 79).0,
+    ];
+    assert_eq!(anchors[0].body["message_thread_id"], json!(78));
+    assert_eq!(anchors[1].body["message_thread_id"], json!(79));
+
+    for (session, topic) in [(idle, 78), (ended, 79)] {
+        for event in [
+            json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": project(root)}),
+            json!({"hook_event_name": "UserPromptSubmit", "session_id": session, "cwd": project(root), "prompt": "again"}),
+        ] {
+            hook(root, &event);
+        }
+        let made = collect(&calls, |call| call.markdown.ends_with(">again"));
+        let prompt = made.last().expect("the prompt");
+        assert_eq!(prompt.body["message_thread_id"], json!(topic), "{session}");
+    }
+    drop(daemon);
+}
+
+/// A turn summoned while it runs goes on under the anchor: the message showing it moves
+/// there, and the answer replies to the anchor, while the prompt stays where it was.
+#[test]
+fn a_running_turn_goes_on_where_resume_summons_it() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("summon-turn", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let session = "0123456789abcdef";
+    hook(
+        root,
+        &json!({"hook_event_name": "UserPromptSubmit", "session_id": session,
+            "cwd": project(root), "prompt": "work"}),
+    );
+    hook(
+        root,
+        &json!({"hook_event_name": "MessageDisplay", "session_id": session,
+            "message_id": "m1", "index": 0, "delta": "working"}),
+    );
+    let made = collect(&calls, |call| call.markdown.contains("working"));
+    let prompt = made
+        .iter()
+        .find(|call| call.markdown.ends_with(">work"))
+        .expect("the prompt");
+    let live = made
+        .iter()
+        .rfind(|call| {
+            call.label.starts_with("sendRichMessage") && call.markdown.contains("working")
+        })
+        .expect("the turn on screen");
+    assert_eq!(live.body["message_thread_id"], json!(null));
+
+    let (anchor, made) = summon(&chat, &calls, session, 78);
+    assert!(
+        made.iter()
+            .any(|call| call.label == "deleteMessage" && call.target == Some(live.id)),
+        "the turn's message stays behind"
+    );
+    let moved = made
+        .iter()
+        .rfind(|call| {
+            call.label.starts_with("sendRichMessage") && call.markdown.contains("working")
+        })
+        .expect("the turn on screen again");
+    assert_eq!(moved.body["message_thread_id"], json!(78));
+    assert_eq!(moved.reply, replying_to(anchor.id));
+
+    hook(
+        root,
+        &json!({"hook_event_name": "Stop", "session_id": session,
+            "last_assistant_message": "working"}),
+    );
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let answer = made
+        .iter()
+        .find(|call| call.label == "sendRichMessage ring")
+        .expect("the answer");
+    assert_eq!(answer.body["message_thread_id"], json!(78));
+    assert_eq!(answer.reply, replying_to(anchor.id));
+    assert!(
+        made.iter()
+            .any(|call| call.label == "deleteMessage" && call.target == Some(moved.id)),
+        "the moved message goes once the answer is in"
+    );
+    assert_eq!(prompt.body["message_thread_id"], json!(null));
+    drop(daemon);
+}
+
 /// What the chat is left holding: every message Klaŭdo sent, in the order it sent them,
 /// carrying its last rewrite, without the ones it took back. Each is the sound it
 /// arrived with and its body under the head.
@@ -1355,6 +1482,7 @@ fn replying_to(message_id: i64) -> serde_json::Value {
 }
 
 /// One call the daemon made, as the server saw it.
+#[derive(Clone)]
 struct Call {
     label: String,
     /// A message's markdown, the caption of a file, or the text of a menu.
@@ -1716,6 +1844,11 @@ impl Chat {
     /// A press on a button of `menu`, a menu the daemon posted or rewrote, as Telegram
     /// hands it back.
     fn presses(&self, sender: i64, menu: &Call, data: &str) {
+        self.presses_in(sender, menu, data, None);
+    }
+
+    /// A press on a button of `menu` where it stands in topic `topic`.
+    fn presses_in(&self, sender: i64, menu: &Call, data: &str, topic: Option<i64>) {
         self.deliver(json!({
             "callback_query": {
                 "id": "query",
@@ -1726,6 +1859,8 @@ impl Chat {
                     "chat": {"id": menu.chat},
                     "text": menu.markdown,
                     "reply_markup": menu.body["reply_markup"],
+                    "message_thread_id": topic,
+                    "is_topic_message": topic.is_some(),
                 },
                 "data": data,
             },

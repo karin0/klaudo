@@ -10,7 +10,7 @@ use crate::telegram::Place;
 use crate::tmux;
 
 use super::render::code;
-use super::turn::Ask;
+use super::turn::{Ask, Thread};
 use super::{Machine, Opening, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
@@ -220,7 +220,14 @@ impl Machine {
                 }
             }
             Some((SESSION, id)) => {
-                if self.resumption(place, id).is_some() {
+                if let Some(anchor) = self.resumption(place, id) {
+                    self.summon(
+                        id,
+                        Thread {
+                            place,
+                            prompt: Some(anchor),
+                        },
+                    );
                     self.telegram.delete(place.chat, menu);
                 }
             }
@@ -347,6 +354,31 @@ impl Machine {
             .and_then(|(_, message)| message);
         let placeholder = format!("prompt for {}", hook::address(id, None));
         self.telegram.anchor(place, &message, &placeholder, last)
+    }
+
+    /// Moves session `id` to `thread`, whose anchor becomes the last message it left. A
+    /// running turn goes on under the anchor, while prompts queued in the terminal stay
+    /// with the messages that carry them.
+    fn summon(&mut self, id: &str, thread: Thread) {
+        let last = Some((thread.place, thread.prompt));
+        if let Some(ended) = self.ended.iter_mut().find(|ended| ended.id == id) {
+            ended.trail.last = last;
+            self.save_ended();
+            return;
+        }
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        session.trail.last = last;
+        let left = session
+            .turn
+            .as_mut()
+            .filter(|turn| turn.thread.place != thread.place)
+            .and_then(|turn| turn.relocate(thread));
+        if let Some((chat, live)) = left {
+            self.telegram.delete(chat, live);
+        }
+        self.save();
     }
 
     /// The buttons of a menu of the projects of the chat `place` is in, `lead` first,
