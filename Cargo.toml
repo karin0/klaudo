@@ -10,6 +10,9 @@ kuriero = { git = 'https://github.com/karin0/kuriero.git', rev = 'fe9770f84d6ab0
 libc = '0.2.189'
 serde = { version = '1.0.229', features = ['derive'] }
 serde_json = '1.0.151'
+similar = { version = '3.2.0', default-features = false, features = ['std'] }
+syntect = { version = '5.3.0', default-features = false, features = ['parsing', 'regex-fancy'] }
+two-face = { version = '0.5.2', default-features = false, features = ['syntect-fancy'] }
 ureq = { version = '3.4.2', features = ['multipart'] }
 
 [dev-dependencies]

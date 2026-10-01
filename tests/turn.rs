@@ -1988,7 +1988,9 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
     body.resize(length, 0);
     stream.read_exact(&mut body[arrived..]).expect("body");
     let body = match boundary {
-        Some(boundary) => form(&String::from_utf8(body).expect("a text form"), &boundary),
+        // A photo's bytes read as text the same way on every run, which is all a test
+        // compares them by.
+        Some(boundary) => form(&String::from_utf8_lossy(&body), &boundary),
         None => serde_json::from_slice(&body).expect("a JSON body"),
     };
 
@@ -2241,6 +2243,76 @@ fn usage_is_answered_from_the_status_lines() {
         )
     );
 
+    drop(daemon);
+}
+
+/// `/diff` draws the unstaged changes of the session a message would reach, each file
+/// folded under a line of what changed in it, and lists a file too large to draw.
+#[test]
+fn diff_draws_the_unstaged_changes_of_a_session() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("diff", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+
+    chat.says(OWNER, OWNER, "/diff");
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    assert_eq!(
+        made.last().expect("the answer").markdown,
+        "no session has run here to show the changes of"
+    );
+
+    let tree = root.join("a");
+    std::fs::create_dir(&tree).expect("a project");
+    let git = |args: &[&str]| {
+        let ran = Command::new("git")
+            .arg("-C")
+            .arg(&tree)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(ran.status.success(), "git {args:?}: {ran:?}");
+    };
+    git(&["init", "-q"]);
+    let write = |name: &str, text: &str| std::fs::write(tree.join(name), text).expect("a file");
+    write("a.rs", "fn main() {\n    let x = 1;\n}\n");
+    write("big.lock", &"x\n".repeat(300));
+    write("gone", "bye\n");
+    git(&["add", "."]);
+    write("a.rs", "fn main() {\n    let x = 2;\n}\n");
+    write("big.lock", &"y\n".repeat(300));
+    std::fs::remove_file(tree.join("gone")).expect("a deletion");
+    // Staged alone, so it is no unstaged change.
+    write("staged", "s\n");
+    git(&["add", "staged"]);
+    hook(
+        root,
+        &json!({"hook_event_name": "SessionStart", "session_id": "aaaaaaaa", "cwd": tree}),
+    );
+
+    chat.says(OWNER, OWNER, "/diff");
+    let made = collect(&calls, |call| call.markdown.contains("tg://photo"));
+    let posted = made.last().expect("the pictures");
+    assert_eq!(posted.label, "sendRichMessage silent");
+    assert_eq!(
+        posted.markdown,
+        "**a** `aaaaaaaa`\n\n\
+         <details><summary>M `a.rs` \\+1 −1</summary>\n\n![](tg://photo?id=p0)\n\n</details>\n\n\
+         M `big.lock` \\+300 −300, over the 500 lines drawn\n\n\
+         <details><summary>D `gone` \\+0 −1</summary>\n\n![](tg://photo?id=p1)\n\n</details>"
+    );
+    assert_eq!(
+        posted.body["rich_message"]["media"],
+        json!([
+            {"id": "p0", "media": {"type": "photo", "media": "attach://p0"}},
+            {"id": "p1", "media": {"type": "photo", "media": "attach://p1"}},
+        ])
+    );
+    for photo in ["p0", "p1"] {
+        let bytes = posted.body[photo].as_str().expect("an uploaded photo");
+        assert!(bytes.starts_with("\u{fffd}PNG\r\n"), "{photo} is no PNG");
+    }
+    assert_eq!(posted.reply["message_id"], 9000);
     drop(daemon);
 }
 

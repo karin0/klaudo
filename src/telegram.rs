@@ -187,6 +187,44 @@ impl Telegram {
         logged(method, sent).map(drop)
     }
 
+    /// A silent rich message showing `photos`, each uploaded with it and placed where
+    /// the markdown links to `tg://photo?id=p<N>`, `N` its place in the list.
+    pub fn photos(
+        &self,
+        place: Place,
+        markdown: &str,
+        photos: &[PathBuf],
+        reply_to: i64,
+    ) -> Option<i64> {
+        let names: Vec<String> = (0..photos.len()).map(|index| format!("p{index}")).collect();
+        let media: Vec<Value> = names
+            .iter()
+            .map(|name| json!({"id": name, "media": {"type": "photo", "media": format!("attach://{name}")}}))
+            .collect();
+        let rich = json!({"markdown": clamp(markdown), "media": media}).to_string();
+        let chat = place.chat.to_string();
+        let topic = place.topic.map(|topic| topic.to_string());
+        let reply = serde_json::to_string(&replying(reply_to)).expect("reply parameters");
+        let timeout = UPLOAD_TIMEOUT * u32::try_from(photos.len()).expect("a count of photos");
+        let sent = self
+            .client
+            .request::<Message>("sendRichMessage", timeout, |request| {
+                let mut form = Form::new()
+                    .text("chat_id", &chat)
+                    .text("disable_notification", "true")
+                    .text("reply_parameters", &reply)
+                    .text("rich_message", &rich);
+                if let Some(topic) = &topic {
+                    form = form.text("message_thread_id", topic);
+                }
+                for (name, path) in names.iter().zip(photos) {
+                    form = form.part(name, Part::file(path)?);
+                }
+                request.send(form)
+            });
+        logged("sendRichMessage", sent).map(|sent| sent.id)
+    }
+
     /// Rewrites a message the daemon posted, for a segment that received more after it
     /// went out, or a menu that leads to the next choice.
     pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
