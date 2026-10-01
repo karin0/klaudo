@@ -137,7 +137,7 @@ impl Machine {
             Ok(Some(address)) => self.send(&address, ask),
             Ok(None) => self.say(
                 place,
-                "no session is running here; `/new <directory>` opens one",
+                "no session has run here; `/new <directory>` opens one",
             ),
             Err(error) => self.say(place, error),
         }
@@ -414,15 +414,15 @@ impl Machine {
         Some(buttons)
     }
 
-    /// The session in `place` heard from last, which is where a message that replies to
-    /// nothing goes. A session posting elsewhere stays out of reach, so a project never
-    /// answers in a chat it is not posted to, and a topic holds its own conversations.
+    /// The session at home in `place` heard from last, running or exited, which is where
+    /// a message that replies to nothing goes. A session at home elsewhere stays out of
+    /// reach, so a project never answers in a chat it is not posted to, and a topic
+    /// holds its own conversations.
     fn latest(&self, place: Place) -> Option<String> {
-        self.sessions
-            .iter()
-            .filter(|(_, session)| self.thread(session).place == place)
-            .max_by_key(|(_, session)| session.seen)
-            .map(|(id, _)| id.clone())
+        self.known()
+            .filter(|(_, dir, _, trail)| trail.home(self.telegram.chat(dir)) == place)
+            .max_by_key(|(_, _, seen, _)| *seen)
+            .map(|(id, _, _, _)| id.to_owned())
     }
 
     /// Posts a message to reply to with the first prompt of a new conversation. Nothing
