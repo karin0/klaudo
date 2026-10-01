@@ -421,7 +421,12 @@ impl Machine {
                 session.trail = self.ended.remove(index).expect("a listed index").trail;
                 self.save_ended();
             } else {
-                session.trail.last = self.inherited(&session.dir);
+                // A conversation opened from the chat belongs where it was asked for.
+                let asked = self
+                    .waiting(&id, &session.dir)
+                    .first()
+                    .map(|&index| (self.opening[index].ask.place, None));
+                session.trail.last = asked.or_else(|| self.inherited(&session.dir));
             }
             self.sessions.insert(id.clone(), session);
         }

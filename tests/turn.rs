@@ -796,6 +796,74 @@ fn a_new_session_takes_the_topic_of_its_project() {
     drop(daemon);
 }
 
+/// A conversation opened from a topic belongs to that topic from its first event, even
+/// where another session of its project posted elsewhere.
+#[test]
+fn a_new_conversation_belongs_to_the_topic_it_was_asked_from() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("new-topic", port);
+    let root = temporary.path();
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([{
+            "id": "0123456789abcdef",
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "seen": 0,
+            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+        }])
+        .to_string(),
+    )
+    .expect("the state");
+    let daemon = daemon(root);
+    let dir = project(root).display().to_string();
+
+    chat.says_in(GROUP, 78, OWNER, &format!("/new {dir}"));
+    collect(&calls, |call| {
+        call.body["reply_markup"]["force_reply"] == json!(true)
+    });
+    chat.push(json!({
+        "chat": {"id": GROUP},
+        "from": {"id": OWNER},
+        "text": "hello",
+        "message_thread_id": 78,
+        "is_topic_message": true,
+        "reply_to_message": delivered(
+            json!({
+                "message_thread_id": 78,
+                "is_topic_message": true,
+                "rich_message": {"blocks": [
+                    {"type": "paragraph", "text": [{"type": "code", "text": "new"}]},
+                    {"type": "paragraph", "text": dir},
+                ]},
+            }),
+            GROUP,
+        ),
+    }));
+    let log = root.join("tmux.log");
+    wait_for(
+        || std::fs::read_to_string(&log).is_ok_and(|log| log.contains("new-session")),
+        "the reply opened no window",
+    );
+
+    // Its first event comes before the prompt, as a trust dialog's does.
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "Notification",
+            "session_id": "fedcba9876543210",
+            "cwd": project(root),
+            "message": "Claude needs your permission",
+        }),
+    );
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let notice = made.last().expect("the notification");
+    assert_eq!(notice.body["message_thread_id"], json!(78));
+    drop(daemon);
+}
+
 /// A message outside every topic of a private chat in topic mode opens a topic of its
 /// own, which reaches the session heard from last outside every topic, while a topic the
 /// user named reaches no session outside it.
