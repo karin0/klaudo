@@ -17,6 +17,7 @@ use super::{Machine, Opening, Session, Trail, now_millis};
 /// continuing one.
 pub(super) const NEW: &str = "new";
 const RESUME: &str = "resume";
+const CLEAR: &str = "clear";
 const USAGE: &str = "usage";
 const DIFF: &str = "diff";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
@@ -28,6 +29,10 @@ const RESUMING: &str = "Resume a conversation in:";
 /// What the chat's command menu offers, each with the line it is listed under.
 pub(super) const COMMANDS: &[(&str, &str)] = &[
     (NEW, "Open a conversation in a directory"),
+    (
+        CLEAR,
+        "Open a conversation in the project of the one it replies to",
+    ),
     (RESUME, "Resume a recent conversation"),
     (
         USAGE,
@@ -39,6 +44,9 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ),
     ("compact", "Compact the conversation it replies to"),
 ];
+
+/// What a message reaching no session is answered with.
+const NOTHING_RAN: &str = "no session has run here; `/new <directory>` opens one";
 
 /// How many choices a menu offers, which a phone shows without scrolling.
 const MENU_MAX: usize = 8;
@@ -108,6 +116,14 @@ impl Machine {
                 self.anchor(place, argument);
                 return;
             }
+            Some((CLEAR, _)) => {
+                if let Some(dir) = self.reached(place, replied) {
+                    self.anchor(place, &tilde(dir));
+                } else {
+                    self.say(place, NOTHING_RAN);
+                }
+                return;
+            }
             Some((RESUME, _)) => {
                 self.resume(place, self.reached(place, replied));
                 return;
@@ -135,10 +151,7 @@ impl Machine {
                 None => self.say(place, "that anchor names no directory"),
             },
             Ok(Some(address)) => self.send(&address, ask),
-            Ok(None) => self.say(
-                place,
-                "no session has run here; `/new <directory>` opens one",
-            ),
+            Ok(None) => self.say(place, NOTHING_RAN),
             Err(error) => self.say(place, error),
         }
     }
