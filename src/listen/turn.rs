@@ -628,9 +628,10 @@ impl Machine {
         }
     }
 
-    /// The open segment as the chat should be showing it: what it has said so far and
-    /// the status line under that. The message holding it is sent once the turn has run
-    /// long enough to be worth watching, and rewritten as the segment grows.
+    /// The open segment as the chat should be showing it: what it has said so far, the
+    /// status line under that, and the figures closing an answer under both. The message
+    /// holding it is sent once the turn has run long enough to be worth watching, and
+    /// rewritten as the segment grows.
     pub(super) fn show(&mut self, id: &str) {
         let Some(session) = self.sessions.get(id) else {
             return;
@@ -646,12 +647,11 @@ impl Machine {
         let head = session.head(id, Some(&turn.prompt_id));
         let live = turn.live;
         let thread = turn.thread;
-        let shown = hook::compose(
-            &head,
-            &took(elapsed),
-            "",
-            &running(&text, &status(elapsed, turn.seed)),
-        );
+        let mut footer = status(elapsed, turn.seed);
+        if let Some(line) = status_line(session.window.as_ref(), self.limits.as_ref()) {
+            footer = format!("{footer}\n\n{line}");
+        }
+        let shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));
         let message = self.post_live(thread, live, &shown);
         let Some(turn) = self.turn_mut(id) else {
             return;

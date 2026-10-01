@@ -202,6 +202,51 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
     drop(daemon);
 }
 
+/// The figures that close an answer are under the status line while the turn runs, as
+/// the session last reported them.
+#[test]
+fn a_running_turn_shows_the_status_line_figures() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("figures", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let session = "0123456789abcdef";
+
+    hook(
+        root,
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session,
+            "cwd": project(root),
+            "prompt": "what does it do",
+        }),
+    );
+
+    status(
+        root,
+        &json!({
+            "session_id": session,
+            "context_window": {
+                "context_window_size": 1_000_000,
+                "current_usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 126,
+                    "cache_creation_input_tokens": 19957,
+                    "cache_read_input_tokens": 25597,
+                },
+                "used_percentage": 5,
+            },
+        }),
+    );
+    let made = collect(&calls, |call| call.markdown.ends_with('`'));
+    let live = &made.last().expect("a live message").markdown;
+    let shown = live
+        .strip_suffix("\n\n`5% 45.6k/1m`")
+        .expect("the figures under the status line");
+    showing(shown, "");
+    drop(daemon);
+}
+
 /// A turn long enough to be watched puts a message up and rewrites it as it goes. The
 /// segment that finishes there keeps that message, and the one the answer repeats is
 /// taken back, so nothing the chat holds is said twice.
