@@ -955,6 +955,63 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
     drop(daemon);
 }
 
+/// A message replying to nothing in a topic reaches the session at home there heard
+/// from last, resumed once it has exited, ahead of a session outside every topic heard
+/// from since.
+#[test]
+fn a_topic_resumes_its_latest_session() {
+    let (port, _calls, chat) = recorder();
+    let temporary = prepare("topic-resume", port);
+    let root = temporary.path();
+    let seen = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_millis();
+    let (outside, exited) = ("0123456789abcdef", "fedcba9876543210");
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([
+            {
+                "id": exited,
+                "dir": project(root),
+                "pid": std::process::id(),
+                "pane": null,
+                "seen": seen - 1000,
+                "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 79}, 5]},
+            },
+            {
+                "id": outside,
+                "dir": project(root),
+                "pid": std::process::id(),
+                "pane": null,
+                "seen": seen,
+                "trail": {"prompt": "", "last": null},
+            },
+        ])
+        .to_string(),
+    )
+    .expect("the state");
+    let daemon = daemon(root);
+
+    hook(
+        root,
+        &json!({"hook_event_name": "SessionEnd", "session_id": exited, "cwd": project(root)}),
+    );
+    chat.opens(GROUP, 79, OWNER, "carry on");
+    let log = root.join("tmux.log");
+    wait_for(
+        || {
+            std::fs::read_to_string(&log).is_ok_and(|log| {
+                log.lines()
+                    .any(|line| line.ends_with(&format!("--resume {exited}")))
+            })
+        },
+        "the topic's exited session was not resumed",
+    );
+    drop(daemon);
+}
+
 /// A session killed mid-turn sends no event again, and the daemon still finds it gone:
 /// the message that showed the turn running is rewritten to what the turn said.
 #[test]
@@ -1022,11 +1079,10 @@ fn what_the_daemon_knows_outlives_a_restart() {
             &json!({"hook_event_name": event, "session_id": session, "cwd": cwd}),
         );
     }
-    // Answered once the events ahead of it are in, and the private chat has no
-    // session left.
-    chat.says(OWNER, OWNER, "anyone");
+    // Answered once the events ahead of it are in, from a topic no session has run in.
+    chat.says_in(OWNER, 5, OWNER, "anyone");
     collect(&calls, |call| {
-        call.markdown.starts_with("no session is running here")
+        call.markdown.starts_with("no session has run here")
     });
     drop(daemon);
     std::fs::remove_file(root.join("run/klaudo/listen.sock")).expect("the old socket");
@@ -1211,18 +1267,18 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
         .collect();
     let a = root.join("a").display().to_string();
     let b = root.join("b").display().to_string();
-    // Session a exited last, and a message replying to nothing reaches session b.
-    assert_eq!(labels, [b.clone(), a.clone()]);
+    // Session a exited last, and a message replying to nothing reaches it.
+    assert_eq!(labels, [a.clone(), b.clone()]);
     assert_eq!(menu.chat, Some(OWNER));
 
-    let from_a =
-        json!({"text": "aaaaaaaa", "entities": [{"type": "code", "offset": 0, "length": 8}]});
-    chat.replies(OWNER, OWNER, "/new", &from_a);
+    let from_b =
+        json!({"text": "bbbbbbbb", "entities": [{"type": "code", "offset": 0, "length": 8}]});
+    chat.replies(OWNER, OWNER, "/new", &from_b);
     let made = collect(&calls, |call| call.label == "sendMessage");
     let menu = made.last().expect("the menu");
     assert_eq!(
         menu.body["reply_markup"]["inline_keyboard"][0][0]["text"],
-        a.as_str()
+        b.as_str()
     );
 
     chat.presses(OWNER, menu, "new 1");
@@ -1234,12 +1290,12 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     // The directory is escaped as prose, which the reader never sees.
     assert_eq!(
         anchor.markdown.replace('\\', ""),
-        format!("**b** `new`\n\n{b}")
+        format!("**a** `new`\n\n{a}")
     );
     // The next message typed replies to the anchor.
     assert_eq!(
         anchor.body["reply_markup"],
-        json!({"force_reply": true, "input_field_placeholder": format!("first prompt in {b}")
+        json!({"force_reply": true, "input_field_placeholder": format!("first prompt in {a}")
             .chars().take(64).collect::<String>()})
     );
     assert_eq!(
