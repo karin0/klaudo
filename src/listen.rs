@@ -267,6 +267,18 @@ struct Trail {
     last: Option<(Place, Option<i64>)>,
 }
 
+impl Trail {
+    /// Where the session posts between turns, and so where a message replying to
+    /// nothing finds it: its project's `chat`, in the topic its last message there went
+    /// to, so a topic stays one conversation across the turns the terminal starts.
+    fn home(&self, chat: i64) -> Place {
+        let topic = self
+            .last
+            .and_then(|(place, _)| place.topic.filter(|_| place.chat == chat));
+        Place { chat, topic }
+    }
+}
+
 impl Session {
     fn new(dir: PathBuf, pid: u32, pane: Option<Pane>, seen: u64) -> Self {
         Self {
@@ -289,16 +301,8 @@ impl Session {
         }
     }
 
-    /// Where the session posts between turns: its project's chat, in the topic its last
-    /// message there went to, so a topic stays one conversation across the turns the
-    /// terminal starts.
     fn home(&self, telegram: &Telegram) -> Place {
-        let chat = telegram.chat(&self.dir);
-        let topic = self
-            .trail
-            .last
-            .and_then(|(place, _)| place.topic.filter(|_| place.chat == chat));
-        Place { chat, topic }
+        self.trail.home(telegram.chat(&self.dir))
     }
 
     fn head(&self, id: &str, prompt: Option<&str>) -> String {
