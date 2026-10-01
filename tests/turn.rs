@@ -1321,6 +1321,53 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     drop(daemon);
 }
 
+/// `/clear` posts the anchor of a new conversation in the project of the session a
+/// message would reach, and with none, says so.
+#[test]
+fn a_new_conversation_opens_in_the_project_a_message_would_reach() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("clear", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+
+    for dir in ["a", "b"] {
+        std::fs::create_dir(root.join(dir)).expect("a project");
+    }
+    chat.says(OWNER, OWNER, "/clear");
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    assert!(
+        made.last()
+            .expect("the answer")
+            .markdown
+            .contains("no session has run here")
+    );
+
+    for (session, dir) in [("aaaaaaaa", "a"), ("bbbbbbbb", "b")] {
+        hook(
+            root,
+            &json!({"hook_event_name": "SessionStart", "session_id": session, "cwd": root.join(dir)}),
+        );
+    }
+    let anchored = |made: &[Call]| {
+        let anchor = made.last().expect("the anchor");
+        assert_eq!(anchor.body["reply_markup"]["force_reply"], true);
+        anchor.markdown.replace('\\', "")
+    };
+    let a = root.join("a").display().to_string();
+    let b = root.join("b").display().to_string();
+    // Session b started last, and a message replying to nothing reaches it.
+    chat.says(OWNER, OWNER, "/clear");
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    assert_eq!(anchored(&made), format!("**b** `new`\n\n{b}"));
+
+    let from_a =
+        json!({"text": "aaaaaaaa", "entities": [{"type": "code", "offset": 0, "length": 8}]});
+    chat.replies(OWNER, OWNER, "/clear@klaudo_bot", &from_a);
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    assert_eq!(anchored(&made), format!("**a** `new`\n\n{a}"));
+    drop(daemon);
+}
+
 /// `/resume` offers the sessions of the project a message would reach, the one heard from
 /// last first, with a way back to the projects of its chat, and a press on a session
 /// posts an anchor addressed to it that replies to the last message it left, taking the

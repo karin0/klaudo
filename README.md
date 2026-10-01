@@ -108,6 +108,10 @@ in the tmux session `klaudo`, so `tmux attach -t klaudo` reaches a conversation 
 began on the phone. An anchor carries `ForceReply`, which Telegram attaches only to a
 message being sent, so an anchor is always a message of its own.
 
+`/clear` posts the anchor of the project of the session the message would reach, which
+is the first choice `/new` alone offers, without the menu. Telegram refuses to edit a
+message carrying `ForceReply`, so an anchor takes no button back to the projects.
+
 tmux runs `claude` through its `default-shell` as a non-interactive shell with the tmux
 server's environment, so `claude` has to be on the `PATH` that shell ends up with. A
 directory added only by an interactive shell's startup file, as the native installer's
