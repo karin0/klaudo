@@ -18,6 +18,7 @@ use super::{Machine, Opening, Session, Trail, now_millis};
 pub(super) const NEW: &str = "new";
 const RESUME: &str = "resume";
 const USAGE: &str = "usage";
+const DIFF: &str = "diff";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
 const SESSION: &str = "session";
 /// What the button leading a `/resume` menu of sessions back to its projects carries.
@@ -31,6 +32,10 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     (
         USAGE,
         "Show the plan's limits and the context of the conversation it replies to",
+    ),
+    (
+        DIFF,
+        "Show the unstaged changes of the conversation it replies to",
     ),
     ("compact", "Compact the conversation it replies to"),
 ];
@@ -109,6 +114,10 @@ impl Machine {
             }
             Some((USAGE, _)) => {
                 self.usage(place, carrier, replied);
+                return;
+            }
+            Some((DIFF, _)) => {
+                self.diff(place, carrier, replied);
                 return;
             }
             _ => {}
@@ -256,7 +265,7 @@ impl Machine {
 
     /// Every session the daemon knows of, running or exited, with where it ran, when
     /// it was last heard from in Unix milliseconds, and its trail.
-    fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
+    pub(super) fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
         self.sessions
             .iter()
             .map(|(id, session)| {

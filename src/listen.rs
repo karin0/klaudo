@@ -3,6 +3,7 @@
 //! message from the chat becomes keystrokes in a session's terminal.
 
 mod chat;
+mod diff;
 mod render;
 mod turn;
 mod usage;
@@ -12,6 +13,7 @@ use std::fs::{self, File};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -128,7 +130,7 @@ pub fn run() {
     let ended =
         load(&ended_file).unwrap_or_else(|error| panic!("{}: {error}", ended_file.display()));
     let mut machine = Machine {
-        telegram: Telegram::new(),
+        telegram: Arc::new(Telegram::new()),
         answers,
         sessions: running
             .into_iter()
@@ -304,7 +306,7 @@ impl Session {
 }
 
 struct Machine {
-    telegram: Telegram,
+    telegram: Arc<Telegram>,
     /// Where `klaudo send` hears where its file goes.
     answers: UnixDatagram,
     sessions: BTreeMap<String, Session>,

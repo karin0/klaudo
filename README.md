@@ -132,6 +132,13 @@ a dialog that takes every key until dismissed, which is why the daemon answers i
 message showing a running turn and the answer closing it end with the same figures, as
 in `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`.
 
+`/diff` answers with the unstaged changes of the working tree holding the directory of
+the session a message would reach, each file drawn in pictures folded under a line of
+its status and line counts. Telegram's markup has no colours, so `pango-view`, from the
+pango package, draws them, and has to be on the daemon's `PATH`. A file changed in too
+many lines to read on a phone, as a lock file is, is listed without being drawn, and so
+is a binary one.
+
 `/compact` goes to a session like any other message. The daemon lists these commands
 in the command menu for the user alone.
 

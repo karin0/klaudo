@@ -1,3 +1,4 @@
+mod diff;
 mod hook;
 mod listen;
 mod telegram;
