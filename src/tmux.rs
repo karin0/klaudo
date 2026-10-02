@@ -47,15 +47,28 @@ impl Pane {
         command
     }
 
-    /// The terminal this pane is showing, which is what ties it to a process.
-    fn tty(&self) -> Option<String> {
+    fn display(&self, format: &str) -> Option<String> {
         let output = self
             .tmux()
-            .args(["display-message", "-p", "-t", &self.id, "#{pane_tty}"])
+            .args(["display-message", "-p", "-t", &self.id, format])
             .output()
             .ok()?;
-        let tty = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-        (output.status.success() && !tty.is_empty()).then_some(tty)
+        let shown = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        (output.status.success() && !shown.is_empty()).then_some(shown)
+    }
+
+    /// The terminal this pane is showing, which is what ties it to a process.
+    fn tty(&self) -> Option<String> {
+        self.display("#{pane_tty}")
+    }
+
+    /// True for a pane in one of the windows `open` makes.
+    pub fn owned(&self) -> bool {
+        self.display("#{session_name}").as_deref() == Some(OWNED_SESSION)
+    }
+
+    pub fn close(&self) -> Result<(), String> {
+        run(self.tmux().args(["kill-pane", "-t", &self.id]))
     }
 
     /// False once the pane has closed, as a window does when its command exits.
@@ -187,13 +200,38 @@ fn run(command: &mut Command) -> Result<(), String> {
     Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
 }
 
-/// Field 7 of `/proc/<pid>/stat` is the controlling terminal, encoded as a device
-/// number. The fields before it are skipped past the command name, which may itself
-/// contain spaces and parentheses.
-pub fn controlling_tty(pid: u32) -> Option<String> {
+/// The fields of `/proc/<pid>/stat` from the third on, past the command name, which may
+/// itself contain spaces and parentheses.
+fn stat(pid: &str) -> Option<Vec<String>> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let fields: Vec<&str> = stat.rsplit_once(") ")?.1.split(' ').collect();
-    pts(fields.get(4)?.parse().ok()?)
+    Some(
+        stat.rsplit_once(") ")?
+            .1
+            .split(' ')
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// Field 7 of `/proc/<pid>/stat` is the controlling terminal, encoded as a device
+/// number.
+pub fn controlling_tty(pid: u32) -> Option<String> {
+    pts(stat(&pid.to_string())?.get(4)?.parse().ok()?)
+}
+
+/// True while a process has `pid` as its parent, field 4 of its `/proc/<pid>/stat`.
+pub fn has_children(pid: u32) -> bool {
+    let parent = pid.to_string();
+    std::fs::read_dir("/proc")
+        .expect("/proc")
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name.bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| stat(&name))?
+        })
+        .any(|fields| fields.get(1) == Some(&parent))
 }
 
 /// A tmux pane is always a pseudo-terminal, so any other terminal names none.
