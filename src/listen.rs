@@ -565,7 +565,8 @@ impl Machine {
     }
 
     /// The next moment `tick` has work: a tool call settling, a message falling due, a
-    /// turn due to show its session typing, a session idle long enough to close, or
+    /// turn due to show its session typing or sent Escape and not seen stopping, a
+    /// session idle long enough to close, or
     /// the sweep for a session killed mid-turn or a window closed before its session
     /// started. With none, only an arrival wakes it.
     fn due(&self) -> Option<Instant> {
@@ -587,6 +588,7 @@ impl Machine {
                     turn.pending.first().map(|(at, _)| *at + SETTLE),
                     turn.due(),
                     turn.typing,
+                    turn.stop_due(),
                 ]
             })
             .flatten()
@@ -601,6 +603,7 @@ impl Machine {
         }
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         for id in ids {
+            self.stopped(&id);
             self.place(&id);
             self.show(&id);
             self.keep_typing(&id);

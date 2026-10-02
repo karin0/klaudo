@@ -7,10 +7,10 @@ use kuriero::{CallbackQuery, Entity, Message, RichText, User};
 
 use crate::hook;
 use crate::telegram::Place;
-use crate::tmux;
+use crate::tmux::{self, Pane};
 
 use super::render::code;
-use super::turn::{Ask, Thread};
+use super::turn::{Ask, STOP, Thread};
 use super::{Machine, Opening, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
@@ -222,6 +222,10 @@ impl Machine {
         let Some(label) = label(message, data) else {
             return;
         };
+        if data == STOP {
+            self.stop(place, menu);
+            return;
+        }
         if data == PROJECTS {
             if let Some(buttons) = self.choices(place, RESUME, None) {
                 self.telegram.remenu(place.chat, menu, RESUMING, &buttons);
@@ -485,7 +489,7 @@ impl Machine {
     /// has exited.
     fn send(&mut self, address: &str, ask: Ask) {
         let place = ask.place;
-        let Some((id, session)) = self.addressed(address) else {
+        let Some((id, _)) = self.addressed(address) else {
             match self
                 .ended
                 .iter()
@@ -500,33 +504,13 @@ impl Machine {
             return;
         };
         let id = id.clone();
-        let Some(pane) = session.pane.clone() else {
-            // Naming the terminal is what tells a session started as a background job,
-            // which runs on a pty of its own, from one whose pane went away.
-            let short = &id[..8.min(id.len())];
-            self.say(
-                place,
-                &match tmux::controlling_tty(session.pid) {
-                    Some(tty) => format!("`{short}` is on `{tty}`, which no tmux pane holds"),
-                    None => format!("`{short}` has no terminal to type into"),
-                },
-            );
-            return;
+        let pane = match self.terminal(&id) {
+            Ok(pane) => pane,
+            Err(error) => {
+                self.say(place, &error);
+                return;
+            }
         };
-        let pid = session.pid;
-        if !pane.holds(pid) {
-            // A terminal draws whatever it likes, so it goes in a fence rather than
-            // through the markdown parser.
-            let screen = pane
-                .screen()
-                .map(|screen| format!("\n\n```\n{screen}\n```"))
-                .unwrap_or_default();
-            self.say(
-                place,
-                &format!("that terminal no longer holds the session{screen}"),
-            );
-            return;
-        }
         if let Err(error) = pane.deliver(&ask.text) {
             self.say(place, &format!("tmux: {}", hook::prose(&error)));
             return;
@@ -534,6 +518,31 @@ impl Machine {
         let session = self.sessions.get_mut(&id).expect("the session just found");
         session.asked.push_back(ask);
         session.seen = now_millis();
+    }
+
+    /// The pane of running session `id`, while it still shows the session, or what the
+    /// chat is answered with instead.
+    pub(super) fn terminal(&self, id: &str) -> Result<Pane, String> {
+        let session = &self.sessions[id];
+        let Some(pane) = session.pane.clone() else {
+            // Naming the terminal is what tells a session started as a background job,
+            // which runs on a pty of its own, from one whose pane went away.
+            let short = &id[..8.min(id.len())];
+            return Err(match tmux::controlling_tty(session.pid) {
+                Some(tty) => format!("`{short}` is on `{tty}`, which no tmux pane holds"),
+                None => format!("`{short}` has no terminal to type into"),
+            });
+        };
+        if !pane.holds(session.pid) {
+            // A terminal draws whatever it likes, so it goes in a fence rather than
+            // through the markdown parser.
+            let screen = pane
+                .screen()
+                .map(|screen| format!("\n\n```\n{screen}\n```"))
+                .unwrap_or_default();
+            return Err(format!("that terminal no longer holds the session{screen}"));
+        }
+        Ok(pane)
     }
 }
 

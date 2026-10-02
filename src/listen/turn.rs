@@ -2,7 +2,10 @@
 //! messages the chat shows of it.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fs::{self, File};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::hook::{self, Event};
@@ -31,6 +34,17 @@ const TYPING: Duration = Duration::from_secs(4);
 /// showing it is rewritten, so a `Stop` arriving milliseconds behind its answer takes
 /// over and the answer does not stand in the chat twice.
 pub(super) const SETTLE: Duration = Duration::from_millis(100);
+/// What the stop button carries.
+pub(super) const STOP: &str = "stop";
+/// How long a turn sent Escape has to show up interrupted in its transcript before the
+/// chat hears that it did not stop.
+const STOP_WAIT: Duration = Duration::from_secs(5);
+/// How often the transcript is read meanwhile.
+const STOP_POLL: Duration = Duration::from_millis(200);
+/// What Claude Code appends to the transcript as a user message when a turn is
+/// interrupted, ending in ` for tool use]` when it cut a tool call short. No hook reports
+/// an interruption, and the text is Claude Code's internal format.
+const INTERRUPTED: &str = "[Request interrupted by user";
 
 /// The status words Claude Code cycles through while a turn is running.
 const WORDS: &[&str] = &[
@@ -170,9 +184,36 @@ pub(super) struct Turn {
     /// When the chat is next shown the session typing. A session waiting on a dialog is
     /// not typing.
     pub(super) typing: Option<Instant>,
+    /// Where Claude Code writes the session's transcript, which is the one record of an
+    /// interruption.
+    transcript: Option<PathBuf>,
+    stopping: Option<Stopping>,
+}
+
+/// Escape sent to a turn's pane, until its transcript shows the turn interrupted.
+struct Stopping {
+    /// How long the transcript was then, so an earlier interruption is left out.
+    from: u64,
+    until: Instant,
 }
 
 impl Turn {
+    fn new(prompt_id: String, thread: Thread, transcript: Option<PathBuf>) -> Self {
+        Self {
+            segment: Some(Segment::new()),
+            seed: seed(&prompt_id),
+            prompt_id,
+            started: Instant::now(),
+            thread,
+            live: None,
+            sealed: Vec::new(),
+            pending: Vec::new(),
+            typing: None,
+            transcript,
+            stopping: None,
+        }
+    }
+
     /// Goes on in `thread`, leaving what it posted where it is. The message showing the
     /// open segment is posted again there, so the one it was in, as `(chat, message)`,
     /// is for the caller to take back.
@@ -197,6 +238,11 @@ impl Turn {
         }
     }
 
+    /// When the transcript of a turn sent Escape is next read.
+    pub(super) fn stop_due(&self) -> Option<Instant> {
+        self.stopping.as_ref().map(|_| Instant::now() + STOP_POLL)
+    }
+
     /// The run a tool call belongs to, which is the open one until the turn moves past
     /// it and the call reports from the chat.
     fn holding(&mut self, tool_use_id: &str) -> Option<&mut Segment> {
@@ -212,23 +258,25 @@ impl Machine {
         self.sessions.get_mut(id)?.turn.as_mut()
     }
 
-    /// Writes `text` into a turn's live message, or posts it in the turn's thread while
-    /// there is none. A message the bot posts clears its typing, which is shown again at
-    /// once.
+    /// Writes `text` and `buttons` into a turn's live message, or posts them in the
+    /// turn's thread while there is none. A message the bot posts clears its typing,
+    /// which is shown again at once.
     fn post_live(
         &mut self,
         id: &str,
         thread: Thread,
         live: Option<i64>,
         text: &str,
+        buttons: &[(String, String)],
     ) -> Option<i64> {
         if let Some(message) = live {
-            self.telegram.edit(thread.place.chat, message, text);
+            self.telegram
+                .edit(thread.place.chat, message, text, buttons);
             return Some(message);
         }
         let posted = self
             .telegram
-            .send(thread.place, text, Sound::Silent, thread.prompt);
+            .buttoned(thread.place, text, thread.prompt, buttons);
         if let Some(turn) = self.turn_mut(id)
             && turn.typing.is_some()
         {
@@ -284,18 +332,11 @@ impl Machine {
         if running {
             session.queued.push_back(thread);
         } else {
-            let prompt_id = event.prompt_id.clone().unwrap_or_default();
-            session.turn = Some(Turn {
-                segment: Some(Segment::new()),
-                seed: seed(&prompt_id),
-                prompt_id,
-                started: Instant::now(),
+            session.turn = Some(Turn::new(
+                event.prompt_id.clone().unwrap_or_default(),
                 thread,
-                live: None,
-                sealed: Vec::new(),
-                pending: Vec::new(),
-                typing: None,
-            });
+                transcript(event),
+            ));
         }
     }
 
@@ -304,11 +345,11 @@ impl Machine {
     /// that already finished: the three hook processes run at once, so a delta can land
     /// after its own `Stop`, and opening a second turn for it would leave a message
     /// beside the answer showing something else.
-    fn turn(&mut self, id: &str, prompt_id: Option<&str>) -> bool {
+    fn turn(&mut self, id: &str, event: &Event) -> bool {
         let Some(session) = self.sessions.get(id) else {
             return false;
         };
-        let named = prompt_id.unwrap_or_default();
+        let named = event.prompt_id.as_deref().unwrap_or_default();
         if session.done.as_deref() == Some(named) {
             return false;
         }
@@ -321,20 +362,11 @@ impl Machine {
             return false;
         };
         let place = session.home(&self.telegram);
-        session.turn = Some(Turn {
-            prompt_id: named.to_owned(),
-            seed: seed(named),
-            started: Instant::now(),
-            thread: session.queued.pop_front().unwrap_or(Thread {
-                place,
-                prompt: None,
-            }),
-            live: None,
-            segment: Some(Segment::new()),
-            sealed: Vec::new(),
-            pending: Vec::new(),
-            typing: None,
+        let thread = session.queued.pop_front().unwrap_or(Thread {
+            place,
+            prompt: None,
         });
+        session.turn = Some(Turn::new(named.to_owned(), thread, transcript(event)));
         true
     }
 
@@ -344,7 +376,7 @@ impl Machine {
         else {
             return;
         };
-        if !self.turn(id, event.prompt_id.as_deref()) {
+        if !self.turn(id, event) {
             return;
         }
         let Some(turn) = self.turn_mut(id) else {
@@ -411,7 +443,7 @@ impl Machine {
         let (Some(tool_use_id), Some(name)) = (&event.tool_use_id, &event.tool_name) else {
             return;
         };
-        if !self.turn(id, event.prompt_id.as_deref()) {
+        if !self.turn(id, event) {
             return;
         }
         let Some(turn) = self.turn_mut(id) else {
@@ -517,7 +549,7 @@ impl Machine {
         // The tag marks a finished turn, and this segment is the middle of one.
         let done = hook::compose(&head, &took(elapsed), "", &text);
         // A segment that ran its course inside one rewrite has no message yet.
-        let message = self.post_live(id, thread, live, &done);
+        let message = self.post_live(id, thread, live, &done, &[]);
         segment.posted = message.map(|message| (thread.place.chat, message, elapsed));
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -552,11 +584,12 @@ impl Machine {
             chat,
             message,
             &hook::compose(&head, &took(elapsed), "", &text),
+            &[],
         );
     }
 
     pub(super) fn finish(&mut self, id: &str, event: &Event) {
-        if !self.turn(id, event.prompt_id.as_deref()) {
+        if !self.turn(id, event) {
             return;
         }
         // A segment holding a run keeps its message, and only an assistant message is
@@ -696,7 +729,8 @@ impl Machine {
             footer = format!("{footer}\n\n{line}");
         }
         let shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));
-        let message = self.post_live(id, thread, live, &shown);
+        let stop = [("Stop".to_owned(), STOP.to_owned())];
+        let message = self.post_live(id, thread, live, &shown, &stop);
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
@@ -707,6 +741,139 @@ impl Machine {
             segment.written = Some((text, Instant::now()));
         }
     }
+
+    /// The stop button of the message showing a turn's open segment sends its session
+    /// Escape, once until the transcript says whether the turn stopped, since a second
+    /// Escape on an idle prompt opens the `/rewind` picker. The button goes with that
+    /// message, so a press finding no turn showing it is on a message a restarted daemon
+    /// lost track of.
+    pub(super) fn stop(&mut self, place: Place, message: i64) {
+        let Some(id) = self
+            .sessions
+            .iter()
+            .find(|(_, session)| {
+                session.turn.as_ref().is_some_and(|turn| {
+                    turn.live == Some(message) && turn.thread.place.chat == place.chat
+                })
+            })
+            .map(|(id, _)| id.clone())
+        else {
+            self.say(place, "that turn is no longer running");
+            return;
+        };
+        let turn = self.turn_mut(&id).expect("the turn just found");
+        if turn.stopping.is_some() {
+            return;
+        }
+        let Some(path) = turn.transcript.clone() else {
+            self.say(place, "the session names no transcript to tell a stop by");
+            return;
+        };
+        let pane = match self.terminal(&id) {
+            Ok(pane) => pane,
+            Err(error) => {
+                self.say(place, &error);
+                return;
+            }
+        };
+        // A transcript not written yet holds nothing to leave out.
+        let from = fs::metadata(&path).map_or(0, |metadata| metadata.len());
+        if let Err(error) = pane.interrupt() {
+            self.say(place, &format!("tmux: {}", hook::prose(&error)));
+            return;
+        }
+        if let Some(turn) = self.turn_mut(&id) {
+            turn.stopping = Some(Stopping {
+                from,
+                until: Instant::now() + STOP_WAIT,
+            });
+        }
+    }
+
+    /// Ends a turn its transcript shows interrupted since Escape was sent, as `Stop`
+    /// would, and says in its thread that it did not stop once `STOP_WAIT` has passed
+    /// without that.
+    pub(super) fn stopped(&mut self, id: &str) {
+        let Some(turn) = self.turn_mut(id) else {
+            return;
+        };
+        let (Some(stopping), Some(path)) = (&turn.stopping, &turn.transcript) else {
+            return;
+        };
+        if interrupted(path, stopping.from) {
+            self.interrupted(id);
+            return;
+        }
+        if stopping.until > Instant::now() {
+            return;
+        }
+        turn.stopping = None;
+        let thread = turn.thread;
+        let text = format!(
+            "the turn did not stop within {}s of Escape",
+            STOP_WAIT.as_secs()
+        );
+        self.telegram
+            .send(thread.place, &text, Sound::Silent, thread.prompt);
+    }
+
+    /// What the open segment said stays, and the message showing it running goes. The
+    /// press that asked for this is what the chat was waiting on, so it makes no sound.
+    fn interrupted(&mut self, id: &str) {
+        self.seal(id);
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        let Some(turn) = session.turn.take() else {
+            return;
+        };
+        session.done = Some(turn.prompt_id.clone());
+        let head = session.head(id, Some(&turn.prompt_id));
+        let message = hook::compose(
+            &head,
+            &took(turn.started.elapsed()),
+            "#interrupted",
+            "Interrupted",
+        );
+        let thread = turn.thread;
+        let posted = self
+            .telegram
+            .send(thread.place, &message, Sound::Silent, thread.prompt);
+        session.left(thread.place, posted);
+        if let Some(live) = turn.live {
+            self.telegram.delete(thread.place.chat, live);
+        }
+    }
+}
+
+/// Where an event says the session's transcript is.
+fn transcript(event: &Event) -> Option<PathBuf> {
+    event.transcript_path.as_ref().map(PathBuf::from)
+}
+
+/// True once the transcript at `path` holds an interruption written past byte `from`. A
+/// line still being written fails to parse and is read whole on the next look.
+fn interrupted(path: &Path, from: u64) -> bool {
+    let mut appended = Vec::new();
+    let read = File::open(path).and_then(|mut file| {
+        file.seek(SeekFrom::Start(from))?;
+        file.read_to_end(&mut appended)
+    });
+    if let Err(error) = read {
+        eprintln!("{}: {error}", path.display());
+        return false;
+    }
+    String::from_utf8_lossy(&appended)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|entry| entry["type"] == "user")
+        .filter_map(|entry| entry["message"]["content"].as_array().cloned())
+        .flatten()
+        .any(|part| {
+            part["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with(INTERRUPTED))
+        })
 }
 
 /// The chat message that carried a prompt, when the daemon is the one that typed it.
