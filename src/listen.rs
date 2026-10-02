@@ -358,8 +358,8 @@ impl Session {
         self.trail.home(telegram.chat(&self.dir))
     }
 
-    fn head(&self, id: &str, prompt: Option<&str>) -> String {
-        hook::head(&hook::project(&self.dir), id, prompt)
+    fn head(&self, id: &str, prompt: Option<&str>) -> hook::Head {
+        hook::Head::new(&self.dir, id, prompt)
     }
 }
 
@@ -582,14 +582,11 @@ impl Machine {
         self.seal(id);
         let session = &self.sessions[id];
         let turn = session.turn.as_ref();
-        let address = hook::address(id, turn.map(|turn| turn.prompt_id.as_str()));
+        let head = session.head(id, turn.map(|turn| turn.prompt_id.as_str()));
         let took = turn
             .map(|turn| took(turn.started.elapsed()))
             .unwrap_or_default();
-        let caption = format!(
-            "<b>{}</b> <code>{address}</code>{took}",
-            hook::html(&hook::name(&session.dir))
-        );
+        let caption = format!("{}{took}", head.html());
         let thread = self.thread(session);
         Ok(Placement {
             place: thread.place,

@@ -321,7 +321,7 @@ impl Machine {
             // The phone's owner asked this, so it arrives without a sound.
             Thread {
                 place,
-                prompt: self.telegram.send(place, &message, Sound::Silent, None),
+                prompt: self.telegram.post(place, &message, Sound::Silent, None),
             }
         };
         let Some(session) = self.sessions.get_mut(id) else {
@@ -547,7 +547,7 @@ impl Machine {
         let live = turn.live.take();
         let head = session.head(id, Some(&prompt_id));
         // The tag marks a finished turn, and this segment is the middle of one.
-        let done = hook::compose(&head, &took(elapsed), "", &text);
+        let done = hook::compose(&head, &took(elapsed), "", &text).markdown;
         // A segment that ran its course inside one rewrite has no message yet.
         let message = self.post_live(id, thread, live, &done, &[]);
         segment.posted = message.map(|message| (thread.place.chat, message, elapsed));
@@ -583,7 +583,7 @@ impl Machine {
         self.telegram.edit(
             chat,
             message,
-            &hook::compose(&head, &took(elapsed), "", &text),
+            &hook::compose(&head, &took(elapsed), "", &text).markdown,
             &[],
         );
     }
@@ -615,13 +615,13 @@ impl Machine {
         if event.hook_event_name == "Stop"
             && let Some(line) = status_line(session.window.as_ref(), self.limits.as_ref())
         {
-            message = format!("{message}\n\n{line}");
+            message.markdown = format!("{}\n\n{line}", message.markdown);
         }
         // The one sound of the turn: the reply is complete and worth coming back to.
         let thread = turn.thread;
         let answer = self
             .telegram
-            .send(thread.place, &message, Sound::Ring, thread.prompt);
+            .post(thread.place, &message, Sound::Ring, thread.prompt);
         session.left(thread.place, answer);
         // This event carries the last segment's text, so the message that was showing
         // it goes rather than standing above the one that repeats it.
@@ -652,7 +652,7 @@ impl Machine {
             .and_then(|text| pair(&mut session.asked, &text));
         let head = session.head(id, event.prompt_id.as_deref());
         let thread = typed.unwrap_or_else(|| self.thread(&self.sessions[id]));
-        let answer = self.telegram.send(
+        let answer = self.telegram.post(
             thread.place,
             &hook::message(event, &head, ""),
             Sound::Ring,
@@ -699,7 +699,7 @@ impl Machine {
         let message = hook::message(event, &head, "");
         let posted = self
             .telegram
-            .send(thread.place, &message, sound, thread.prompt);
+            .post(thread.place, &message, sound, thread.prompt);
         if let Some(session) = self.sessions.get_mut(id) {
             session.left(thread.place, posted);
         }
@@ -728,7 +728,7 @@ impl Machine {
         if let Some(line) = status_line(session.window.as_ref(), self.limits.as_ref()) {
             footer = format!("{footer}\n\n{line}");
         }
-        let shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));
+        let shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer)).markdown;
         let stop = [("Stop".to_owned(), STOP.to_owned())];
         let message = self.post_live(id, thread, live, &shown, &stop);
         let Some(turn) = self.turn_mut(id) else {
@@ -834,7 +834,8 @@ impl Machine {
             &took(turn.started.elapsed()),
             "#interrupted",
             "Interrupted",
-        );
+        )
+        .markdown;
         let thread = turn.thread;
         let posted = self
             .telegram

@@ -31,7 +31,7 @@ impl Machine {
         else {
             return self.say(place, "no session has run here to show the changes of");
         };
-        let head = hook::head(&hook::project(dir), id, None);
+        let head = hook::Head::new(dir, id, None);
         let dir = dir.to_owned();
         let scratch = runtime_dir()
             .expect("XDG_RUNTIME_DIR")
@@ -39,7 +39,7 @@ impl Machine {
         let telegram = Arc::clone(&self.telegram);
         std::thread::spawn(move || {
             if let Err(error) = post(&telegram, place, asked, &head, &dir, &scratch) {
-                let said = hook::compose(&head, "", "", &hook::prose(&error));
+                let said = hook::compose(&head, "", "", &hook::prose(&error)).markdown;
                 telegram.send(place, &said, Sound::Silent, Some(asked));
             }
             if let Err(error) = std::fs::remove_dir_all(&scratch)
@@ -57,7 +57,7 @@ fn post(
     telegram: &Telegram,
     place: Place,
     asked: i64,
-    head: &str,
+    head: &hook::Head,
     dir: &Path,
     scratch: &Path,
 ) -> Result<(), String> {
@@ -94,7 +94,7 @@ fn post(
     if blocks.is_empty() {
         blocks.push("no unstaged changes".to_owned());
     }
-    let markdown = hook::compose(head, "", "", &blocks.join("\n\n"));
+    let markdown = hook::compose(head, "", "", &blocks.join("\n\n")).markdown;
     if photos.is_empty() {
         telegram.send(place, &markdown, Sound::Silent, Some(asked));
     } else {
