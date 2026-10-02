@@ -17,10 +17,12 @@ A turn is a sequence of segments, each an assistant message's text and the run o
 calls it goes on to make, under that text in the same message. A run that would push
 the message past Telegram's limit goes on in a message of its own. The open segment is
 shown in one message at the foot of the turn, rewritten as it grows, with a status line
-of a word from Claude Code's vocabulary and the elapsed time. In a group it is rewritten
-at most every ten seconds, because Telegram counts a rewrite against the twenty messages
-a minute a bot may send there. A `date_time` entity would keep the time current without
-rewrites, but clients show one inside a rich message as its fallback text.
+of a word from Claude Code's vocabulary and the elapsed time. Text growing past what that
+message holds leaves it as it last fitted, and the complete segment takes its place as a
+markdown file. In a group it is rewritten at most every ten seconds, because Telegram
+counts a rewrite against the twenty messages a minute a bot may send there. A
+`date_time` entity would keep the time current without rewrites, but clients show one
+inside a rich message as its fallback text.
 
 While a turn runs, the bot shows as typing in the turn's topic, and the chat list shows
 that too, so a topic with a turn running stands out without being opened. Telegram shows

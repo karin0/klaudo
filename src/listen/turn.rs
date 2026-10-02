@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::hook::{self, Event};
-use crate::telegram::{MAX_BYTES, Place, Sound};
+use crate::telegram::{MAX_BYTES, Place, Post, Sound};
 
 use super::Machine;
 use super::render::{Call, Outcome, first_line, listing, took};
@@ -107,12 +107,23 @@ struct Segment {
     said: Option<(String, BTreeMap<u32, String>)>,
     /// What the open message was last written with and when, absent until it exists.
     written: Option<(String, Instant)>,
-    /// The chat and message this segment finished in and the elapsed time stamped on
-    /// it, which is what a flush or an outcome arriving later rewrites. The turn may
-    /// have moved to another chat since.
-    posted: Option<(i64, i64, Duration)>,
+    /// The message this segment finished in, which is what a flush or an outcome
+    /// arriving later rewrites.
+    posted: Option<Posted>,
     /// When the segment last received text.
     heard: Instant,
+}
+
+/// A message a segment finished in.
+#[derive(Clone, Copy)]
+struct Posted {
+    /// The turn may have moved to another chat since.
+    chat: i64,
+    message: i64,
+    /// The elapsed time stamped on it.
+    elapsed: Duration,
+    /// A markdown file, which a rewrite replaces whole.
+    filed: bool,
 }
 
 impl Segment {
@@ -258,25 +269,36 @@ impl Machine {
         self.sessions.get_mut(id)?.turn.as_mut()
     }
 
-    /// Writes `text` and `buttons` into a turn's live message, or posts them in the
-    /// turn's thread while there is none. A message the bot posts clears its typing,
-    /// which is shown again at once.
+    /// Writes `post` and `buttons` into a turn's live message, or posts them in the
+    /// turn's thread while there is none. A post past a rich message is a complete
+    /// segment, which goes as a markdown file in place of the live message. A message
+    /// the bot posts clears its typing, which is shown again at once.
     fn post_live(
         &mut self,
         id: &str,
         thread: Thread,
         live: Option<i64>,
-        text: &str,
+        post: &Post,
         buttons: &[(String, String)],
     ) -> Option<i64> {
-        if let Some(message) = live {
+        let posted = if post.markdown.len() > MAX_BYTES {
+            let filed = self
+                .telegram
+                .post(thread.place, post, Sound::Silent, thread.prompt);
+            if filed.is_some()
+                && let Some(live) = live
+            {
+                self.telegram.delete(thread.place.chat, live);
+            }
+            filed
+        } else if let Some(message) = live {
             self.telegram
-                .edit(thread.place.chat, message, text, buttons);
+                .edit(thread.place.chat, message, &post.markdown, buttons);
             return Some(message);
-        }
-        let posted = self
-            .telegram
-            .buttoned(thread.place, text, thread.prompt, buttons);
+        } else {
+            self.telegram
+                .buttoned(thread.place, &post.markdown, thread.prompt, buttons)
+        };
         if let Some(turn) = self.turn_mut(id)
             && turn.typing.is_some()
         {
@@ -547,10 +569,15 @@ impl Machine {
         let live = turn.live.take();
         let head = session.head(id, Some(&prompt_id));
         // The tag marks a finished turn, and this segment is the middle of one.
-        let done = hook::compose(&head, &took(elapsed), "", &text).markdown;
+        let done = hook::compose(&head, &took(elapsed), "", &text);
         // A segment that ran its course inside one rewrite has no message yet.
         let message = self.post_live(id, thread, live, &done, &[]);
-        segment.posted = message.map(|message| (thread.place.chat, message, elapsed));
+        segment.posted = message.map(|message| Posted {
+            chat: thread.place.chat,
+            message,
+            elapsed,
+            filed: done.markdown.len() > MAX_BYTES,
+        });
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
@@ -575,17 +602,45 @@ impl Machine {
         let Some(segment) = turn.sealed.iter().find(|sealed| sealed.holds(member)) else {
             return;
         };
-        let Some((chat, message, elapsed)) = segment.posted else {
+        let Some(posted) = segment.posted else {
             return;
         };
-        let text = segment.text();
         let head = session.head(id, Some(&turn.prompt_id));
-        self.telegram.edit(
-            chat,
-            message,
-            &hook::compose(&head, &took(elapsed), "", &text).markdown,
-            &[],
-        );
+        let post = hook::compose(&head, &took(posted.elapsed), "", &segment.text());
+        let thread = turn.thread;
+        if posted.filed {
+            self.telegram.refile(posted.chat, posted.message, &post);
+            return;
+        }
+        if post.markdown.len() <= MAX_BYTES {
+            self.telegram
+                .edit(posted.chat, posted.message, &post.markdown, &[]);
+            return;
+        }
+        // A rich message cannot become a file, so the file takes its place.
+        let Some(filed) = self
+            .telegram
+            .post(thread.place, &post, Sound::Silent, thread.prompt)
+        else {
+            return;
+        };
+        self.telegram.delete(posted.chat, posted.message);
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        session.left(thread.place, Some(filed));
+        if let Some(segment) = session
+            .turn
+            .as_mut()
+            .and_then(|turn| turn.sealed.iter_mut().find(|sealed| sealed.holds(member)))
+        {
+            segment.posted = Some(Posted {
+                chat: thread.place.chat,
+                message: filed,
+                filed: true,
+                ..posted
+            });
+        }
     }
 
     pub(super) fn finish(&mut self, id: &str, event: &Event) {
@@ -728,7 +783,19 @@ impl Machine {
         if let Some(line) = status_line(session.window.as_ref(), self.limits.as_ref()) {
             footer = format!("{footer}\n\n{line}");
         }
-        let shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer)).markdown;
+        let mut shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));
+        // A segment past a rich message reaches the chat as a file once it is complete,
+        // and until then the live message keeps the last of it that fitted. A delta can
+        // end anywhere in the markdown, so the text is never split at one.
+        if shown.markdown.len() > MAX_BYTES {
+            if live.is_some() {
+                if let Some(segment) = self.turn_mut(id).and_then(|turn| turn.segment.as_mut()) {
+                    segment.written = Some((text, Instant::now()));
+                }
+                return;
+            }
+            shown = hook::compose(&head, &took(elapsed), "", &footer);
+        }
         let stop = [("Stop".to_owned(), STOP.to_owned())];
         let message = self.post_live(id, thread, live, &shown, &stop);
         let Some(turn) = self.turn_mut(id) else {

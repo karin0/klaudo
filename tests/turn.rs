@@ -147,6 +147,139 @@ fn an_answer_past_a_rich_message_arrives_whole_as_a_file() {
     drop(daemon);
 }
 
+/// A segment growing past a rich message leaves the live message as it last fitted,
+/// goes as a markdown file once complete, and takes what arrives late into that file.
+#[test]
+fn a_segment_past_a_rich_message_is_filed_once_complete() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("filed", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let session = "0123456789abcdef";
+    let long = "字".repeat(12_000);
+
+    // A directory outside the group's project posts to the owner's chat, where the
+    // live message is rewritten every three seconds.
+    let turn = [
+        (
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "write it all"}),
+            0,
+        ),
+        (
+            json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "start"}),
+            3300,
+        ),
+        (
+            json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 1, "delta": long}),
+            3300,
+        ),
+        (
+            json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "next"}),
+            400,
+        ),
+        (
+            json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 2, "delta": "!"}),
+            400,
+        ),
+        (
+            json!({"hook_event_name": "Stop", "last_assistant_message": "next"}),
+            0,
+        ),
+    ];
+    for (mut event, pause) in turn {
+        event["session_id"] = json!(session);
+        event["prompt_id"] = json!("fedcba9876543210");
+        event["cwd"] = json!(root);
+        hook(root, &event);
+        std::thread::sleep(Duration::from_millis(pause));
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let live = made
+        .iter()
+        .find(|call| call.label == "sendRichMessage silent" && call.markdown.contains("start"))
+        .expect("the live message");
+    assert!(
+        made.iter()
+            .all(|call| call.label != "editMessageText" || !call.markdown.contains('字')),
+        "the live message was rewritten past what it holds"
+    );
+    let file = made
+        .iter()
+        .find(|call| call.label == "sendDocument silent")
+        .expect("the file");
+    let document = file.document.as_deref().expect("the file's text");
+    assert!(document.ends_with(&format!("\n\nstart{long}")));
+    assert!(
+        made.iter()
+            .any(|call| call.label == "deleteMessage" && call.target == Some(live.id)),
+        "the file takes the live message's place"
+    );
+    let refiled = made
+        .iter()
+        .find(|call| call.label == "editMessageMedia")
+        .expect("the late delta's rewrite");
+    assert_eq!(refiled.target, Some(file.id));
+    assert!(
+        refiled
+            .document
+            .as_deref()
+            .expect("the rewritten file")
+            .ends_with(&format!("start{long}!"))
+    );
+    assert_eq!(refiled.body["media"]["media"], json!("attach://document"));
+    drop(daemon);
+}
+
+/// A delta landing late on a segment the chat already has can take it past a rich
+/// message, and the file it then goes as takes the message's place.
+#[test]
+fn a_late_delta_past_a_rich_message_turns_it_into_a_file() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("outgrown", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let session = "0123456789abcdef";
+    let long = "字".repeat(12_000);
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "write it all"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "start"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "next"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 1, "delta": long}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "next"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!(session);
+        event["prompt_id"] = json!("fedcba9876543210");
+        event["cwd"] = json!(project(root));
+        hook(root, &event);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let sealed = made
+        .iter()
+        .find(|call| call.label == "sendRichMessage silent" && call.markdown.ends_with("start"))
+        .expect("the first segment's message");
+    let file = made
+        .iter()
+        .find(|call| call.label == "sendDocument silent")
+        .expect("the file");
+    assert!(
+        file.document
+            .as_deref()
+            .expect("the file's text")
+            .ends_with(&format!("\n\nstart{long}"))
+    );
+    assert!(
+        made.iter()
+            .any(|call| call.label == "deleteMessage" && call.target == Some(sealed.id)),
+        "the file takes the message's place"
+    );
+    drop(daemon);
+}
+
 /// A prompt submitted while a turn is running is queued by Claude Code and reported
 /// under the running turn's id, so the turn it eventually gets is announced by the
 /// first event carrying an id of its own. Each turn must still answer its own prompt.
