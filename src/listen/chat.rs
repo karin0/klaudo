@@ -11,7 +11,7 @@ use crate::tmux::{self, Pane};
 
 use super::render::code;
 use super::turn::{Ask, STOP, Thread};
-use super::{Machine, Opening, Session, Trail, now_millis};
+use super::{Last, Machine, Opening, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
@@ -92,7 +92,7 @@ impl Machine {
     /// A message from the chat. What it replies to says where it goes: a message from a
     /// session reaches that session, and the message `/new` left behind opens a
     /// conversation in the directory it names. A message replying to nothing goes to
-    /// the session heard from last in its place.
+    /// the most recent session in its place.
     pub(super) fn chat(&mut self, message: &Message) {
         let Some(place) = self.admitted(message.from.as_ref(), message) else {
             return;
@@ -171,10 +171,10 @@ impl Machine {
     }
 
     /// Where a message goes: the session or anchor the message it replies to names, or
-    /// for a message replying to nothing, the session heard from last in its place. A
-    /// message outside every topic of a private chat in topic mode opens a topic whose
-    /// name is implicit, so a topic like that holding no session reaches the sessions
-    /// outside every topic, where the turns started in the terminal are posted.
+    /// for a message replying to nothing, the most recent session in its place. A message
+    /// outside every topic of a private chat in topic mode opens a topic whose name is
+    /// implicit, so a topic like that holding no session reaches the sessions outside
+    /// every topic, where the turns started in the terminal are posted.
     pub(super) fn addressee(
         &self,
         place: Place,
@@ -203,8 +203,8 @@ impl Machine {
     fn reached(&self, place: Place, replied: Option<&Message>) -> Option<&Path> {
         let id = self.addressee(place, replied).ok()??;
         self.known()
-            .find(|(known, _, _, _)| known.starts_with(&id))
-            .map(|(_, dir, _, _)| dir)
+            .find(|(known, _, _)| known.starts_with(&id))
+            .map(|(_, dir, _)| dir)
     }
 
     /// Where a message came from, when it is one to act on.
@@ -275,14 +275,19 @@ impl Machine {
         }
     }
 
-    /// The directories the sessions of `chat` ran in, `lead` first and then the one heard
-    /// from last.
+    /// The directories the sessions of `chat` ran in, `lead` first and then the most
+    /// recent.
     fn projects(&self, chat: i64, lead: Option<&Path>) -> Vec<PathBuf> {
-        let mut seen: Vec<(u64, &Path)> =
-            self.known().map(|(_, dir, seen, _)| (seen, dir)).collect();
-        seen.sort_by_key(|(seen, _)| std::cmp::Reverse(*seen));
+        let mut recent: Vec<(Option<u64>, &Path)> = self
+            .known()
+            .map(|(_, dir, trail)| (trail.at(), dir))
+            .collect();
+        recent.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
         let mut projects: Vec<PathBuf> = Vec::new();
-        for dir in lead.into_iter().chain(seen.into_iter().map(|(_, dir)| dir)) {
+        for dir in lead
+            .into_iter()
+            .chain(recent.into_iter().map(|(_, dir)| dir))
+        {
             if self.telegram.chat(dir) == chat
                 && dir.is_dir()
                 && !projects.iter().any(|project| project == dir)
@@ -294,40 +299,30 @@ impl Machine {
         projects
     }
 
-    /// Every session the daemon knows of, running or exited, with where it ran, when
-    /// it was last heard from in Unix milliseconds, and its trail.
-    pub(super) fn known(&self) -> impl Iterator<Item = (&str, &Path, u64, &Trail)> {
+    /// Every session the daemon knows of, running or exited, with where it ran and its
+    /// trail.
+    pub(super) fn known(&self) -> impl Iterator<Item = (&str, &Path, &Trail)> {
         self.sessions
             .iter()
-            .map(|(id, session)| {
-                (
-                    id.as_str(),
-                    session.dir.as_path(),
-                    session.seen,
-                    &session.trail,
-                )
-            })
-            .chain(self.ended.iter().map(|ended| {
-                (
-                    ended.id.as_str(),
-                    ended.dir.as_path(),
-                    ended.seen,
-                    &ended.trail,
-                )
-            }))
+            .map(|(id, session)| (id.as_str(), session.dir.as_path(), &session.trail))
+            .chain(
+                self.ended
+                    .iter()
+                    .map(|ended| (ended.id.as_str(), ended.dir.as_path(), &ended.trail)),
+            )
     }
 
     /// Where a session new to the daemon in `dir` starts out: the place in the
-    /// project's chat that the session of the project heard from last posted in, so a
-    /// conversation restarted in a project stays in its topic.
-    pub(super) fn inherited(&self, dir: &Path) -> Option<(Place, Option<i64>)> {
+    /// project's chat of the project's most recent session, so a conversation restarted
+    /// in a project stays in its topic.
+    pub(super) fn inherited(&self, dir: &Path) -> Option<Place> {
         let chat = self.telegram.chat(dir);
         self.known()
-            .filter(|(_, known, _, _)| *known == dir)
-            .filter_map(|(_, _, seen, trail)| Some((seen, trail.last?.0)))
-            .filter(|(_, place)| place.chat == chat)
-            .max_by_key(|(seen, _)| *seen)
-            .map(|(_, place)| (place, None))
+            .filter(|(_, known, _)| *known == dir)
+            .filter_map(|(_, _, trail)| trail.last)
+            .filter(|last| last.place.chat == chat)
+            .max_by_key(|last| last.at)
+            .map(|last| last.place)
     }
 
     /// A `/resume` menu: the sessions of the project `lead`, or with none, the projects
@@ -352,18 +347,21 @@ impl Machine {
             return None;
         };
         let now = now_millis();
-        let mut sessions: Vec<_> = self.known().filter(|(_, ran, _, _)| *ran == dir).collect();
-        sessions.sort_by_key(|(_, _, seen, _)| std::cmp::Reverse(*seen));
+        let mut sessions: Vec<_> = self.known().filter(|(_, ran, _)| *ran == dir).collect();
+        sessions.sort_by_key(|(_, _, trail)| std::cmp::Reverse(trail.at()));
         let mut buttons: Vec<(String, String)> = sessions
             .iter()
             .take(MENU_MAX)
-            .map(|(id, _, seen, trail)| {
-                let age = ago(Duration::from_millis(now.saturating_sub(*seen)));
-                let short = hook::address(id, None);
-                let label = match trail.prompt.as_str() {
-                    "" => format!("{short} · {age}"),
-                    prompt => format!("{short} · {age} · {prompt}"),
-                };
+            .map(|(id, _, trail)| {
+                let age = trail
+                    .at()
+                    .map(|at| ago(Duration::from_millis(now.saturating_sub(at))));
+                let label = [Some(hook::address(id, None)), age]
+                    .into_iter()
+                    .flatten()
+                    .chain((!trail.prompt.is_empty()).then(|| trail.prompt.clone()))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
                 (label, format!("{SESSION} {id}"))
             })
             .collect();
@@ -375,11 +373,11 @@ impl Machine {
         Some((format!("Resume a conversation in {label}:"), buttons))
     }
 
-    /// An anchor addressed to session `id`, replying to the last message it left in this
-    /// place, which a tap on the quotation scrolls back to. A reply to the anchor goes
-    /// where a reply to any of its messages would.
+    /// An anchor addressed to session `id`, replying to the last message of its
+    /// conversation in this place, which a tap on the quotation scrolls back to. A reply
+    /// to the anchor goes where a reply to any of its messages would.
     fn resumption(&self, place: Place, id: &str) -> Option<i64> {
-        let Some((_, dir, _, trail)) = self.known().find(|(known, _, _, _)| *known == id) else {
+        let Some((_, dir, trail)) = self.known().find(|(known, _, _)| *known == id) else {
             self.say(
                 place,
                 &format!("{} is not a session this daemon has seen", code(id)),
@@ -390,17 +388,17 @@ impl Machine {
         let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir)));
         let last = trail
             .last
-            .filter(|(posted, _)| *posted == place)
-            .and_then(|(_, message)| message);
+            .filter(|last| last.place == place)
+            .and_then(|last| last.message);
         let placeholder = format!("prompt for {}", hook::address(id, None));
         self.telegram.anchor(place, &message, &placeholder, last)
     }
 
-    /// Moves session `id` to `thread`, whose anchor becomes the last message it left. A
-    /// running turn goes on under the anchor, while prompts queued in the terminal stay
-    /// with the messages that carry them.
+    /// Moves session `id` to `thread`, whose anchor becomes the last message of its
+    /// conversation. A running turn goes on under the anchor, while prompts queued in the
+    /// terminal stay with the messages that carry them.
     fn summon(&mut self, id: &str, thread: Thread) {
-        let last = Some((thread.place, thread.prompt));
+        let last = Some(Last::now(thread.place, thread.prompt));
         if let Some(ended) = self.ended.iter_mut().find(|ended| ended.id == id) {
             ended.trail.last = last;
             self.save_ended();
@@ -445,15 +443,15 @@ impl Machine {
         Some(buttons)
     }
 
-    /// The session at home in `place` heard from last, running or exited, which is where
-    /// a message that replies to nothing goes. A session at home elsewhere stays out of
+    /// The most recent session at home in `place`, running or exited, which is where a
+    /// message that replies to nothing goes. A session at home elsewhere stays out of
     /// reach, so a project never answers in a chat it is not posted to, and a topic
     /// holds its own conversations.
     fn latest(&self, place: Place) -> Option<String> {
         self.known()
-            .filter(|(_, dir, _, trail)| trail.home(self.telegram.chat(dir)) == place)
-            .max_by_key(|(_, _, seen, _)| *seen)
-            .map(|(id, _, _, _)| id.to_owned())
+            .filter(|(_, dir, trail)| trail.home(self.telegram.chat(dir)) == place)
+            .max_by_key(|(_, _, trail)| trail.recency(place))
+            .map(|(id, _, _)| id.to_owned())
     }
 
     /// Posts a message to reply to with the first prompt of a new conversation. Nothing
@@ -500,16 +498,22 @@ impl Machine {
     }
 
     /// Types into the session whose id starts with `address`, resuming it first when it
-    /// has exited.
+    /// has exited. The message typed is the last of the session's conversation.
     fn send(&mut self, address: &str, ask: Ask) {
         let place = ask.place;
+        let typed = Some(Last::now(place, Some(ask.message)));
         let Some((id, _)) = self.addressed(address) else {
             match self
                 .ended
-                .iter()
+                .iter_mut()
                 .find(|ended| ended.id.starts_with(address))
             {
-                Some(ended) => self.open(ended.dir.clone(), Some(ended.id.clone()), ask),
+                Some(ended) => {
+                    ended.trail.last = typed;
+                    let (dir, id) = (ended.dir.clone(), ended.id.clone());
+                    self.save_ended();
+                    self.open(dir, Some(id), ask);
+                }
                 None => self.say(
                     place,
                     &format!("`{address}` is not a session this daemon has seen"),
@@ -531,7 +535,8 @@ impl Machine {
         }
         let session = self.sessions.get_mut(&id).expect("the session just found");
         session.asked.push_back(ask);
-        session.seen = now_millis();
+        session.idle_since = now_millis();
+        session.trail.last = typed;
     }
 
     /// The pane of running session `id`, while it still shows the session, or what the
