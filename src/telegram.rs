@@ -226,14 +226,30 @@ impl Telegram {
         logged("sendRichMessage", sent).map(|sent| sent.id)
     }
 
+    /// A silent rich message with a button on each row, each `(label, data)`.
+    pub fn buttoned(
+        &self,
+        place: Place,
+        markdown: &str,
+        reply_to: Option<i64>,
+        buttons: &[(String, String)],
+    ) -> Option<i64> {
+        let markdown = clamp(markdown);
+        let body = SendRichMessage {
+            reply_markup: (!buttons.is_empty()).then(|| keyboard(buttons)),
+            ..rich(place, &markdown, Sound::Silent, reply_to)
+        };
+        self.call(&body).map(|sent| sent.id)
+    }
+
     /// Rewrites a message the daemon posted, for a segment that received more after it
-    /// went out, or a menu that leads to the next choice.
-    pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
+    /// went out. Telegram takes off the buttons a rewrite leaves out.
+    pub fn edit(&self, chat: i64, message_id: i64, markdown: &str, buttons: &[(String, String)]) {
         self.call(&EditMessageText {
             chat_id: chat,
             message_id,
             content: Content::Rich(RichInput::Markdown(&clamp(markdown))),
-            reply_markup: None,
+            reply_markup: (!buttons.is_empty()).then(|| keyboard(buttons)),
         });
     }
 

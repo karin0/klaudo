@@ -97,6 +97,13 @@ impl Pane {
         run(self.tmux().args(["send-keys", "-t", &self.id, "Enter"]))
     }
 
+    /// Escape interrupts the turn a session is running. Copy mode would take it to end
+    /// the mode, so the mode is left first, as for a delivery.
+    pub fn interrupt(&self) -> Result<(), String> {
+        run(self.tmux().args(["copy-mode", "-q", "-t", &self.id]))?;
+        run(self.tmux().args(["send-keys", "-t", &self.id, "Escape"]))
+    }
+
     fn paste(&self, text: &str) -> Result<(), String> {
         let mut load = self
             .tmux()
