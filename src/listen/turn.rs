@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::hook::{self, Event};
-use crate::telegram::{MAX_CHARS, Place, Sound};
+use crate::telegram::{MAX_BYTES, Place, Sound};
 
 use super::Machine;
 use super::render::{Call, Outcome, first_line, listing, took};
@@ -423,7 +423,7 @@ impl Machine {
             .segment
             .as_mut()
             .filter(|segment| segment.said.is_some() && !segment.calls.is_empty())
-            .filter(|segment| segment.text().chars().count() + FRAME > MAX_CHARS)
+            .filter(|segment| segment.text().len() + FRAME > MAX_BYTES)
         else {
             return;
         };
