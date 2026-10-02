@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::hook;
 use kuriero::Message;
 
 use crate::telegram::Place;
@@ -123,11 +122,7 @@ impl Machine {
         }
         let said = rows.join("\n");
         let answer = match reached {
-            Some((id, session)) => format!(
-                "<b>{}</b> <code>{}</code>\n{said}",
-                hook::html(&hook::name(&session.dir)),
-                hook::address(id, None),
-            ),
+            Some((id, session)) => format!("{}\n{said}", session.head(id, None).html()),
             None => said,
         };
         self.telegram.html(place, &answer, asked);

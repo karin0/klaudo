@@ -127,11 +127,8 @@ fn hook(event: &Event, raw: &[u8]) {
                 let directory = event
                     .directory()
                     .unwrap_or_else(|| std::path::PathBuf::from(&event.cwd));
-                let head = hook::head(
-                    &hook::project(&directory),
-                    &event.session_id,
-                    event.prompt_id.as_deref(),
-                );
+                let head =
+                    hook::Head::new(&directory, &event.session_id, event.prompt_id.as_deref());
                 // No daemon reported this turn, so this message is all of it, and
                 // there is no prompt of its own in the chat for it to reply to.
                 let telegram = telegram::Telegram::new();
@@ -139,7 +136,7 @@ fn hook(event: &Event, raw: &[u8]) {
                     chat: telegram.chat(&directory),
                     topic: None,
                 };
-                telegram.send(
+                telegram.post(
                     place,
                     &hook::message(event, &head, ""),
                     telegram::Sound::Ring,

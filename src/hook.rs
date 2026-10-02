@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::telegram::{ELLIPSIS, MAX_BYTES};
+use crate::telegram::{ELLIPSIS, MAX_BYTES, Post};
 
 /// Fields that identify the invocation rather than describe it, dropped from the
 /// verbatim report an unrecognised event falls back to.
@@ -270,12 +270,7 @@ fn quote(text: &str) -> String {
         .join("\n")
 }
 
-/// Where the work is happening.
-pub fn project(dir: &Path) -> String {
-    format!("**{}**", prose(&name(dir)))
-}
-
-pub fn name(dir: &Path) -> String {
+fn name(dir: &Path) -> String {
     dir.file_name()
         .unwrap_or(dir.as_os_str())
         .to_string_lossy()
@@ -283,8 +278,30 @@ pub fn name(dir: &Path) -> String {
 }
 
 /// The line every message opens with: where the work is, then its address.
-pub fn head(project: &str, session: &str, prompt: Option<&str>) -> String {
-    format!("{project} `{}`", address(session, prompt))
+pub struct Head {
+    project: String,
+    address: String,
+}
+
+impl Head {
+    pub fn new(dir: &Path, session: &str, prompt: Option<&str>) -> Self {
+        Self {
+            project: name(dir),
+            address: address(session, prompt),
+        }
+    }
+
+    pub fn markdown(&self) -> String {
+        format!("**{}** `{}`", prose(&self.project), self.address)
+    }
+
+    pub fn html(&self) -> String {
+        format!(
+            "<b>{}</b> <code>{}</code>",
+            html(&self.project),
+            self.address
+        )
+    }
 }
 
 /// Which session, and which turn of that session. The prompt id is what tells one turn
@@ -298,14 +315,17 @@ pub fn address(session: &str, prompt: Option<&str>) -> String {
 }
 
 /// An untagged title is what a message in the middle of a turn carries.
-pub fn compose(head: &str, took: &str, tag: &str, body: &str) -> String {
-    let title = format!("{head}{took}  {tag}");
-    format!("{}\n\n{body}", title.trim_end())
+pub fn compose(head: &Head, took: &str, tag: &str, body: &str) -> Post {
+    let title = |head: String| format!("{head}{took}  {tag}").trim_end().to_owned();
+    Post {
+        markdown: format!("{}\n\n{body}", title(head.markdown())),
+        caption: title(head.html()),
+    }
 }
 
-pub fn message(event: &Event, head: &str, took: &str) -> String {
+pub fn message(event: &Event, head: &Head, took: &str) -> Post {
     let tag = event.tag();
-    let title = compose(head, took, &tag, "").len();
+    let title = compose(head, took, &tag, "").markdown.len();
     compose(head, took, &tag, &event.body(MAX_BYTES - title))
 }
 
@@ -313,14 +333,18 @@ pub fn message(event: &Event, head: &str, took: &str) -> String {
 mod tests {
     use super::*;
 
+    fn p() -> Head {
+        Head::new(Path::new("/w/p"), "s", None)
+    }
+
     fn event(json: serde_json::Value) -> Event {
         serde_json::from_value(json).expect("fixture")
     }
 
     #[test]
     fn a_project_is_the_last_segment_of_its_directory() {
-        assert_eq!(project(Path::new("/home/user/scratch")), "**scratch**");
-        assert_eq!(project(Path::new("/")), "**/**");
+        assert_eq!(name(Path::new("/home/user/scratch")), "scratch");
+        assert_eq!(name(Path::new("/")), "/");
     }
 
     #[test]
@@ -394,16 +418,24 @@ mod tests {
 
     #[test]
     fn a_head_addresses_the_turn_and_falls_back_to_the_session() {
+        let dir = Path::new("/w/p");
+        let turn = Head::new(dir, "0123456789abcdef", Some("fedcba9876543210"));
+        assert_eq!(turn.markdown(), "**p** `01234567/fedcba98`");
+        assert_eq!(turn.html(), "<b>p</b> <code>01234567/fedcba98</code>");
         assert_eq!(
-            head("**p**", "0123456789abcdef", Some("fedcba9876543210")),
-            "**p** `01234567/fedcba98`"
+            Head::new(dir, "0123456789abcdef", None).markdown(),
+            "**p** `01234567`"
         );
-        assert_eq!(head("**p**", "0123456789abcdef", None), "**p** `01234567`");
+        let odd = Head::new(Path::new("/w/a_<b>"), "s", None);
+        assert_eq!(odd.markdown(), "**a\\_&lt;b\\>** `s`");
+        assert_eq!(odd.html(), "<b>a_&lt;b&gt;</b> <code>s</code>");
     }
 
     #[test]
     fn a_title_without_a_tag_ends_at_the_elapsed_time() {
-        assert_eq!(compose("**p**", " 12s", "", "text"), "**p** 12s\n\ntext");
+        let post = compose(&p(), " 12s", "", "text");
+        assert_eq!(post.markdown, "**p** `s` 12s\n\ntext");
+        assert_eq!(post.caption, "<b>p</b> <code>s</code> 12s");
     }
 
     #[test]
@@ -414,8 +446,8 @@ mod tests {
             "last_assistant_message": "done",
         }));
         assert_eq!(
-            message(&stop, "**p**", " 12s"),
-            "**p** 12s  #claude\n\ndone"
+            message(&stop, &p(), " 12s").markdown,
+            "**p** `s` 12s  #claude\n\ndone"
         );
     }
 
@@ -426,7 +458,10 @@ mod tests {
             "session_id": "s",
             "prompt": "what does it do",
         }));
-        assert_eq!(message(&submit, "**p**", ""), "**p**\n\n>what does it do");
+        assert_eq!(
+            message(&submit, &p(), "").markdown,
+            "**p** `s`\n\n>what does it do"
+        );
     }
 
     #[test]
@@ -446,8 +481,8 @@ mod tests {
             "reason": "clear",
         }));
         assert_eq!(
-            message(&odd, "**p**", ""),
-            "**p**  #claude #PreCompact\n\n\\{\"reason\":\"clear\"\\}"
+            message(&odd, &p(), "").markdown,
+            "**p** `s`  #claude #PreCompact\n\n\\{\"reason\":\"clear\"\\}"
         );
     }
 
@@ -461,16 +496,17 @@ mod tests {
                     "trigger": trigger,
                     "compact_summary": summary,
                 })),
-                "**p**",
+                &p(),
                 "",
             )
+            .markdown
         };
         assert_eq!(
             compacted(
                 "manual",
                 "<analysis>\nwhy\n</analysis>\n\n<summary>\n1. a < b\n\n2. done\n</summary>"
             ),
-            "**p**  #claude #compact\n\n\
+            "**p** `s`  #claude #compact\n\n\
              <blockquote expandable>1. a &lt; b<br><br>2. done<cite>summary</cite></blockquote>\n\n\
              <blockquote expandable>why<cite>analysis</cite></blockquote>"
         );
@@ -510,8 +546,8 @@ mod tests {
             "reason": "overloaded",
         }));
         assert_eq!(
-            message(&failed, "**p**", ""),
-            "**p**  #claude #failed\n\n\\{\"reason\":\"overloaded\"\\}"
+            message(&failed, &p(), "").markdown,
+            "**p** `s`  #claude #failed\n\n\\{\"reason\":\"overloaded\"\\}"
         );
     }
 }

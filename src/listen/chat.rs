@@ -384,8 +384,8 @@ impl Machine {
             );
             return None;
         };
-        let head = hook::head(&hook::project(dir), id, None);
-        let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir)));
+        let head = hook::Head::new(dir, id, None);
+        let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir))).markdown;
         let last = trail
             .last
             .filter(|last| last.place == place)
@@ -461,8 +461,8 @@ impl Machine {
             self.say(place, &format!("{} is not a directory", code(argument)));
             return None;
         };
-        let head = hook::head(&hook::project(&cwd), NEW, None);
-        let message = hook::compose(&head, "", "", &hook::prose(&cwd.to_string_lossy()));
+        let head = hook::Head::new(&cwd, NEW, None);
+        let message = hook::compose(&head, "", "", &hook::prose(&cwd.to_string_lossy())).markdown;
         let placeholder = format!("first prompt in {}", tilde(&cwd));
         self.telegram.anchor(place, &message, &placeholder, None)
     }

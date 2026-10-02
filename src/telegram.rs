@@ -6,8 +6,8 @@ use std::time::Duration;
 use kuriero::{
     AnswerCallbackQuery, BotCommand, Button, ChatAction, Client, CommandScope, Content,
     DeleteMessage, EditMessageText, Keyboard, Message, Method, ParseMode, Reaction, ReplyMarkup,
-    ReplyParameters, RichInput, SendChatAction, SendMessage, SendRichMessage, SetMessageReaction,
-    SetMyCommands, Update, User,
+    ReplyParameters, RichInput, SendChatAction, SendMessage, SendRichMessage, Sent,
+    SetMessageReaction, SetMyCommands, Update, User,
 };
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,17 @@ const PLACEHOLDER_MAX: usize = 64;
 const SEEN: &str = "👀";
 /// What a cut body ends with.
 pub const ELLIPSIS: char = '\u{2026}';
+
+/// The name a body too long for a rich message is posted under, whose extension has
+/// a client render it as markdown in its own browser.
+const FILE_NAME: &str = "message.md";
+
+/// A message as a rich message's markdown, and the HTML caption it carries as a
+/// markdown file once the markdown is past `MAX_BYTES`.
+pub struct Post {
+    pub markdown: String,
+    pub caption: String,
+}
 
 /// Whether a message reaches the phone with a sound.
 #[derive(Clone, Copy)]
@@ -97,9 +108,39 @@ impl Telegram {
         sound: Sound,
         reply_to: Option<i64>,
     ) -> Option<i64> {
-        let markdown = clamp(markdown);
-        self.call(&rich(place, &markdown, sound, reply_to))
+        self.call(&rich(place, markdown, sound, reply_to))
             .map(|sent| sent.id)
+    }
+
+    /// Sends `post` as a rich message where it fits one, and otherwise as a markdown
+    /// file, so a long body reaches the chat whole.
+    pub fn post(
+        &self,
+        place: Place,
+        post: &Post,
+        sound: Sound,
+        reply_to: Option<i64>,
+    ) -> Option<i64> {
+        if post.markdown.len() <= MAX_BYTES {
+            return self.send(place, &post.markdown, sound, reply_to);
+        }
+        let addressed = Addressed::new(place, reply_to);
+        let sent = self
+            .client
+            .request::<Sent>("sendDocument", UPLOAD_TIMEOUT, |request| {
+                let mut form = addressed
+                    .form()
+                    .text("caption", &post.caption)
+                    .text("parse_mode", "HTML");
+                if matches!(sound, Sound::Silent) {
+                    form = form.text("disable_notification", "true");
+                }
+                let file = Part::bytes(post.markdown.as_bytes())
+                    .file_name(FILE_NAME)
+                    .mime_str("text/markdown")?;
+                request.send(form.part("document", file))
+            });
+        logged("sendDocument", sent).map(|sent| sent.id)
     }
 
     /// A silent message the next message typed replies to, since clients open the reply
@@ -112,14 +153,13 @@ impl Telegram {
         placeholder: &str,
         reply_to: Option<i64>,
     ) -> Option<i64> {
-        let markdown = clamp(markdown);
         let placeholder: String = placeholder.chars().take(PLACEHOLDER_MAX).collect();
         let body = SendRichMessage {
             reply_markup: Some(ReplyMarkup::ForceReply {
                 force_reply: true,
                 input_field_placeholder: &placeholder,
             }),
-            ..rich(place, &markdown, Sound::Silent, reply_to)
+            ..rich(place, markdown, Sound::Silent, reply_to)
         };
         self.call(&body).map(|sent| sent.id)
     }
@@ -134,11 +174,7 @@ impl Telegram {
         caption: Option<&str>,
         reply_to: Option<i64>,
     ) -> Option<()> {
-        let chat = place.chat.to_string();
-        let topic = place.topic.map(|topic| topic.to_string());
-        let reply = reply_to.map(|message_id| {
-            serde_json::to_string(&replying(message_id)).expect("reply parameters")
-        });
+        let addressed = Addressed::new(place, reply_to);
         let names: Vec<String> = (0..paths.len())
             .map(|index| format!("file{index}"))
             .collect();
@@ -165,15 +201,7 @@ impl Telegram {
         let sent = self
             .client
             .request::<IgnoredAny>(method, timeout, |request| {
-                let mut form = Form::new()
-                    .text("chat_id", &chat)
-                    .text("disable_notification", "true");
-                if let Some(topic) = &topic {
-                    form = form.text("message_thread_id", topic);
-                }
-                if let Some(reply) = &reply {
-                    form = form.text("reply_parameters", reply);
-                }
+                let mut form = addressed.form().text("disable_notification", "true");
                 if let [path] = paths {
                     form = form.part("document", Part::file(path)?);
                     if let Some(caption) = caption {
@@ -205,21 +233,15 @@ impl Telegram {
             .map(|name| json!({"id": name, "media": {"type": "photo", "media": format!("attach://{name}")}}))
             .collect();
         let rich = json!({"markdown": clamp(markdown), "media": media}).to_string();
-        let chat = place.chat.to_string();
-        let topic = place.topic.map(|topic| topic.to_string());
-        let reply = serde_json::to_string(&replying(reply_to)).expect("reply parameters");
+        let addressed = Addressed::new(place, Some(reply_to));
         let timeout = UPLOAD_TIMEOUT * u32::try_from(photos.len()).expect("a count of photos");
         let sent = self
             .client
             .request::<Message>("sendRichMessage", timeout, |request| {
-                let mut form = Form::new()
-                    .text("chat_id", &chat)
+                let mut form = addressed
+                    .form()
                     .text("disable_notification", "true")
-                    .text("reply_parameters", &reply)
                     .text("rich_message", &rich);
-                if let Some(topic) = &topic {
-                    form = form.text("message_thread_id", topic);
-                }
                 for (name, path) in names.iter().zip(photos) {
                     form = form.part(name, Part::file(path)?);
                 }
@@ -416,6 +438,36 @@ fn replying(message_id: i64) -> ReplyParameters {
     ReplyParameters {
         message_id,
         allow_sending_without_reply: true,
+    }
+}
+
+/// Where an upload goes, as the fields of its form.
+struct Addressed {
+    chat: String,
+    topic: Option<String>,
+    reply: Option<String>,
+}
+
+impl Addressed {
+    fn new(place: Place, reply_to: Option<i64>) -> Self {
+        Self {
+            chat: place.chat.to_string(),
+            topic: place.topic.map(|topic| topic.to_string()),
+            reply: reply_to.map(|message_id| {
+                serde_json::to_string(&replying(message_id)).expect("reply parameters")
+            }),
+        }
+    }
+
+    fn form(&self) -> Form<'_> {
+        let mut form = Form::new().text("chat_id", &self.chat);
+        if let Some(topic) = &self.topic {
+            form = form.text("message_thread_id", topic);
+        }
+        if let Some(reply) = &self.reply {
+            form = form.text("reply_parameters", reply);
+        }
+        form
     }
 }
 
