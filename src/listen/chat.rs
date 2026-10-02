@@ -145,7 +145,21 @@ impl Machine {
         };
         // A session that exited without saying so is resumed rather than typed into.
         self.sweep();
-        match self.addressee(place, replied) {
+        let addressee = self.addressee(place, replied);
+        let by = match replied.filter(|replied| replied.opened.is_none()) {
+            Some(replied) => format!("reply to {}", replied.id),
+            None => "latest".to_owned(),
+        };
+        let to = match &addressee {
+            Ok(Some(address)) => address.as_str(),
+            Ok(None) => "nothing",
+            Err(error) => error,
+        };
+        eprintln!(
+            "chat {}/{:?}/{carrier} -> {to} by {by}",
+            place.chat, place.topic
+        );
+        match addressee {
             Ok(Some(address)) if address == NEW => match replied.and_then(body) {
                 Some(cwd) => self.open(PathBuf::from(cwd), None, ask),
                 None => self.say(place, "that anchor names no directory"),
