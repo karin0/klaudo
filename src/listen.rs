@@ -2,6 +2,7 @@
 //! only reader of the chat. It holds the calls in order per turn, and it is where a
 //! message from the chat becomes keystrokes in a session's terminal.
 
+mod attach;
 mod chat;
 mod diff;
 mod render;
@@ -25,7 +26,7 @@ use crate::hook::{self, Event};
 use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::{self, Pane};
 
-use chat::{COMMANDS, tilde};
+use chat::{ATTACH, COMMANDS, tilde};
 use render::{code, took};
 use turn::{Ask, SETTLE, Thread, Turn};
 use usage::{Limits, Status, Window};
@@ -120,8 +121,14 @@ pub fn run() {
     let socket = UnixDatagram::bind(&path).expect("bind");
     let answers = socket.try_clone().expect("socket");
     let telegram = Arc::new(Telegram::new());
+    let attach = crate::telegram::setting("ATTACH_COMMAND").map(PathBuf::from);
+    let commands: Vec<_> = COMMANDS
+        .iter()
+        .copied()
+        .filter(|&(command, _)| command != ATTACH || attach.is_some())
+        .collect();
     let poller = Arc::clone(&telegram);
-    std::thread::spawn(move || poll(&poller, &path));
+    std::thread::spawn(move || poll(&poller, &path, &commands));
     let arrivals = read(socket);
 
     let running_file = directory.join("state.json");
@@ -161,6 +168,7 @@ pub fn run() {
         running_file,
         ended_file,
         limits: None,
+        attach,
     };
     // Whatever exited while nothing was listening.
     machine.sweep();
@@ -216,8 +224,8 @@ fn acquire(lock: &File) -> bool {
 /// the hooks and messages from the phone arrive through one queue in the order they
 /// landed. Messages older than this loop are the backlog Telegram still holds, and
 /// typing those into a terminal would replay an afternoon of asks.
-fn poll(telegram: &Telegram, target: &Path) {
-    telegram.register(COMMANDS);
+fn poll(telegram: &Telegram, target: &Path, commands: &[(&str, &str)]) {
+    telegram.register(commands);
     let started =
         i64::try_from(now_millis() / 1000).expect("any u64 of milliseconds fits an i64 in seconds");
     let socket = UnixDatagram::unbound().expect("socket");
@@ -381,6 +389,8 @@ struct Machine {
     ended_file: PathBuf,
     /// The limits a status line last reported, and when, in Unix seconds.
     limits: Option<(Limits, u64)>,
+    /// The program `/attach` runs to show a pane on another terminal.
+    attach: Option<PathBuf>,
 }
 
 /// A session the daemon has heard from: where it ran, which is where a reply to it
@@ -440,7 +450,24 @@ struct Opening {
     /// conversation waits for the next session to start in `dir`.
     resume: Option<String>,
     pane: Pane,
-    ask: Ask,
+    ask: Awaiting,
+}
+
+/// What a window the daemon opened was asked for.
+enum Awaiting {
+    /// A prompt to type once the session is ready.
+    Prompt(Ask),
+    /// The window alone, shown on another terminal by `/attach` asked in this place.
+    Terminal(Place),
+}
+
+impl Awaiting {
+    fn place(&self) -> Place {
+        match self {
+            Self::Prompt(ask) => ask.place,
+            Self::Terminal(place) => *place,
+        }
+    }
 }
 
 impl Machine {
@@ -495,7 +522,7 @@ impl Machine {
                 let asked = self
                     .waiting(&id, &session.dir)
                     .first()
-                    .map(|&index| self.opening[index].ask.place);
+                    .map(|&index| self.opening[index].ask.place());
                 let place = asked
                     .or_else(|| self.inherited(&session.dir))
                     .unwrap_or_else(|| session.home(&self.telegram));
@@ -680,7 +707,7 @@ impl Machine {
             .collect();
         for opening in closed {
             self.say(
-                opening.ask.place,
+                opening.ask.place(),
                 &format!(
                     "the window opened in {} closed before its session started",
                     code(&tilde(&opening.dir))

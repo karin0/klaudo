@@ -306,8 +306,8 @@ impl Telegram {
         });
     }
 
-    /// Marks a message the daemon typed into a terminal, which is what tells its sender
-    /// the prompt was accepted while the turn is still working.
+    /// Marks a message as carried out, such as a prompt typed into a terminal, which
+    /// tells its sender it was accepted before anything else answers it.
     pub fn acknowledge(&self, chat: i64, message_id: i64) {
         self.call(&SetMessageReaction {
             chat_id: chat,
@@ -534,7 +534,7 @@ fn stored() -> &'static HashMap<String, String> {
     STORED.get_or_init(|| read(&env_file()))
 }
 
-fn setting(name: &str) -> Option<String> {
+pub fn setting(name: &str) -> Option<String> {
     stored().get(name).cloned()
 }
 

@@ -180,6 +180,13 @@ pango package, draws them, and has to be on the daemon's `PATH`. A file changed 
 many lines to read on a phone, as a lock file is, is listed without being drawn, and so
 is a binary one.
 
+`/attach` shows the terminal of the session a message would reach on another device,
+for the dialogs a reply cannot answer, such as the `/rewind` picker. It runs the program
+`ATTACH_COMMAND` names with the session's tmux pane and the socket of its tmux server as
+its two arguments, and marks the message with 👀 once the program succeeds. A session
+that has exited is resumed in a window first, which the terminal then shows starting.
+Configuration below has such a program for a phone running Termux.
+
 `/compact` goes to a session like any other message. The daemon lists these commands
 in the command menu for the user alone.
 
@@ -271,6 +278,28 @@ them posts its terminal-started turns to `CHAT_ID`.
 
 `IDLE_HOURS`, a whole number defaulting to 6, is how long a window the daemon opened
 stays open while its session idles.
+
+`ATTACH_COMMAND` is the path of the program `/attach` runs, which has 10 seconds to
+finish, and without it `/attach` stays out of the command menu. For a phone running
+Termux whose `sshd` this machine reaches as `phone`, and which reaches this machine as
+`pc`, the program asks Termux to open a session running ssh back:
+
+```sh
+#!/bin/sh
+exec ssh phone am startservice --user 0 -n com.termux/com.termux.app.RunCommandService -a com.termux.RUN_COMMAND --es com.termux.RUN_COMMAND_PATH /data/data/com.termux/files/usr/bin/ssh --esa com.termux.RUN_COMMAND_ARGUMENTS "'-t,pc,tmux -S $2 -u new-session -t $1 \; set-option destroy-unattached on \; select-pane -t $1'" --ez com.termux.RUN_COMMAND_BACKGROUND false
+```
+
+The intent is Termux's
+[`RUN_COMMAND`](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent), which
+Termux takes only with `allow-external-apps = true` in `~/.termux/termux.properties`,
+and whose refusal shows as a notification on the phone while `am` still succeeds. The
+tmux command shows the pane in a session of its own, which shares the windows of the
+pane's session and is closed once detached, so a terminal already attached there keeps
+its window. Over ssh no login shell sets a locale, so `-u` keeps tmux from drawing
+non-ASCII as `_`. The phone's shell and this machine's both parse the arguments, hence
+the `\;` inside single quotes. Both ssh connections need keys without a passphrase. Run
+inside tmux as `attach "$TMUX_PANE" "$(tmux display -p '#{socket_path}')"`, the program
+is tried without the chat.
 
 `TRACE_UPDATES`, set to anything, logs every polled update as Telegram sent it.
 `API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own
