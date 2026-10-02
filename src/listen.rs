@@ -437,6 +437,15 @@ impl Machine {
 
     fn hook(&mut self, pid: u32, tmux: Option<(String, String)>, event: &Event) {
         let id = event.session_id.clone();
+        // An ending changes nothing the session is remembered by, and a session the
+        // daemon never heard from before its end has nothing to remember.
+        if event.hook_event_name == "SessionEnd" {
+            if self.sessions.contains_key(&id) {
+                self.end(&id);
+                self.save();
+            }
+            return;
+        }
         let pane = tmux.map(|(server, pane)| Pane::new(&server, &pane));
         let directory = event.directory();
         if !self.sessions.contains_key(&id) {
@@ -468,7 +477,6 @@ impl Machine {
 
         match event.hook_event_name.as_str() {
             "SessionStart" => self.started(&id),
-            "SessionEnd" => self.end(&id),
             "UserPromptSubmit" => self.submitted(&id, event),
             "MessageDisplay" => self.delta(&id, event),
             "PreToolUse" => self.calling(&id, event),

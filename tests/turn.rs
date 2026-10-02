@@ -1079,6 +1079,53 @@ fn a_topic_resumes_its_latest_session() {
     drop(daemon);
 }
 
+/// A session ending is not a session heard from, so the one heard from last before
+/// either ended stays the latest of its topic.
+#[test]
+fn a_topic_resumes_the_session_heard_from_last_whichever_ended_last() {
+    let (port, _calls, chat) = recorder();
+    let temporary = prepare("topic-ended-last", port);
+    let root = temporary.path();
+    let seen = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_millis();
+    let (earlier, later) = ("0123456789abcdef", "fedcba9876543210");
+    let session = |id: &str, seen: u128| {
+        json!({
+            "id": id,
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "seen": seen,
+            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 79}, 5]},
+        })
+    };
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([session(earlier, seen - 2000), session(later, seen - 1000)]).to_string(),
+    )
+    .expect("the state");
+    let daemon = daemon(root);
+
+    for id in [later, earlier] {
+        hook(
+            root,
+            &json!({"hook_event_name": "SessionEnd", "session_id": id, "cwd": project(root)}),
+        );
+    }
+    chat.opens(GROUP, 79, OWNER, "carry on");
+    let log = root.join("tmux.log");
+    wait_for(
+        || std::fs::read_to_string(&log).is_ok_and(|log| log.contains("--resume")),
+        "no session was resumed",
+    );
+    let log = std::fs::read_to_string(&log).expect("the tmux log");
+    assert!(log.contains(&format!("--resume {later}")), "{log}");
+    drop(daemon);
+}
+
 /// A session killed mid-turn sends no event again, and the daemon still finds it gone:
 /// the message that showed the turn running is rewritten to what the turn said.
 #[test]
@@ -1313,9 +1360,9 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
         std::fs::create_dir(root.join(dir)).expect("a project");
     }
     for (event, session, cwd) in [
-        ("SessionStart", "aaaaaaaa", root.join("a")),
         ("SessionStart", "bbbbbbbb", root.join("b")),
         ("SessionStart", "cccccccc", project(root)),
+        ("SessionStart", "aaaaaaaa", root.join("a")),
         ("SessionEnd", "aaaaaaaa", root.join("a")),
     ] {
         hook(
@@ -1334,7 +1381,8 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
         .collect();
     let a = root.join("a").display().to_string();
     let b = root.join("b").display().to_string();
-    // Session a exited last, and a message replying to nothing reaches it.
+    // Session a was heard from last before it exited, and a message replying to nothing
+    // reaches it.
     assert_eq!(labels, [a.clone(), b.clone()]);
     assert_eq!(menu.chat, Some(OWNER));
 
