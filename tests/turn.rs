@@ -1959,6 +1959,144 @@ fn a_window_just_typed_into_is_not_closed_for_idling() {
     assert!(!typed.contains("kill-pane"), "tmux was called with {typed}");
 }
 
+/// The stop button on the message showing a running turn sends its session Escape, and
+/// the turn ends once its transcript shows it interrupted, keeping what it said. Until
+/// then a second press sends nothing, a press the transcript never answers is reported,
+/// and the button stays for another.
+#[test]
+fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("stop", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let interruption = json!({
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]},
+    });
+    // An interruption of an earlier turn is in the transcript already.
+    let transcript = root.join("transcript.jsonl");
+    std::fs::write(&transcript, format!("{interruption}\n")).expect("the transcript");
+    let mut session = talking(root, &transcript);
+
+    let made = collect(&calls, |call| call.markdown.contains('✻'));
+    let live = made.last().expect("the message showing the turn").clone();
+    assert_eq!(
+        live.body["reply_markup"]["inline_keyboard"],
+        json!([[{"text": "Stop", "callback_data": "stop"}]])
+    );
+    let log = root.join("tmux.log");
+    let escapes = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .matches("send-keys -t %1 Escape")
+            .count()
+    };
+    chat.presses(OWNER, &live, "stop");
+    chat.presses(OWNER, &live, "stop");
+    let made = collect(&calls, |call| {
+        call.markdown == "the turn did not stop within 5s of Escape"
+    });
+    assert_eq!(
+        escapes(),
+        1,
+        "a press while the first was unanswered sent Escape"
+    );
+    assert_eq!(
+        made.last().expect("the report").reply,
+        replying_to(live.reply["message_id"].as_i64().expect("the prompt"))
+    );
+
+    chat.presses(OWNER, &live, "stop");
+    wait_for(|| escapes() == 2, "the second press sent no Escape");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .expect("the transcript");
+    writeln!(file, "{interruption}").expect("the interruption");
+    let made: Vec<Call> = collect(&calls, |call| call.markdown.ends_with("\n\nInterrupted"))
+        .into_iter()
+        .filter(|call| call.label != "answerCallbackQuery")
+        .collect();
+    let [sealed, answer] = &made[..] else {
+        panic!(
+            "the turn ended with {:?}",
+            made.iter().map(|call| &call.label).collect::<Vec<_>>()
+        );
+    };
+    // What the turn said stays in the message that showed it, without the button.
+    assert_eq!(sealed.label, "editMessageText");
+    assert_eq!(sealed.target, Some(live.id));
+    assert!(
+        sealed.markdown.ends_with("\n\ncounting"),
+        "{:?}",
+        sealed.markdown
+    );
+    assert_eq!(sealed.body["reply_markup"], json!(null));
+    assert_eq!(answer.label, "sendRichMessage silent");
+    assert!(
+        answer
+            .markdown
+            .starts_with("**project** `01234567/aaaaaaaa`"),
+        "{:?}",
+        answer.markdown
+    );
+    assert!(
+        answer.markdown.contains("#interrupted"),
+        "{:?}",
+        answer.markdown
+    );
+    assert_eq!(answer.reply, live.reply);
+
+    chat.presses(OWNER, &live, "stop");
+    collect(&calls, |call| {
+        call.markdown == "that turn is no longer running"
+    });
+    assert_eq!(escapes(), 2);
+    let _ = session.kill();
+    let _ = session.wait();
+    drop(daemon);
+}
+
+/// A session in pane `%1`, the shell `script` runs on a terminal of its own, which the
+/// panes of the recording tmux show. Its hooks report from inside the pane that it
+/// submitted a prompt whose transcript is at `transcript` and began answering, and it
+/// stays running for half a minute.
+fn talking(root: &Path, transcript: &Path) -> Child {
+    let event = |event: serde_json::Value| {
+        let mut event = event;
+        event["session_id"] = json!("0123456789abcdef");
+        event["cwd"] = json!(project(root));
+        event["prompt_id"] = json!("aaaaaaaa-1111");
+        event["transcript_path"] = json!(transcript);
+        event.to_string()
+    };
+    std::fs::write(
+        root.join("submit.json"),
+        event(json!({"hook_event_name": "UserPromptSubmit", "prompt": "count the stars"})),
+    )
+    .expect("an event");
+    std::fs::write(
+        root.join("delta.json"),
+        event(json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "counting"})),
+    )
+    .expect("an event");
+    within(root, "script")
+        .args([
+            "-qc",
+            "tty > tty; \"$KLAUDO\" < submit.json; \"$KLAUDO\" < delta.json; exec sleep 30",
+            "/dev/null",
+        ])
+        .env("KLAUDO", env!("CARGO_BIN_EXE_klaudo"))
+        .env("SHELL", "/bin/sh")
+        .env("TMUX", format!("{},1,0", root.join("tmux.sock").display()))
+        .env("TMUX_PANE", "%1")
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("a session on a terminal")
+}
+
 /// A throwaway root holding the runtime directory the daemon binds its socket in and
 /// the credentials file every `klaudo` process started from it reads, so a machine's
 /// own credentials stay out of the test. It is removed when the test drops it, which a

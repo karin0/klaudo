@@ -28,6 +28,18 @@ a chat action for five seconds, through rewrites but only until the bot's next m
 so the daemon sends one every four and again after each message the turn posts. A
 session waiting on a dialog shows none.
 
+The message showing the open segment carries a Stop button, which sends Escape to the
+turn's pane after the check a reply goes through. An interrupted turn fires no hook, not
+even `PostToolUse` for the tool call it cut short. What marks it is the user message
+`[Request interrupted by user]` that Claude Code appends to the transcript, in its own
+unpublished format, so the daemon reads the transcript's new lines for five seconds. It
+ends the turn with a silent `#interrupted` message once that line appears, and says in
+the thread that the turn did not stop otherwise. A rewrite that leaves the button out
+takes it off, so a segment that finishes keeps its text without it. Escape also cancels
+an open dialog, and a second Escape on an idle prompt opens the `/rewind` picker, so a
+press while the daemon still waits on the last one sends nothing. A background shell
+survives the interrupt and starts a turn of its own once it exits.
+
 The last segment keeps no message of its own: `Stop` carries its text, and the message
 showing it is taken back once the answer is posted. That text reaches the daemon
 milliseconds before `Stop`, so new text waits a tenth of a second of quiet before it is
