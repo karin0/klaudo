@@ -135,12 +135,33 @@ impl Telegram {
                 if matches!(sound, Sound::Silent) {
                     form = form.text("disable_notification", "true");
                 }
-                let file = Part::bytes(post.markdown.as_bytes())
-                    .file_name(FILE_NAME)
-                    .mime_str("text/markdown")?;
-                request.send(form.part("document", file))
+                request.send(form.part("document", file(post)?))
             });
         logged("sendDocument", sent).map(|sent| sent.id)
+    }
+
+    /// Replaces the markdown file a `post` went out as with what it holds now.
+    pub fn refile(&self, chat: i64, message_id: i64, post: &Post) {
+        let chat = chat.to_string();
+        let message_id = message_id.to_string();
+        let media = json!({
+            "type": "document",
+            "media": "attach://document",
+            "caption": post.caption,
+            "parse_mode": "HTML",
+        })
+        .to_string();
+        let sent =
+            self.client
+                .request::<IgnoredAny>("editMessageMedia", UPLOAD_TIMEOUT, |request| {
+                    let form = Form::new()
+                        .text("chat_id", &chat)
+                        .text("message_id", &message_id)
+                        .text("media", &media)
+                        .part("document", file(post)?);
+                    request.send(form)
+                });
+        logged("editMessageMedia", sent);
     }
 
     /// A silent message the next message typed replies to, since clients open the reply
@@ -258,10 +279,9 @@ impl Telegram {
         reply_to: Option<i64>,
         buttons: &[(String, String)],
     ) -> Option<i64> {
-        let markdown = clamp(markdown);
         let body = SendRichMessage {
             reply_markup: (!buttons.is_empty()).then(|| keyboard(buttons)),
-            ..rich(place, &markdown, Sound::Silent, reply_to)
+            ..rich(place, markdown, Sound::Silent, reply_to)
         };
         self.call(&body).map(|sent| sent.id)
     }
@@ -272,7 +292,7 @@ impl Telegram {
         self.call(&EditMessageText {
             chat_id: chat,
             message_id,
-            content: Content::Rich(RichInput::Markdown(&clamp(markdown))),
+            content: Content::Rich(RichInput::Markdown(markdown)),
             reply_markup: (!buttons.is_empty()).then(|| keyboard(buttons)),
         });
     }
@@ -469,6 +489,13 @@ impl Addressed {
         }
         form
     }
+}
+
+/// The markdown file a post too long for a rich message goes as.
+fn file(post: &Post) -> Result<Part<'_>, ureq::Error> {
+    Part::bytes(post.markdown.as_bytes())
+        .file_name(FILE_NAME)
+        .mime_str("text/markdown")
 }
 
 /// A truncated notification beats a rejected one.
