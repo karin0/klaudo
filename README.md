@@ -224,6 +224,10 @@ context and the plan's limits, so `klaudo status` forwards it and prints nothing
 `SessionStart` fires once the session is ready for input, after the trust dialog, which
 is how a window opened from the chat knows when to type its first prompt.
 
+`settings.json` also denies `AskUserQuestion`, which removes the tool from the model's
+list, so a session asks in text that a reply from the chat answers. Its dialog takes
+arrow keys and Enter, which pasted text cannot drive.
+
 ## Configuration
 
 `BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` and `CHAT_PROJECTS` come from
