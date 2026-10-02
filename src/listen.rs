@@ -257,7 +257,9 @@ struct Session {
     /// The turn that finished most recently, so its stragglers do not open it again.
     done: Option<String>,
     /// When this session was last heard from, which is what an unaddressed message from
-    /// the chat is delivered by, in Unix milliseconds.
+    /// the chat is delivered by and its idle time counts from, in Unix milliseconds. Text
+    /// the daemon types into it counts at once, since the hooks report the prompt only
+    /// after it has been submitted.
     seen: u64,
     trail: Trail,
     /// The context its status line last reported, and when, in Unix seconds.

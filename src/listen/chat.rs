@@ -531,11 +531,9 @@ impl Machine {
             self.say(place, &format!("tmux: {}", hook::prose(&error)));
             return;
         }
-        self.sessions
-            .get_mut(&id)
-            .expect("the session just found")
-            .asked
-            .push_back(ask);
+        let session = self.sessions.get_mut(&id).expect("the session just found");
+        session.asked.push_back(ask);
+        session.seen = now_millis();
     }
 }
 

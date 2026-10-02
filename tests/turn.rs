@@ -1881,6 +1881,84 @@ fn a_window_idle_for_long_is_closed_unless_a_command_still_runs() {
     assert_eq!(closed, "kill-pane -t %1\n");
 }
 
+/// A window the daemon has just typed a reply into stays open, though its session had
+/// been idle until then and the prompt it submits has not been reported yet.
+#[test]
+fn a_window_just_typed_into_is_not_closed_for_idling() {
+    let (port, _calls, chat) = recorder();
+    let temporary = prepare("typed", port);
+    let root = temporary.path();
+    let env = root.join("config/klaudo/env");
+    let mut settings = std::fs::read_to_string(&env).expect("the settings");
+    settings.push_str("IDLE_HOURS=1\n");
+    std::fs::write(&env, settings).expect("the settings");
+    // The session runs on a terminal of its own, which the panes of the recording tmux
+    // show, so a reply is typed into it.
+    let session = Command::new("script")
+        .args([
+            "-qc",
+            "tty > tty; echo $$ > pid; exec sleep 30",
+            "/dev/null",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("a session on a terminal");
+    let pid = root.join("pid");
+    wait_for(
+        || std::fs::read_to_string(&pid).is_ok_and(|pid| pid.ends_with('\n')),
+        "the session never started",
+    );
+    let pid: u32 = std::fs::read_to_string(&pid)
+        .expect("the pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    // Idle for just short of the hour when the daemon starts.
+    let margin = 4000;
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([{
+            "id": "0123456789abcdef",
+            "dir": project(root),
+            "pid": pid,
+            "pane": {"server": root.join("tmux.sock"), "id": "%1"},
+            "seen": now() * 1000 - 60 * 60 * 1000 + margin,
+            "trail": {"prompt": "", "last": null},
+        }])
+        .to_string(),
+    )
+    .expect("the state");
+    let started = Instant::now();
+    let log = root.join("tmux.log");
+    let daemon = daemon(root);
+    chat.replies(
+        OWNER,
+        OWNER,
+        "carry on",
+        &json!({"rich_message": {"blocks": [
+            {"type": "paragraph", "text": [{"type": "code", "text": "01234567"}]},
+        ]}}),
+    );
+    wait_for(
+        || std::fs::read_to_string(&log).is_ok_and(|log| log.contains("send-keys")),
+        "the reply was never typed",
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(margin),
+        "the reply was typed after the window fell due"
+    );
+    std::thread::sleep(Duration::from_millis(margin).saturating_sub(started.elapsed()) + GRACE);
+    drop(daemon);
+    let typed = std::fs::read_to_string(&log).expect("the log");
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+    assert!(!typed.contains("kill-pane"), "tmux was called with {typed}");
+}
+
 /// A throwaway root holding the runtime directory the daemon binds its socket in and
 /// the credentials file every `klaudo` process started from it reads, so a machine's
 /// own credentials stay out of the test. It is removed when the test drops it, which a
@@ -1894,8 +1972,9 @@ fn prepare(name: &str, port: u16) -> TempDir {
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
     // A window the daemon opens goes to a `tmux` that records how it was called, so a
     // test never reaches the tmux server of the machine it runs on. Its session exists
-    // once a `new-session` has been recorded, every pane is in it, and its windows stay
-    // open until a `closed` file appears beside the log.
+    // once a `new-session` has been recorded, every pane is in it and shows the terminal
+    // a `tty` file beside the log names, and its windows stay open until a `closed` file
+    // appears there.
     std::fs::create_dir_all(root.join("bin")).expect("binary directory");
     let tmux = root.join("bin/tmux");
     std::fs::write(
@@ -1908,7 +1987,10 @@ case "$1" in
 has-session) grep -q '^new-session' "$log" 2>/dev/null; exit ;;
 display-message)
   [ -e "$dir/closed" ] && exit
-  case "$*" in *session_name*) echo klaudo ;; *) echo /dev/pts/0 ;; esac
+  case "$*" in
+  *session_name*) echo klaudo ;;
+  *) cat "$dir/tty" 2>/dev/null || echo /dev/pts/0 ;;
+  esac
   exit ;;
 esac
 printf '%s\n' "$*" >> "$log"
