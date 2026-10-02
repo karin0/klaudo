@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::telegram::MAX_CHARS;
+use crate::telegram::{ELLIPSIS, MAX_BYTES};
 
 /// Fields that identify the invocation rather than describe it, dropped from the
 /// verbatim report an unrecognised event falls back to.
@@ -27,7 +27,7 @@ const SUBJECT: [&str; 7] = [
 /// stopped taking it in.
 const SUBJECT_MAX: usize = 120;
 
-/// How much of the reasoning a compaction's model writes ahead of its summary the
+/// How many bytes of the reasoning a compaction's model writes ahead of its summary the
 /// message carries, since that reasoning is the part of the message a reader skips.
 const ANALYSIS_MAX: usize = 4000;
 
@@ -141,7 +141,7 @@ impl Event {
         }
     }
 
-    /// What the message says under its title, in at most `room` characters where the
+    /// What the message says under its title, in at most `room` bytes where the
     /// event carries more than a message holds.
     fn body(&self, room: usize) -> String {
         match self.hook_event_name.as_str() {
@@ -228,7 +228,7 @@ fn compaction(raw: &str, room: usize) -> String {
         Some(inner.trim())
     };
     let summary = fold(within("summary").unwrap_or(raw.trim()), "summary", room);
-    let left = room.saturating_sub(summary.chars().count() + 2);
+    let left = room.saturating_sub(summary.len() + 2);
     match within("analysis").map(|analysis| fold(analysis, "analysis", left.min(ANALYSIS_MAX))) {
         Some(analysis) if !analysis.is_empty() => format!("{summary}\n\n{analysis}"),
         _ => summary,
@@ -236,12 +236,12 @@ fn compaction(raw: &str, room: usize) -> String {
 }
 
 /// Text in a quotation that opens on a tap, credited with what it is, cut to `room`
-/// characters of markup. Markdown is not parsed inside a block HTML tag, so the text
+/// bytes of markup. Markdown is not parsed inside a block HTML tag, so the text
 /// travels as HTML. Empty when not even the markup fits.
 fn fold(text: &str, credit: &str, room: usize) -> String {
     let open = "<blockquote expandable>";
     let close = format!("<cite>{credit}</cite></blockquote>");
-    let Some(mut left) = room.checked_sub(open.len() + close.len() + 1) else {
+    let Some(mut left) = room.checked_sub(open.len() + close.len() + ELLIPSIS.len_utf8()) else {
         return String::new();
     };
     let mut folded = String::from(open);
@@ -250,8 +250,8 @@ fn fold(text: &str, credit: &str, room: usize) -> String {
             '\n' => "<br>".to_owned(),
             other => html(&other.to_string()),
         };
-        let Some(rest) = left.checked_sub(escaped.chars().count()) else {
-            folded.push('\u{2026}');
+        let Some(rest) = left.checked_sub(escaped.len()) else {
+            folded.push(ELLIPSIS);
             break;
         };
         left = rest;
@@ -305,8 +305,8 @@ pub fn compose(head: &str, took: &str, tag: &str, body: &str) -> String {
 
 pub fn message(event: &Event, head: &str, took: &str) -> String {
     let tag = event.tag();
-    let title = compose(head, took, &tag, "").chars().count();
-    compose(head, took, &tag, &event.body(MAX_CHARS - title))
+    let title = compose(head, took, &tag, "").len();
+    compose(head, took, &tag, &event.body(MAX_BYTES - title))
 }
 
 #[cfg(test)]
@@ -480,20 +480,26 @@ mod tests {
             "auto",
             &format!(
                 "<analysis>why</analysis><summary>{}</summary>",
-                "<".repeat(MAX_CHARS)
+                "<".repeat(MAX_BYTES)
             ),
         );
-        assert!((MAX_CHARS - 3..=MAX_CHARS).contains(&long.chars().count()));
+        assert!((MAX_BYTES - 3..=MAX_BYTES).contains(&long.len()));
         assert!(long.ends_with("&lt;\u{2026}<cite>summary</cite></blockquote>"));
         let reasoned = compacted(
             "auto",
             &format!(
                 "<analysis>{}</analysis><summary>s</summary>",
-                "x".repeat(MAX_CHARS)
+                "x".repeat(MAX_BYTES)
             ),
         );
         let analysis = reasoned.split("\n\n").last().expect("the reasoning");
-        assert_eq!(analysis.chars().count(), ANALYSIS_MAX);
+        assert_eq!(analysis.len(), ANALYSIS_MAX);
+        // A character takes up to four bytes, and the message holds the bytes.
+        let wide = compacted(
+            "auto",
+            &format!("<summary>{}</summary>", "字".repeat(MAX_BYTES)),
+        );
+        assert!((MAX_BYTES - 3..=MAX_BYTES).contains(&wide.len()));
     }
 
     #[test]
