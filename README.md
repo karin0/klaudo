@@ -103,11 +103,14 @@ so the characters HTML owns travel as entities.
 ## Replies and commands
 
 A reply to any message from a turn is typed into that session's terminal as a prompt. A
-message replying to nothing goes to the session Klaŭdo heard from last in the chat and
-topic it was sent in, which is resumed first when it has exited. A session is in its
-project's chat, in the topic its last message went to. A session that has not posted
-there yet takes the topic of the session of its project heard from last, so a
-conversation restarted in a project stays in its topic.
+message replying to nothing goes to the most recent session in the chat and topic it was
+sent in, which is resumed first when it has exited. A session is as recent as the last
+message of its conversation, its own or one typed into it, and the menus order sessions
+and projects the same way. The last event a session reported only starts its idle time,
+since a session reports events the chat never shows. A session is in its project's chat,
+in the topic its last message went to. A session that has not posted there yet takes the
+topic of the most recent session of its project, so a conversation restarted in a project
+stays in its topic.
 
 The text travels through a tmux paste buffer, so newlines, quotes and non-ASCII arrive
 as typed. It is pasted in pieces of at most three lines and 700 UTF-16 units, because
@@ -184,10 +187,9 @@ service message that opened the topic, which Klaŭdo reads as replying to nothin
 
 A private chat in topic mode takes no message outside every topic: one sent there opens
 a topic whose name the service message marks as implicit. A message replying to nothing
-in such a topic, when no session has been there, goes to the session heard from last
-outside every topic, which is where a turn started in the terminal is posted until a
-session of its project posts in a topic. A topic the user named reaches only its own
-sessions.
+in such a topic, when no session has been there, goes to the most recent session outside
+every topic, which is where a turn started in the terminal is posted until a session of
+its project posts in a topic. A topic the user named reaches only its own sessions.
 
 Topic mode slows the whole private chat. A reply to `/new` shows several seconds later
 where topic mode is on than where it is off.

@@ -26,8 +26,8 @@ impl Machine {
             Ok(address) => address.filter(|address| address != NEW),
             Err(error) => return self.say(place, error),
         };
-        let Some((id, dir, _, _)) =
-            address.and_then(|address| self.known().find(|(id, _, _, _)| id.starts_with(&address)))
+        let Some((id, dir, _)) =
+            address.and_then(|address| self.known().find(|(id, _, _)| id.starts_with(&address)))
         else {
             return self.say(place, "no session has run here to show the changes of");
         };

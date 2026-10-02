@@ -142,8 +142,14 @@ pub fn run() {
         answers,
         sessions: running
             .into_iter()
-            .map(|Running { known, pid, pane }| {
-                let mut session = Session::new(known.dir, pid, pane, known.seen);
+            .map(|running| {
+                let Running {
+                    known,
+                    pid,
+                    pane,
+                    idle_since,
+                } = running;
+                let mut session = Session::new(known.dir, pid, pane, idle_since);
                 session.trail = known.trail;
                 (known.id, session)
             })
@@ -256,27 +262,44 @@ struct Session {
     turn: Option<Turn>,
     /// The turn that finished most recently, so its stragglers do not open it again.
     done: Option<String>,
-    /// When this session was last heard from, which is what an unaddressed message from
-    /// the chat is delivered by and its idle time counts from, in Unix milliseconds. Text
-    /// the daemon types into it counts at once, since the hooks report the prompt only
+    /// When its idle time began, in Unix milliseconds: the last event it reported, the
+    /// last text the daemon typed into it, or the last time it was found idle and its
+    /// window kept open. Typed text counts at once, since the hooks report the prompt only
     /// after it has been submitted.
-    seen: u64,
+    idle_since: u64,
     trail: Trail,
     /// The context its status line last reported, and when, in Unix seconds.
     window: Option<(Window, u64)>,
-    /// When it was last found idle and its window kept open, in Unix milliseconds, which
-    /// starts its idle time over.
-    spared: u64,
 }
 
 /// What a `/resume` menu shows of a session and leads back to: the start of its latest
-/// prompt, and the last message it left in the chat as `(place, message)`.
+/// prompt, and where its conversation stands in the chat.
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct Trail {
     prompt: String,
-    /// A session new to the daemon starts out where the session of its project heard
-    /// from last posted, with no message of its own there yet.
-    last: Option<(Place, Option<i64>)>,
+    last: Option<Last>,
+}
+
+/// The last message of a conversation, the session's own or one the daemon typed into
+/// it, and when it was left. This is how recent a session is everywhere sessions are
+/// ordered. A session new to the daemon starts out with no message, where the most recent
+/// session of its project is, or outside every topic of its project's chat.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct Last {
+    place: Place,
+    message: Option<i64>,
+    /// Unix milliseconds.
+    at: u64,
+}
+
+impl Last {
+    fn now(place: Place, message: Option<i64>) -> Self {
+        Self {
+            place,
+            message,
+            at: now_millis(),
+        }
+    }
 }
 
 impl Trail {
@@ -286,13 +309,25 @@ impl Trail {
     fn home(&self, chat: i64) -> Place {
         let topic = self
             .last
-            .and_then(|(place, _)| place.topic.filter(|_| place.chat == chat));
+            .and_then(|last| last.place.topic.filter(|_| last.place.chat == chat));
         Place { chat, topic }
+    }
+
+    /// How recent the conversation is in `place`: one with a message there is ahead of
+    /// every one without, and either kind is ordered by when it got there.
+    fn recency(&self, place: Place) -> Option<(bool, u64)> {
+        self.last
+            .filter(|last| last.place == place)
+            .map(|last| (last.message.is_some(), last.at))
+    }
+
+    fn at(&self) -> Option<u64> {
+        self.last.map(|last| last.at)
     }
 }
 
 impl Session {
-    fn new(dir: PathBuf, pid: u32, pane: Option<Pane>, seen: u64) -> Self {
+    fn new(dir: PathBuf, pid: u32, pane: Option<Pane>, idle_since: u64) -> Self {
         Self {
             dir,
             pid,
@@ -301,22 +336,21 @@ impl Session {
             asked: VecDeque::new(),
             turn: None,
             done: None,
-            seen,
+            idle_since,
             trail: Trail::default(),
             window: None,
-            spared: 0,
         }
     }
 
     /// When its window is next checked for closing, in Unix milliseconds. A session
     /// outside tmux has no window to close.
     fn idle_until(&self, idle: u64) -> Option<u64> {
-        (self.turn.is_none() && self.pane.is_some()).then(|| self.seen.max(self.spared) + idle)
+        (self.turn.is_none() && self.pane.is_some()).then_some(self.idle_since + idle)
     }
 
     fn left(&mut self, place: Place, message: Option<i64>) {
         if let Some(message) = message {
-            self.trail.last = Some((place, Some(message)));
+            self.trail.last = Some(Last::now(place, Some(message)));
         }
     }
 
@@ -350,14 +384,11 @@ struct Machine {
 }
 
 /// A session the daemon has heard from: where it ran, which is where a reply to it
-/// resumes it once it has exited, and when it was last heard from, which is how recent
-/// its project is.
+/// resumes it once it has exited, and its trail.
 #[derive(Serialize, Deserialize, Clone)]
 struct Known {
     id: String,
     dir: PathBuf,
-    /// Unix milliseconds.
-    seen: u64,
     trail: Trail,
 }
 
@@ -371,6 +402,8 @@ struct Running {
     known: Known,
     pid: u32,
     pane: Option<Pane>,
+    /// Unix milliseconds.
+    idle_since: u64,
 }
 
 /// A file not written yet holds nothing.
@@ -462,15 +495,18 @@ impl Machine {
                 let asked = self
                     .waiting(&id, &session.dir)
                     .first()
-                    .map(|&index| (self.opening[index].ask.place, None));
-                session.trail.last = asked.or_else(|| self.inherited(&session.dir));
+                    .map(|&index| self.opening[index].ask.place);
+                let place = asked
+                    .or_else(|| self.inherited(&session.dir))
+                    .unwrap_or_else(|| session.home(&self.telegram));
+                session.trail.last = Some(Last::now(place, None));
             }
             self.sessions.insert(id.clone(), session);
         }
         let session = self.sessions.get_mut(&id).expect("a session just listed");
         session.pid = pid;
         session.pane = pane;
-        session.seen = now_millis();
+        session.idle_since = now_millis();
         if let Some(directory) = directory {
             session.dir = directory;
         }
@@ -491,7 +527,8 @@ impl Machine {
         }
         self.dialog(&id, event.hook_event_name == "Notification");
         // Streamed text and tool calls arrive many times a second and change nothing
-        // saved but `seen`, which the next event at a turn's edges saves.
+        // saved but `idle_since` and the trail, which the next event at a turn's edges
+        // saves.
         if !matches!(
             event.hook_event_name.as_str(),
             "MessageDisplay" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
@@ -508,11 +545,11 @@ impl Machine {
                 known: Known {
                     id: id.clone(),
                     dir: session.dir.clone(),
-                    seen: session.seen,
                     trail: session.trail.clone(),
                 },
                 pid: session.pid,
                 pane: session.pane.clone(),
+                idle_since: session.idle_since,
             })
             .collect();
         store(&self.running_file, &running);
@@ -627,7 +664,7 @@ impl Machine {
             if session.idle_until(self.idle).is_none_or(|at| at > now) {
                 continue;
             }
-            session.spared = now;
+            session.idle_since = now;
             let pane = session.pane.as_ref().expect("a session with a window");
             if pane.owned()
                 && !tmux::has_children(session.pid)
@@ -685,7 +722,6 @@ impl Machine {
         self.ended.push_back(Known {
             id: id.to_owned(),
             dir: session.dir,
-            seen: session.seen,
             trail: session.trail,
         });
         if self.ended.len() > ENDED_MAX {

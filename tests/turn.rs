@@ -658,20 +658,20 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
     drop(daemon);
 }
 
-/// A message that replies to nothing still names a session: the one heard from last in
-/// the chat it was sent in. These sessions run outside tmux, so what the daemon says
+/// A message that replies to nothing still names a session: the most recent one in the
+/// chat it was sent in. These sessions run outside tmux, so what the daemon says
 /// back names where the message went and the terminal that session is on. A reply to a
 /// message that names no session goes nowhere.
 #[test]
-fn a_message_replying_to_nothing_goes_to_the_session_heard_from_last_in_its_chat() {
+fn a_message_replying_to_nothing_goes_to_the_most_recent_session_in_its_chat() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("unaddressed", port);
     let root = temporary.path();
     let daemon = daemon(root);
 
-    // The later session sorts first, so what answers is the one heard from last rather
-    // than the first one the daemon happens to hold. The throwaway root is outside
-    // `CHAT_PROJECTS`, so the session there, heard from last of all, is the private
+    // The later session sorts first, so what answers is the most recent one rather than
+    // the first one the daemon happens to hold. The throwaway root is outside
+    // `CHAT_PROJECTS`, so the session there, the most recent of all, is the private
     // chat's.
     for (session, cwd) in [
         ("fedcba9876543210", project(root).as_path()),
@@ -760,8 +760,8 @@ fn a_topic_holds_its_own_conversations() {
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
-            "seen": seen,
-            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+            "idle_since": seen,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": seen}},
         }])
         .to_string(),
     )
@@ -835,8 +835,8 @@ fn a_resumed_session_returns_to_its_topic() {
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
-            "seen": 0,
-            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+            "idle_since": 0,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
         }])
         .to_string(),
     )
@@ -867,8 +867,8 @@ fn a_resumed_session_returns_to_its_topic() {
     drop(daemon);
 }
 
-/// A session that has not posted yet goes to the topic of the session of its project
-/// heard from last.
+/// A session that has not posted yet goes to the topic of the most recent session of its
+/// project.
 #[test]
 fn a_new_session_takes_the_topic_of_its_project() {
     let (port, calls, _chat) = recorder();
@@ -882,8 +882,8 @@ fn a_new_session_takes_the_topic_of_its_project() {
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
-            "seen": 0,
-            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+            "idle_since": 0,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
         }])
         .to_string(),
     )
@@ -923,8 +923,8 @@ fn a_new_conversation_belongs_to_the_topic_it_was_asked_from() {
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
-            "seen": 0,
-            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 77}, 5]},
+            "idle_since": 0,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
         }])
         .to_string(),
     )
@@ -977,8 +977,8 @@ fn a_new_conversation_belongs_to_the_topic_it_was_asked_from() {
 }
 
 /// A message outside every topic of a private chat in topic mode opens a topic of its
-/// own, which reaches the session heard from last outside every topic, while a topic the
-/// user named reaches no session outside it.
+/// own, which reaches the most recent session outside every topic, while a topic the user
+/// named reaches no session outside it.
 #[test]
 fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
     let (port, calls, chat) = recorder();
@@ -997,7 +997,7 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
-            "seen": seen,
+            "idle_since": seen,
             "trail": {"prompt": "", "last": null},
         }])
         .to_string(),
@@ -1044,15 +1044,15 @@ fn a_topic_resumes_its_latest_session() {
                 "dir": project(root),
                 "pid": std::process::id(),
                 "pane": null,
-                "seen": seen - 1000,
-                "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 79}, 5]},
+                "idle_since": seen - 1000,
+                "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": seen - 1000}},
             },
             {
                 "id": outside,
                 "dir": project(root),
                 "pid": std::process::id(),
                 "pane": null,
-                "seen": seen,
+                "idle_since": seen,
                 "trail": {"prompt": "", "last": null},
             },
         ])
@@ -1079,10 +1079,10 @@ fn a_topic_resumes_its_latest_session() {
     drop(daemon);
 }
 
-/// A session ending is not a session heard from, so the one heard from last before
-/// either ended stays the latest of its topic.
+/// A session ending leaves its conversation as recent as it was, so the most recent one
+/// before either ended stays the latest of its topic.
 #[test]
-fn a_topic_resumes_the_session_heard_from_last_whichever_ended_last() {
+fn a_topic_resumes_its_most_recent_session_whichever_ended_last() {
     let (port, _calls, chat) = recorder();
     let temporary = prepare("topic-ended-last", port);
     let root = temporary.path();
@@ -1097,8 +1097,8 @@ fn a_topic_resumes_the_session_heard_from_last_whichever_ended_last() {
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
-            "seen": seen,
-            "trail": {"prompt": "", "last": [{"chat": GROUP, "topic": 79}, 5]},
+            "idle_since": seen,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": seen}},
         })
     };
     std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
@@ -1123,6 +1123,143 @@ fn a_topic_resumes_the_session_heard_from_last_whichever_ended_last() {
     );
     let log = std::fs::read_to_string(&log).expect("the tmux log");
     assert!(log.contains(&format!("--resume {later}")), "{log}");
+    drop(daemon);
+}
+
+/// A session that started in a topic and has said nothing there yet stays behind one
+/// whose message the topic shows, though it started later.
+#[test]
+fn a_topic_message_passes_a_session_that_has_said_nothing() {
+    let (port, _calls, chat) = recorder();
+    let temporary = prepare("topic-silent", port);
+    let root = temporary.path();
+    let at = now() * 1000 - 1000;
+    let (spoke, silent) = ("0123456789abcdef", "fedcba9876543210");
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([{
+            "id": spoke,
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "idle_since": at,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": at}},
+        }])
+        .to_string(),
+    )
+    .expect("the state");
+    let daemon = daemon(root);
+    for (event, id) in [("SessionEnd", spoke), ("SessionStart", silent)] {
+        hook(
+            root,
+            &json!({"hook_event_name": event, "session_id": id, "cwd": project(root)}),
+        );
+    }
+    chat.says_in(GROUP, 79, OWNER, "carry on");
+    let log = root.join("tmux.log");
+    wait_for(
+        || {
+            std::fs::read_to_string(&log)
+                .is_ok_and(|log| log.contains(&format!("--resume {spoke}")))
+        },
+        "the session that spoke was not resumed",
+    );
+    drop(daemon);
+}
+
+/// A message replying to nothing in a topic reaches the session whose conversation left
+/// the topic's last message, whichever session was active since, and a message typed
+/// into a session is the last of its conversation.
+#[test]
+fn a_topic_message_reaches_the_conversation_that_left_its_last_message() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("topic-newest", port);
+    let root = temporary.path();
+    let seen = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_millis();
+    let (quiet, talked) = ("0123456789abcdef", "fedcba9876543210");
+    let session = |id: &str, idle_since: u128, message: i64, at: u128| {
+        json!({
+            "id": id,
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "idle_since": idle_since,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": message, "at": at}},
+        })
+    };
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([
+            session(quiet, seen, 10, seen - 2000),
+            session(talked, seen - 1000, 20, seen - 1000),
+        ])
+        .to_string(),
+    )
+    .expect("the state");
+    let daemon = daemon(root);
+    for id in [quiet, talked] {
+        hook(
+            root,
+            &json!({"hook_event_name": "SessionEnd", "session_id": id, "cwd": project(root)}),
+        );
+    }
+
+    let send = |message: i64, replied: serde_json::Value| {
+        chat.deliver(json!({"message": {
+            "message_id": message,
+            "date": now(),
+            "chat": {"id": GROUP},
+            "from": {"id": OWNER},
+            "text": "carry on",
+            "message_thread_id": 79,
+            "is_topic_message": true,
+            "reply_to_message": delivered(replied, GROUP),
+        }}));
+    };
+    let opened = json!({"message_id": 79, "message_thread_id": 79,
+        "forum_topic_created": {"name": "a topic", "icon_color": 7_322_096}});
+    send(100, opened.clone());
+    send(
+        101,
+        json!({"message_id": 10, "message_thread_id": 79, "is_topic_message": true,
+            "text": "01234567", "entities": [{"type": "code", "offset": 0, "length": 8}]}),
+    );
+    send(102, opened);
+    let log = root.join("tmux.log");
+    wait_for(
+        || {
+            std::fs::read_to_string(&log).is_ok_and(|log| {
+                [quiet, talked]
+                    .iter()
+                    .all(|id| log.contains(&format!("--resume {id}")))
+            })
+        },
+        "both sessions were not resumed",
+    );
+    let log = std::fs::read_to_string(&log).expect("the tmux log");
+    let first = log.lines().find(|line| line.contains("--resume"));
+    assert!(
+        first.is_some_and(|line| line.ends_with(talked)),
+        "the first message resumes the session with the newer message: {log}"
+    );
+
+    // The resumed session starts outside tmux, so each message waiting for it is
+    // answered with why it could not be typed.
+    hook(
+        root,
+        &json!({"hook_event_name": "SessionStart", "session_id": quiet, "cwd": project(root)}),
+    );
+    let made = collect(&calls, |call| call.markdown.starts_with("`01234567` "));
+    let taken = made
+        .iter()
+        .filter(|call| call.markdown.starts_with("`01234567` "))
+        .count();
+    assert_eq!(taken, 2, "the reply and the message after it");
     drop(daemon);
 }
 
@@ -1347,8 +1484,8 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
 }
 
 /// `/new` alone offers the projects that ran in its chat, an exited one among them, led by
-/// the project of the session the message would reach and then the one heard from last,
-/// and a press on one rewrites the menu into the anchor for it.
+/// the project of the session the message would reach and then the most recent, and a
+/// press on one rewrites the menu into the anchor for it.
 #[test]
 fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     let (port, calls, chat) = recorder();
@@ -1381,7 +1518,7 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
         .collect();
     let a = root.join("a").display().to_string();
     let b = root.join("b").display().to_string();
-    // Session a was heard from last before it exited, and a message replying to nothing
+    // Session a was the most recent before it exited, and a message replying to nothing
     // reaches it.
     assert_eq!(labels, [a.clone(), b.clone()]);
     assert_eq!(menu.chat, Some(OWNER));
@@ -1483,8 +1620,8 @@ fn a_new_conversation_opens_in_the_project_a_message_would_reach() {
     drop(daemon);
 }
 
-/// `/resume` offers the sessions of the project a message would reach, the one heard from
-/// last first, with a way back to the projects of its chat, and a press on a session
+/// `/resume` offers the sessions of the project a message would reach, the most recent
+/// first, with a way back to the projects of its chat, and a press on a session
 /// posts an anchor addressed to it that replies to the last message it left, taking the
 /// menu back.
 #[test]
@@ -1899,7 +2036,7 @@ fn a_window_idle_for_long_is_closed_unless_a_command_still_runs() {
             "dir": project(root),
             "pid": pid,
             "pane": {"server": root.join("tmux.sock"), "id": pane},
-            "seen": hours_ago,
+            "idle_since": hours_ago,
             "trail": {"prompt": "", "last": null},
         })
     };
@@ -1973,7 +2110,7 @@ fn a_window_just_typed_into_is_not_closed_for_idling() {
             "dir": project(root),
             "pid": pid,
             "pane": {"server": root.join("tmux.sock"), "id": "%1"},
-            "seen": now() * 1000 - 60 * 60 * 1000 + margin,
+            "idle_since": now() * 1000 - 60 * 60 * 1000 + margin,
             "trail": {"prompt": "", "last": null},
         }])
         .to_string(),
@@ -2103,6 +2240,94 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
     let _ = session.kill();
     let _ = session.wait();
     drop(daemon);
+}
+
+/// A reply typed into a running session is the last message of its conversation, so the
+/// next message replying to nothing follows it there, past a session that posted later
+/// and was active later.
+#[test]
+fn a_message_after_a_reply_follows_it() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("follows", port);
+    let root = temporary.path();
+    let session = Command::new("script")
+        .args([
+            "-qc",
+            "tty > tty; echo $$ > pid; exec sleep 30",
+            "/dev/null",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("a session on a terminal");
+    let pid = root.join("pid");
+    wait_for(
+        || std::fs::read_to_string(&pid).is_ok_and(|pid| pid.ends_with('\n')),
+        "the session never started",
+    );
+    let pid: u32 = std::fs::read_to_string(&pid)
+        .expect("the pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    let seen = now() * 1000;
+    let (replied, other) = ("0123456789abcdef", "fedcba9876543210");
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([
+            {
+                "id": replied,
+                "dir": project(root),
+                "pid": pid,
+                "pane": {"server": root.join("tmux.sock"), "id": "%1"},
+                "idle_since": seen - 1000,
+                "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 10, "at": seen - 1000}},
+            },
+            {
+                "id": other,
+                "dir": project(root),
+                "pid": std::process::id(),
+                "pane": null,
+                "idle_since": seen,
+                "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 20, "at": seen}},
+            },
+        ])
+        .to_string(),
+    )
+    .expect("the state");
+    let log = root.join("tmux.log");
+    let daemon = daemon(root);
+    let entered = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .matches("Enter")
+            .count()
+    };
+    chat.replies(
+        GROUP,
+        OWNER,
+        "carry on",
+        &json!({"message_id": 10, "text": "01234567",
+            "entities": [{"type": "code", "offset": 0, "length": 8}]}),
+    );
+    wait_for(|| entered() == 1, "the reply was never typed");
+    chat.says(GROUP, OWNER, "and then");
+    wait_for(
+        || entered() == 2,
+        "the message after it was not typed there",
+    );
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+    let made = collect(&calls, |_| true);
+    assert!(
+        made.iter()
+            .all(|call| !call.markdown.starts_with("`fedcba98`")),
+        "the other session answered"
+    );
 }
 
 /// A session in pane `%1`, the shell `script` runs on a terminal of its own, which the
@@ -2719,7 +2944,7 @@ fn usage_is_answered_from_the_status_lines() {
         }),
     );
 
-    // Unaddressed, it reaches the session heard from last.
+    // Unaddressed, it reaches the most recent session.
     chat.says(OWNER, OWNER, "/usage");
     let made = collect(&calls, |call| call.label == "sendMessage");
     let bar = |bar| format!("<code>{bar}</code>  ");
