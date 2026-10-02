@@ -106,6 +106,47 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
     drop(daemon);
 }
 
+/// Telegram keeps about 35000 bytes of a rich message and drops the rest unannounced,
+/// so an answer longer than a rich message holds arrives whole as a markdown file.
+#[test]
+fn an_answer_past_a_rich_message_arrives_whole_as_a_file() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("long", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let session = "0123456789abcdef";
+    let answer = "字".repeat(12_000);
+
+    for event in [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt_id": "fedcba9876543210", "prompt": "write it all"}),
+        json!({"hook_event_name": "Stop", "prompt_id": "fedcba9876543210", "last_assistant_message": answer}),
+    ] {
+        let mut event = event;
+        event["session_id"] = json!(session);
+        event["cwd"] = json!(project(root));
+        hook(root, &event);
+    }
+
+    let made = collect(&calls, |call| call.label == "sendDocument ring");
+    let prompt = made
+        .iter()
+        .find(|call| call.label == "sendRichMessage silent")
+        .expect("the prompt");
+    let file = made.last().expect("the answer");
+    let document = file.document.as_deref().expect("the file's text");
+    assert!(document.starts_with("**project** `01234567/fedcba98`"));
+    assert!(document.ends_with(&format!("#claude\n\n{answer}")));
+    assert_eq!(file.body["parse_mode"], json!("HTML"));
+    assert!(
+        file.markdown
+            .starts_with("<b>project</b> <code>01234567/fedcba98</code>"),
+        "the caption carries the address a reply is routed by"
+    );
+    assert!(file.markdown.ends_with("#claude"));
+    assert_eq!(file.reply, replying_to(prompt.id));
+    drop(daemon);
+}
+
 /// A prompt submitted while a turn is running is queued by Claude Code and reported
 /// under the running turn's id, so the turn it eventually gets is announced by the
 /// first event carrying an id of its own. Each turn must still answer its own prompt.
