@@ -202,6 +202,73 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
     drop(daemon);
 }
 
+/// A running turn shows its session typing, again before the five seconds Telegram shows
+/// each action for run out and as soon as a message it posts has cleared the last one,
+/// except while a dialog waits on the user, and stops with the turn.
+#[test]
+fn a_running_turn_shows_its_session_typing() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("typing", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let send = |mut event: serde_json::Value| {
+        event["session_id"] = json!("0123456789abcdef");
+        event["cwd"] = json!(project(root));
+        hook(root, &event);
+    };
+    let shown = |count: usize| {
+        wait_for(|| chat.actions().len() >= count, "no chat action arrived");
+    };
+    // Past the gap between two actions, with a margin for a busy machine.
+    let lapse = Duration::from_secs(5);
+
+    send(json!({"hook_event_name": "UserPromptSubmit", "prompt": "what does it do"}));
+    shown(2);
+    let actions = chat.actions();
+    assert_eq!(
+        actions[0].1,
+        json!({"chat_id": GROUP, "action": "typing"}),
+        "the first action"
+    );
+    let gap = actions[1].0 - actions[0].0;
+    assert!(gap < lapse, "two actions came {gap:?} apart");
+    let made = collect(&calls, |call| call.markdown.contains('✻'));
+    let live = made.last().expect("a live message").arrived;
+    assert!(
+        chat.actions()
+            .iter()
+            .any(|(at, _)| *at >= live && *at - live < Duration::from_millis(500)),
+        "no action followed the live message"
+    );
+
+    send(json!({"hook_event_name": "Notification", "message": "Claude needs your permission"}));
+    std::thread::sleep(GRACE);
+    let paused = chat.actions().len();
+    std::thread::sleep(lapse);
+    assert_eq!(
+        chat.actions().len(),
+        paused,
+        "typing went on behind a dialog"
+    );
+
+    send(
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+        "tool_input": {"command": "true"}}),
+    );
+    shown(paused + 1);
+
+    send(json!({"hook_event_name": "Stop", "last_assistant_message": "done"}));
+    std::thread::sleep(GRACE);
+    let stopped = chat.actions().len();
+    std::thread::sleep(lapse);
+    assert_eq!(
+        chat.actions().len(),
+        stopped,
+        "typing went on after the turn"
+    );
+    drop(daemon);
+}
+
 /// The figures that close an answer are under the status line while the turn runs, as
 /// the session last reported them.
 #[test]
@@ -1645,6 +1712,7 @@ struct Call {
     body: serde_json::Value,
     /// What the server answered with, which is what a later message replies to.
     id: i64,
+    arrived: Instant,
 }
 
 /// Every call the server has taken so far, in order, for a test that asserts what did
@@ -1925,7 +1993,12 @@ fn recorder() -> (u16, Receiver<Call>, Chat) {
 /// Every update the chat has had, the first numbered 1. A poll hands over those from its
 /// offset on, so an update the daemon never confirmed reaches the next daemon too.
 #[derive(Clone, Default)]
-struct Chat(Arc<(Mutex<Vec<serde_json::Value>>, Condvar)>);
+struct Chat {
+    updates: Arc<(Mutex<Vec<serde_json::Value>>, Condvar)>,
+    /// Every chat action the daemon sent, with when it arrived. An action leaves nothing
+    /// a later call acts on, so it stays out of the calls a turn made.
+    actions: Arc<Mutex<Vec<(Instant, serde_json::Value)>>>,
+}
 
 impl Chat {
     /// A message from the phone, as Telegram delivers it. It replies to nothing, which
@@ -2016,7 +2089,7 @@ impl Chat {
     }
 
     fn deliver(&self, mut update: serde_json::Value) {
-        let (updates, arrived) = &*self.0;
+        let (updates, arrived) = &*self.updates;
         let mut updates = updates.lock().expect("the chat");
         update["update_id"] = json!(updates.len() + 1);
         updates.push(update);
@@ -2026,12 +2099,21 @@ impl Chat {
     /// The updates from `offset` on, waiting up to `HOLD` for one to arrive.
     fn since(&self, offset: i64) -> Vec<serde_json::Value> {
         let skipped = usize::try_from(offset.max(1) - 1).expect("an offset");
-        let (updates, arrived) = &*self.0;
+        let (updates, arrived) = &*self.updates;
         let updates = updates.lock().expect("the chat");
         let (updates, _) = arrived
             .wait_timeout_while(updates, HOLD, |updates| updates.len() <= skipped)
             .expect("the chat");
         updates[skipped.min(updates.len())..].to_vec()
+    }
+
+    fn act(&self, body: serde_json::Value) {
+        let mut actions = self.actions.lock().expect("the actions");
+        actions.push((Instant::now(), body));
+    }
+
+    fn actions(&self) -> Vec<(Instant, serde_json::Value)> {
+        self.actions.lock().expect("the actions").clone()
     }
 }
 
@@ -2101,6 +2183,9 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
     let sent = if method == "getUpdates" {
         let offset = body["offset"].as_i64().expect("an offset");
         json!({"ok": true, "result": chat.since(offset)}).to_string()
+    } else if method == "sendChatAction" {
+        chat.act(body);
+        json!({"ok": true, "result": true}).to_string()
     } else {
         let sound = match method.as_str() {
             "sendRichMessage" | "sendDocument" | "sendMediaGroup"
@@ -2126,6 +2211,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
                 chat: body["chat_id"].as_i64(),
                 body: body.clone(),
                 id,
+                arrived: Instant::now(),
             })
             .expect("record");
         let result = match method.as_str() {

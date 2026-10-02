@@ -4,9 +4,10 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use kuriero::{
-    AnswerCallbackQuery, BotCommand, Button, Client, CommandScope, Content, DeleteMessage,
-    EditMessageText, Keyboard, Message, Method, ParseMode, Reaction, ReplyMarkup, ReplyParameters,
-    RichInput, SendMessage, SendRichMessage, SetMessageReaction, SetMyCommands, Update, User,
+    AnswerCallbackQuery, BotCommand, Button, ChatAction, Client, CommandScope, Content,
+    DeleteMessage, EditMessageText, Keyboard, Message, Method, ParseMode, Reaction, ReplyMarkup,
+    ReplyParameters, RichInput, SendChatAction, SendMessage, SendRichMessage, SetMessageReaction,
+    SetMyCommands, Update, User,
 };
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
@@ -252,6 +253,16 @@ impl Telegram {
             chat_id: chat,
             message_id,
             reaction: &[Reaction::Emoji { emoji: SEEN }],
+        });
+    }
+
+    /// Shows the bot as typing in `place`, in the chat list too, which is how a topic
+    /// with a turn running stands out without being opened.
+    pub fn typing(&self, place: Place) {
+        self.call(&SendChatAction {
+            chat_id: place.chat,
+            message_thread_id: place.topic,
+            action: ChatAction::Typing,
         });
     }
 

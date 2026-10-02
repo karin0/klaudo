@@ -23,6 +23,9 @@ const REWRITE: Duration = Duration::from_secs(3);
 /// messages a minute and counts a rewrite as one, so this leaves room for the rest of the
 /// turn and for other sessions posting there.
 const GROUP_REWRITE: Duration = Duration::from_secs(10);
+/// How often a running turn shows its session typing, within the five seconds Telegram
+/// shows a chat action for.
+const TYPING: Duration = Duration::from_secs(4);
 /// How long a tool call waits before it is filed, so words arriving within that time
 /// stand above it, and how long an open segment's text stays quiet before the message
 /// showing it is rewritten, so a `Stop` arriving milliseconds behind its answer takes
@@ -164,6 +167,9 @@ pub(super) struct Turn {
     /// Tool calls announced but not filed yet, oldest first. A call the turn ended on
     /// is dropped with the turn: the answer is what that message is for.
     pub(super) pending: Vec<(Instant, Call)>,
+    /// When the chat is next shown the session typing. A session waiting on a dialog is
+    /// not typing.
+    pub(super) typing: Option<Instant>,
 }
 
 impl Turn {
@@ -207,17 +213,28 @@ impl Machine {
     }
 
     /// Writes `text` into a turn's live message, or posts it in the turn's thread while
-    /// there is none.
-    fn post_live(&self, thread: Thread, live: Option<i64>, text: &str) -> Option<i64> {
-        match live {
-            Some(message) => {
-                self.telegram.edit(thread.place.chat, message, text);
-                Some(message)
-            }
-            None => self
-                .telegram
-                .send(thread.place, text, Sound::Silent, thread.prompt),
+    /// there is none. A message the bot posts clears its typing, which is shown again at
+    /// once.
+    fn post_live(
+        &mut self,
+        id: &str,
+        thread: Thread,
+        live: Option<i64>,
+        text: &str,
+    ) -> Option<i64> {
+        if let Some(message) = live {
+            self.telegram.edit(thread.place.chat, message, text);
+            return Some(message);
         }
+        let posted = self
+            .telegram
+            .send(thread.place, text, Sound::Silent, thread.prompt);
+        if let Some(turn) = self.turn_mut(id)
+            && turn.typing.is_some()
+        {
+            turn.typing = Some(Instant::now());
+        }
+        posted
     }
 
     pub(super) fn submitted(&mut self, id: &str, event: &Event) {
@@ -277,6 +294,7 @@ impl Machine {
                 live: None,
                 sealed: Vec::new(),
                 pending: Vec::new(),
+                typing: None,
             });
         }
     }
@@ -315,6 +333,7 @@ impl Machine {
             segment: Some(Segment::new()),
             sealed: Vec::new(),
             pending: Vec::new(),
+            typing: None,
         });
         true
     }
@@ -498,7 +517,7 @@ impl Machine {
         // The tag marks a finished turn, and this segment is the middle of one.
         let done = hook::compose(&head, &took(elapsed), "", &text);
         // A segment that ran its course inside one rewrite has no message yet.
-        let message = self.post_live(thread, live, &done);
+        let message = self.post_live(id, thread, live, &done);
         segment.posted = message.map(|message| (thread.place.chat, message, elapsed));
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -611,6 +630,31 @@ impl Machine {
         }
     }
 
+    /// A `Notification` means the session waits on a dialog, and any later event of the
+    /// turn means the dialog was answered.
+    pub(super) fn dialog(&mut self, id: &str, open: bool) {
+        if let Some(turn) = self.turn_mut(id) {
+            turn.typing = if open {
+                None
+            } else {
+                turn.typing.or_else(|| Some(Instant::now()))
+            };
+        }
+    }
+
+    pub(super) fn keep_typing(&mut self, id: &str) {
+        let now = Instant::now();
+        let Some(turn) = self.turn_mut(id) else {
+            return;
+        };
+        if turn.typing.is_none_or(|at| at > now) {
+            return;
+        }
+        turn.typing = Some(now + TYPING);
+        let place = turn.thread.place;
+        self.telegram.typing(place);
+    }
+
     /// Anything else a session reports lands in the thread of the turn it happened in.
     pub(super) fn aside(&mut self, id: &str, event: &Event, sound: Sound) {
         let Some(session) = self.sessions.get(id) else {
@@ -652,7 +696,7 @@ impl Machine {
             footer = format!("{footer}\n\n{line}");
         }
         let shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));
-        let message = self.post_live(thread, live, &shown);
+        let message = self.post_live(id, thread, live, &shown);
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
