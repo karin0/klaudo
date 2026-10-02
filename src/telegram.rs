@@ -21,14 +21,16 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 pub const ALBUM: usize = 10;
 /// How long Telegram holds a poll open with nothing to report.
 const POLL_SECONDS: u64 = 50;
-/// Telegram rejects a rich message past 32768 characters of rendered text, and a
-/// truncated notification beats a rejected one. The markup a body carries is counted
-/// here along with the text it renders, which leaves the count on the safe side.
-pub const MAX_CHARS: usize = 32768;
+/// Telegram keeps a rich message's rendered text up to about 35000 bytes of UTF-8,
+/// dropping the rest unannounced, and rejects one rendering past 32768 characters.
+/// Markup only lengthens a body, so a body within this many bytes renders within both.
+pub const MAX_BYTES: usize = 32768;
 /// The longest placeholder Telegram shows in an input field.
 const PLACEHOLDER_MAX: usize = 64;
 /// What the daemon leaves on a message whose text reached a session's input box.
 const SEEN: &str = "👀";
+/// What a cut body ends with.
+pub const ELLIPSIS: char = '\u{2026}';
 
 /// Whether a message reaches the phone with a sound.
 #[derive(Clone, Copy)]
@@ -417,15 +419,13 @@ fn replying(message_id: i64) -> ReplyParameters {
     }
 }
 
+/// A truncated notification beats a rejected one.
 fn clamp(markdown: &str) -> String {
-    if markdown.chars().count() <= MAX_CHARS {
+    if markdown.len() <= MAX_BYTES {
         return markdown.to_owned();
     }
-    markdown
-        .chars()
-        .take(MAX_CHARS)
-        .chain("…".chars())
-        .collect()
+    let end = markdown.floor_char_boundary(MAX_BYTES - ELLIPSIS.len_utf8());
+    format!("{}{ELLIPSIS}", &markdown[..end])
 }
 
 /// Where a machine's credentials live. It is the whole of where they come from, so a
@@ -516,11 +516,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_oversized_body_is_truncated_on_a_character_boundary() {
-        let long = "字".repeat(MAX_CHARS + 100);
+    fn an_oversized_body_is_truncated_to_its_bytes_on_a_character_boundary() {
+        let long = "字".repeat(MAX_BYTES);
         let clamped = clamp(&long);
-        assert_eq!(clamped.chars().count(), MAX_CHARS + 1);
-        assert!(clamped.ends_with('…'));
+        assert!((MAX_BYTES - 2..=MAX_BYTES).contains(&clamped.len()));
+        assert!(clamped.ends_with(ELLIPSIS));
     }
 
     #[test]
