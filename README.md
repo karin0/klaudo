@@ -22,6 +22,12 @@ at most every ten seconds, because Telegram counts a rewrite against the twenty 
 a minute a bot may send there. A `date_time` entity would keep the time current without
 rewrites, but clients show one inside a rich message as its fallback text.
 
+While a turn runs, the bot shows as typing in the turn's topic, and the chat list shows
+that too, so a topic with a turn running stands out without being opened. Telegram shows
+a chat action for five seconds, through rewrites but only until the bot's next message,
+so the daemon sends one every four and again after each message the turn posts. A
+session waiting on a dialog shows none.
+
 The last segment keeps no message of its own: `Stop` carries its text, and the message
 showing it is taken back once the answer is posted. That text reaches the daemon
 milliseconds before `Stop`, so new text waits a tenth of a second of quiet before it is
