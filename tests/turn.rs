@@ -2184,6 +2184,90 @@ fn a_window_closed_before_its_session_started_is_reported() {
     drop(daemon);
 }
 
+/// `/attach` runs `ATTACH_COMMAND` with the pane of the session a message would reach
+/// and its server's socket as arguments, resuming an exited session in a window first,
+/// and answers a program that fails with its complaint.
+#[test]
+fn a_terminal_is_attached_by_the_program_the_env_file_names() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("attach", port);
+    let root = temporary.path();
+    let (attached, refused) = (root.join("attached"), root.join("refused"));
+    let program = root.join("attach");
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\necho \"$1 $2\" >> {}\n[ ! -e {} ] || {{ echo refused >&2; exit 3; }}\n",
+            attached.display(),
+            refused.display()
+        ),
+    )
+    .expect("a program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("an executable program");
+    let mut env = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("config/klaudo/env"))
+        .expect("credentials");
+    writeln!(env, "ATTACH_COMMAND={}", program.display()).expect("the program");
+    let daemon = daemon(root);
+    let made = collect(&calls, |call| call.body["scope"]["type"] == "chat_member");
+    assert!(
+        made.iter()
+            .filter(|call| call.label == "setMyCommands")
+            .all(|call| call.body["commands"]
+                .to_string()
+                .contains(r#""command":"attach""#))
+    );
+
+    for event in ["SessionStart", "SessionEnd"] {
+        hook(
+            root,
+            &json!({
+                "hook_event_name": event,
+                "session_id": "fedcba9876543210",
+                "cwd": root,
+            }),
+        );
+    }
+    let replied = json!({"rich_message": {"blocks": [
+        {"type": "paragraph", "text": [{"type": "code", "text": "fedcba98"}]},
+    ]}});
+    chat.replies(OWNER, OWNER, "/attach", &replied);
+    let made = collect(&calls, |call| call.label == "setMessageReaction");
+    let reaction = made.last().expect("the reaction");
+    assert_eq!((reaction.chat, reaction.target), (Some(OWNER), Some(9000)));
+    let socket = format!("{}/bin/../tmux.sock", root.display());
+    assert_eq!(
+        std::fs::read_to_string(&attached).expect("the program ran"),
+        format!("%1 {socket}\n")
+    );
+
+    std::fs::write(&refused, "").expect("the program fails");
+    chat.replies(OWNER, OWNER, "/attach", &replied);
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let said = made.last().expect("the complaint");
+    assert_eq!(
+        said.markdown,
+        format!(
+            "`ATTACH_COMMAND` failed\n\n```\n{}: refused\n```",
+            program.display()
+        )
+    );
+    assert_eq!(said.reply["message_id"], 9000);
+    // The second shows the window the first opened.
+    assert_eq!(
+        std::fs::read_to_string(&attached).expect("the program ran"),
+        format!("%1 {socket}\n%1 {socket}\n")
+    );
+    let log = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
+    assert_eq!(
+        log.lines().filter(|line| line.starts_with("new-")).count(),
+        1
+    );
+    drop(daemon);
+}
+
 /// A session in a window the daemon opened, unheard from for longer than `IDLE_HOURS`,
 /// has its window closed, unless a command it started is still running.
 #[test]
@@ -3046,6 +3130,12 @@ fn the_commands_are_listed_for_the_user_in_both_chats() {
             .iter()
             .all(|call| call.body["commands"][0]["command"] == "new")
     );
+    // With no `ATTACH_COMMAND`, there is nothing for `/attach` to run.
+    assert!(registered.iter().all(|call| {
+        !call.body["commands"]
+            .to_string()
+            .contains(r#""command":"attach""#)
+    }));
     let scopes: Vec<_> = registered.iter().map(|call| &call.body["scope"]).collect();
     assert_eq!(
         scopes,

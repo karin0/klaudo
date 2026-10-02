@@ -1,6 +1,7 @@
 mod diff;
 mod hook;
 mod listen;
+mod process;
 mod telegram;
 mod tmux;
 
