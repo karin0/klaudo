@@ -460,6 +460,7 @@ impl Machine {
             "Notification" => self.aside(&id, event, Sound::Ring),
             _ => self.aside(&id, event, Sound::Silent),
         }
+        self.dialog(&id, event.hook_event_name == "Notification");
         // Streamed text and tool calls arrive many times a second and change nothing
         // saved but `seen`, which the next event at a turn's edges saves.
         if !matches!(
@@ -542,7 +543,8 @@ impl Machine {
         )
     }
 
-    /// The next moment `tick` has work: a tool call settling, a message falling due, or
+    /// The next moment `tick` has work: a tool call settling, a message falling due, a
+    /// turn due to show its session typing, or
     /// the sweep for a session killed mid-turn or a window closed before its session
     /// started. With none, only an arrival wakes it.
     fn due(&self) -> Option<Instant> {
@@ -554,7 +556,13 @@ impl Machine {
         let sweep =
             (turns().next().is_some() || !self.opening.is_empty()).then(|| self.swept + SWEEP);
         turns()
-            .flat_map(|turn| [turn.pending.first().map(|(at, _)| *at + SETTLE), turn.due()])
+            .flat_map(|turn| {
+                [
+                    turn.pending.first().map(|(at, _)| *at + SETTLE),
+                    turn.due(),
+                    turn.typing,
+                ]
+            })
             .flatten()
             .chain(sweep)
             .min()
@@ -568,6 +576,7 @@ impl Machine {
         for id in ids {
             self.place(&id);
             self.show(&id);
+            self.keep_typing(&id);
         }
     }
 

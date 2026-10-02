@@ -455,7 +455,7 @@ dependencies = [
 [[package]]
 name = "kuriero"
 version = "0.1.0"
-source = "git+https://github.com/karin0/kuriero.git?rev=fe9770f84d6ab05a625660aed34578b982388b73#fe9770f84d6ab05a625660aed34578b982388b73"
+source = "git+https://github.com/karin0/kuriero.git?rev=8ac85673600d3bca6996d8677765cedde57cf584#8ac85673600d3bca6996d8677765cedde57cf584"
 dependencies = [
  "serde",
  "serde_json",
