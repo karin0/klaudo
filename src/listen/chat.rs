@@ -11,7 +11,7 @@ use crate::tmux::{self, Pane};
 
 use super::render::code;
 use super::turn::{Ask, STOP, Thread};
-use super::{Last, Machine, Opening, Session, Trail, now_millis};
+use super::{Awaiting, Last, Machine, Opening, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
@@ -20,6 +20,7 @@ const RESUME: &str = "resume";
 const CLEAR: &str = "clear";
 const USAGE: &str = "usage";
 const DIFF: &str = "diff";
+pub(super) const ATTACH: &str = "attach";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
 const SESSION: &str = "session";
 /// What the button leading a `/resume` menu of sessions back to its projects carries.
@@ -42,11 +43,15 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
         DIFF,
         "Show the unstaged changes of the conversation it replies to",
     ),
+    (
+        ATTACH,
+        "Open the terminal of the conversation it replies to",
+    ),
     ("compact", "Compact the conversation it replies to"),
 ];
 
 /// What a message reaching no session is answered with.
-const NOTHING_RAN: &str = "no session has run here; `/new <directory>` opens one";
+pub(super) const NOTHING_RAN: &str = "no session has run here; `/new <directory>` opens one";
 
 /// How many choices a menu offers, which a phone shows without scrolling.
 const MENU_MAX: usize = 8;
@@ -65,7 +70,10 @@ impl Machine {
         let asks: Vec<Ask> = waiting
             .into_iter()
             .rev()
-            .map(|index| self.opening.remove(index).ask)
+            .filter_map(|index| match self.opening.remove(index).ask {
+                Awaiting::Prompt(ask) => Some(ask),
+                Awaiting::Terminal(_) => None,
+            })
             .collect();
         for ask in asks.into_iter().rev() {
             self.send(id, ask);
@@ -136,6 +144,10 @@ impl Machine {
                 self.diff(place, carrier, replied);
                 return;
             }
+            Some((ATTACH, _)) => {
+                self.attach(place, carrier, replied);
+                return;
+            }
             _ => {}
         }
         let ask = Ask {
@@ -161,7 +173,9 @@ impl Machine {
         );
         match addressee {
             Ok(Some(address)) if address == NEW => match replied.and_then(body) {
-                Some(cwd) => self.open(PathBuf::from(cwd), None, ask),
+                Some(cwd) => {
+                    self.open(PathBuf::from(cwd), None, Awaiting::Prompt(ask));
+                }
                 None => self.say(place, "that anchor names no directory"),
             },
             Ok(Some(address)) => self.send(&address, ask),
@@ -468,9 +482,14 @@ impl Machine {
     }
 
     /// Opens a window for a conversation, a new one or the session `resume` names, and
-    /// keeps its first prompt until the session there reports that it is ready. A
+    /// keeps what it was asked for until the session there reports that it is ready. A
     /// session already being resumed gets no second window, which would run it twice.
-    fn open(&mut self, dir: PathBuf, resume: Option<String>, ask: Ask) {
+    pub(super) fn open(
+        &mut self,
+        dir: PathBuf,
+        resume: Option<String>,
+        ask: Awaiting,
+    ) -> Option<Pane> {
         let resuming = self
             .opening
             .iter()
@@ -479,16 +498,17 @@ impl Machine {
         let pane = match resuming.map_or_else(|| tmux::open(&dir, resume.as_deref()), Ok) {
             Ok(pane) => pane,
             Err(error) => {
-                self.say(ask.place, &format!("tmux: {}", hook::prose(&error)));
-                return;
+                self.say(ask.place(), &format!("tmux: {}", hook::prose(&error)));
+                return None;
             }
         };
         self.opening.push(Opening {
             dir,
             resume,
-            pane,
+            pane: pane.clone(),
             ask,
         });
+        Some(pane)
     }
 
     /// The running session whose id starts with `address`, which is how a message names
@@ -512,12 +532,9 @@ impl Machine {
                     ended.trail.last = typed;
                     let (dir, id) = (ended.dir.clone(), ended.id.clone());
                     self.save_ended();
-                    self.open(dir, Some(id), ask);
+                    self.open(dir, Some(id), Awaiting::Prompt(ask));
                 }
-                None => self.say(
-                    place,
-                    &format!("`{address}` is not a session this daemon has seen"),
-                ),
+                None => self.say(place, &unseen(address)),
             }
             return;
         };
@@ -563,6 +580,11 @@ impl Machine {
         }
         Ok(pane)
     }
+}
+
+/// What a message naming no session the daemon knows of is answered with.
+pub(super) fn unseen(address: &str) -> String {
+    format!("`{address}` is not a session this daemon has seen")
 }
 
 /// The address in the head of a message Klaŭdo posted, which is the session it belongs

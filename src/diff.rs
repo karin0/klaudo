@@ -3,12 +3,10 @@
 //! touched marked inside it. Telegram's markup has no colours, so the colours travel in
 //! pictures `pango-view` draws.
 
-use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
 
 use similar::{Algorithm, DiffTag};
 use syntect::easy::HighlightLines;
@@ -16,6 +14,8 @@ use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 use two_face::theme::EmbeddedThemeName;
+
+use crate::process::run;
 
 /// The characters of a line a row holds, which keeps a picture's text legible once a
 /// phone fits its width to the screen.
@@ -27,8 +27,6 @@ const ROWS_MAX: usize = 60;
 /// where lock files and other generated files land.
 pub const CHANGED_MAX: usize = 500;
 const TAB: usize = 4;
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
-const POLL: Duration = Duration::from_millis(20);
 
 const BACKGROUND: &str = "#0d1117";
 const TEXT: Colour = [0xe6, 0xed, 0xf3];
@@ -161,55 +159,6 @@ pub fn draw(markup: &str, png: &Path) -> Result<(), String> {
         .arg(png)
         .arg(&source))
     .map(drop)
-}
-
-/// What `command` printed, or what went wrong running it: its own complaint, or how
-/// long it ran before it was killed.
-fn run(command: &mut Command) -> Result<Vec<u8>, String> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("{program}: {error}"))?;
-    let drain = |mut pipe: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut read = Vec::new();
-            pipe.read_to_end(&mut read).map(|_| read)
-        })
-    };
-    let stdout = drain(Box::new(child.stdout.take().expect("piped stdout")));
-    let stderr = drain(Box::new(child.stderr.take().expect("piped stderr")));
-    let deadline = Instant::now() + PROCESS_TIMEOUT;
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("{program}: {error}"))?
-        {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("{program}: killed after {PROCESS_TIMEOUT:?}"));
-        }
-        std::thread::sleep(POLL);
-    };
-    let read = |pipe: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
-        pipe.join()
-            .expect("a pipe reader")
-            .map_err(|error| format!("{program}: {error}"))
-    };
-    let (stdout, stderr) = (read(stdout)?, read(stderr)?);
-    if status.success() {
-        Ok(stdout)
-    } else {
-        Err(format!(
-            "{program}: {}",
-            String::from_utf8_lossy(&stderr).trim()
-        ))
-    }
 }
 
 fn parse(diff: &str, root: &Path) -> Vec<Change> {
