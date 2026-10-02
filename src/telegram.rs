@@ -447,6 +447,16 @@ fn required(name: &str) -> String {
     setting(name).unwrap_or_else(|| panic!("{name} is not in {}", env_file().display()))
 }
 
+/// A setting holding a whole number.
+pub fn number(name: &str) -> Option<u64> {
+    let value = setting(name)?;
+    Some(
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} in {} is not a whole number", env_file().display())),
+    )
+}
+
 fn id(value: &str, name: &str) -> i64 {
     value
         .parse()

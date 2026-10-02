@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hook::{self, Event};
 use crate::telegram::{Place, Sound, Telegram};
-use crate::tmux::Pane;
+use crate::tmux::{self, Pane};
 
 use chat::{COMMANDS, tilde};
 use render::{code, took};
@@ -34,6 +34,12 @@ use usage::{Limits, Status, Window};
 /// A session that exits on its own says so, and a message from the chat checks every
 /// session before it is routed.
 const SWEEP: Duration = Duration::from_secs(5);
+/// How many hours a session in a window the daemon opened goes unheard from between
+/// turns before the window is closed, which frees its memory and leaves a reply to resume
+/// it, unless `IDLE_HOURS` says otherwise. A background subagent reports nothing until it
+/// finishes, so this outlasts any it runs. A command still running in the background
+/// keeps the window open.
+const IDLE_HOURS: u64 = 6;
 /// Long enough to let a restarting instance take over from one still shutting down.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(50);
@@ -145,6 +151,7 @@ pub fn run() {
         opening: Vec::new(),
         ended,
         swept: Instant::now(),
+        idle: crate::telegram::number("IDLE_HOURS").unwrap_or(IDLE_HOURS) * 60 * 60 * 1000,
         running_file,
         ended_file,
         limits: None,
@@ -255,6 +262,9 @@ struct Session {
     trail: Trail,
     /// The context its status line last reported, and when, in Unix seconds.
     window: Option<(Window, u64)>,
+    /// When it was last found idle and its window kept open, in Unix milliseconds, which
+    /// starts its idle time over.
+    spared: u64,
 }
 
 /// What a `/resume` menu shows of a session and leads back to: the start of its latest
@@ -292,7 +302,14 @@ impl Session {
             seen,
             trail: Trail::default(),
             window: None,
+            spared: 0,
         }
+    }
+
+    /// When its window is next checked for closing, in Unix milliseconds. A session
+    /// outside tmux has no window to close.
+    fn idle_until(&self, idle: u64) -> Option<u64> {
+        (self.turn.is_none() && self.pane.is_some()).then(|| self.seen.max(self.spared) + idle)
     }
 
     fn left(&mut self, place: Place, message: Option<i64>) {
@@ -319,6 +336,8 @@ struct Machine {
     /// Every exited session, oldest first.
     ended: VecDeque<Known>,
     swept: Instant,
+    /// How long a session idles before its window is closed, in milliseconds.
+    idle: u64,
     /// Where the running sessions are written. A reboot clears it, along with the
     /// processes and panes it names.
     running_file: PathBuf,
@@ -544,10 +563,15 @@ impl Machine {
     }
 
     /// The next moment `tick` has work: a tool call settling, a message falling due, a
-    /// turn due to show its session typing, or
+    /// turn due to show its session typing, a session idle long enough to close, or
     /// the sweep for a session killed mid-turn or a window closed before its session
     /// started. With none, only an arrival wakes it.
     fn due(&self) -> Option<Instant> {
+        let now = now_millis();
+        let idle = self.sessions.values().filter_map(|session| {
+            let at = session.idle_until(self.idle)?;
+            Some(Instant::now() + Duration::from_millis(at.saturating_sub(now)))
+        });
         let turns = || {
             self.sessions
                 .values()
@@ -565,6 +589,7 @@ impl Machine {
             })
             .flatten()
             .chain(sweep)
+            .chain(idle)
             .min()
     }
 
@@ -577,6 +602,26 @@ impl Machine {
             self.place(&id);
             self.show(&id);
             self.keep_typing(&id);
+        }
+        self.close_idle();
+    }
+
+    /// Closes the window of every session idle long enough, which ends it as the sweep
+    /// finds its process gone. A window the user opened is never closed.
+    fn close_idle(&mut self) {
+        let now = now_millis();
+        for (id, session) in &mut self.sessions {
+            if session.idle_until(self.idle).is_none_or(|at| at > now) {
+                continue;
+            }
+            session.spared = now;
+            let pane = session.pane.as_ref().expect("a session with a window");
+            if pane.owned()
+                && !tmux::has_children(session.pid)
+                && let Err(error) = pane.close()
+            {
+                eprintln!("close {id}: {error}");
+            }
         }
     }
 

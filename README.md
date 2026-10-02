@@ -111,7 +111,9 @@ directories of the last thousand exited sessions.
 there with the reply as its first prompt. `/new` alone offers a menu of the chat's
 projects, led by the project of the session the message would reach. The windows live
 in the tmux session `klaudo`, so `tmux attach -t klaudo` reaches a conversation that
-began on the phone. An anchor carries `ForceReply`, which Telegram attaches only to a
+began on the phone. A window there whose session has been unheard from for `IDLE_HOURS`
+between turns is closed, to free its memory, unless a process the session started is
+still running, and a reply resumes the session like any other that exited. An anchor carries `ForceReply`, which Telegram attaches only to a
 message being sent, so an anchor is always a message of its own.
 
 `/clear` posts the anchor of the project of the session the message would reach, which
@@ -234,6 +236,9 @@ write here.
 
 `CHAT_PROJECTS` lists absolute directories separated by `:`. A project inside one of
 them posts its terminal-started turns to `CHAT_ID`.
+
+`IDLE_HOURS`, a whole number defaulting to 6, is how long a window the daemon opened
+stays open while its session idles.
 
 `TRACE_UPDATES`, set to anything, logs every polled update as Telegram sent it.
 `API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own
