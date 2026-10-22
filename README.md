@@ -340,7 +340,8 @@ A session is forgotten at its `SessionEnd`, or once `/proc/<pid>` is gone for on
 was killed first.
 
 A call Telegram rejects with a rate limit or its own failure is retried up to three
-times, so a message can arrive late, or twice when the answer to an attempt was lost.
+times, so a message can arrive late, or twice when the answer to an attempt was lost. A
+rate limit naming a wait past 30 seconds fails the call at once.
 
 ## Queued prompts
 
