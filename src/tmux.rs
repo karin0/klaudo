@@ -289,7 +289,7 @@ mod tests {
             piece.matches('\n').count() <= PIECE_NEWLINES
                 && piece.encode_utf16().count() <= PIECE_UNITS
         }));
-        assert!(pieces("").is_empty());
+        assert_eq!(pieces(""), Vec::<&str>::new());
     }
 
     #[test]
