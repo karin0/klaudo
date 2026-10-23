@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use kuriero::Message;
 
-use crate::telegram::Place;
+use crate::telegram::Admitted;
 
 use super::chat::{NEW, ago};
 use super::{Machine, now_millis};
@@ -73,12 +73,18 @@ impl Machine {
     /// to `replied` would reach. With such a session the answer goes under its head, so a
     /// reply to the answer reaches it too. When a limit resets is written by each reader's
     /// client, in their own zone.
-    pub(super) fn usage(&self, place: Place, asked: i64, replied: Option<&Message>) {
+    pub(super) fn usage(&self, from: &Admitted, asked: i64, replied: Option<&Message>) {
+        let place = from.place;
         let address = match self.addressee(place, replied) {
             Ok(address) => address.filter(|address| address != NEW),
             Err(error) => return self.say(place, error),
         };
         let reached = address.and_then(|address| self.addressed(&address));
+        if let Some((_, session)) = reached
+            && !self.reaches(from.guest.as_deref(), place, &session.dir)
+        {
+            return;
+        }
         let now = now_millis() / 1000;
         let mut rows = Vec::new();
         let mut ages = Vec::new();

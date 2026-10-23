@@ -127,8 +127,13 @@ pub fn run() {
         .copied()
         .filter(|&(command, _)| command != ATTACH || attach.is_some())
         .collect();
+    let guests: Vec<_> = commands
+        .iter()
+        .copied()
+        .filter(|&(command, _)| command != ATTACH)
+        .collect();
     let poller = Arc::clone(&telegram);
-    std::thread::spawn(move || poll(&poller, &path, &commands));
+    std::thread::spawn(move || poll(&poller, &path, &commands, &guests));
     let arrivals = read(socket);
 
     let running_file = directory.join("state.json");
@@ -224,8 +229,8 @@ fn acquire(lock: &File) -> bool {
 /// the hooks and messages from the phone arrive through one queue in the order they
 /// landed. Messages older than this loop are the backlog Telegram still holds, and
 /// typing those into a terminal would replay an afternoon of asks.
-fn poll(telegram: &Telegram, target: &Path, commands: &[(&str, &str)]) {
-    telegram.register(commands);
+fn poll(telegram: &Telegram, target: &Path, commands: &[(&str, &str)], guests: &[(&str, &str)]) {
+    telegram.register(commands, guests);
     let started =
         i64::try_from(now_millis() / 1000).expect("any u64 of milliseconds fits an i64 in seconds");
     let socket = UnixDatagram::unbound().expect("socket");
