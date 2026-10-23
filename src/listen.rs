@@ -174,7 +174,7 @@ pub fn run() {
         ended_file,
         limits: None,
         attach,
-        guest_push: crate::telegram::setting("GUEST_PUSH").is_some(),
+        guest_push: crate::telegram::flag("GUEST_PUSH"),
     };
     // Whatever exited while nothing was listening.
     machine.sweep();

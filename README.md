@@ -285,7 +285,8 @@ arrow keys and Enter, which pasted text cannot drive.
 `BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID`, `CHAT_PROJECTS` and `GUEST_IDS` come
 from `$XDG_CONFIG_HOME/klaudo/env` alone, read with `dotenvy`, so an exported variable
 reaches nothing. The daemon reads the file once as it starts, so a change to it applies
-after `systemctl --user restart klaudo`. A private chat's id is its person's, so
+after `systemctl --user restart klaudo`. A switch such as `GUEST_PUSH` is on at `1` and off
+at `0` or when absent, and any other value stops the daemon at startup. A private chat's id is its person's, so
 `USER_ID` defaults to `CHAT_ID`, and a group, whose id is negative, needs it set. A
 message Klaŭdo ignores is logged with its chat's and sender's ids, so `journalctl --user
 -u klaudo` shows what to write here.
@@ -296,7 +297,7 @@ them posts its terminal-started turns to `CHAT_ID`.
 `GUEST_IDS` lists user ids separated by `,`. Guests are answered in `CHAT_ID` alone, so a
 private `CHAT_ID` with `GUEST_IDS` set stops the daemon at startup.
 
-`GUEST_PUSH`, set to anything, adds to the reminder that Claude may create commits and
+`GUEST_PUSH`, set to `1`, adds to the reminder that Claude may create commits and
 push them for a guest. Telegram gives no email, so Claude asks the guest for the name
 and email that a `Co-Authored-By` trailer on each of their commits credits.
 
@@ -325,7 +326,7 @@ the `\;` inside single quotes. Both ssh connections need keys without a passphra
 inside tmux as `attach "$TMUX_PANE" "$(tmux display -p '#{socket_path}')"`, the program
 is tried without the chat.
 
-`TRACE_UPDATES`, set to anything, logs every polled update as Telegram sent it.
+`TRACE_UPDATES`, set to `1`, logs every polled update as Telegram sent it.
 `API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own
 server.
 
