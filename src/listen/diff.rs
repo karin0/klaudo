@@ -8,7 +8,7 @@ use kuriero::Message;
 
 use crate::diff::{self, CHANGED_MAX, Change};
 use crate::hook;
-use crate::telegram::{Place, Sound, Telegram};
+use crate::telegram::{Admitted, Place, Sound, Telegram};
 
 use super::chat::NEW;
 use super::render::code;
@@ -21,7 +21,8 @@ impl Machine {
     /// The changes of the session a message replying to `replied` would reach, posted
     /// under its head, so a reply to them reaches it too. Drawing and uploading take
     /// seconds, so they run on a thread of their own while the hooks go on arriving.
-    pub(super) fn diff(&self, place: Place, asked: i64, replied: Option<&Message>) {
+    pub(super) fn diff(&self, from: &Admitted, asked: i64, replied: Option<&Message>) {
+        let place = from.place;
         let address = match self.addressee(place, replied) {
             Ok(address) => address.filter(|address| address != NEW),
             Err(error) => return self.say(place, error),
@@ -31,6 +32,9 @@ impl Machine {
         else {
             return self.say(place, "no session has run here to show the changes of");
         };
+        if !self.reaches(from.guest.as_deref(), place, dir) {
+            return;
+        }
         let head = hook::Head::new(dir, id, None);
         let dir = dir.to_owned();
         let scratch = runtime_dir()

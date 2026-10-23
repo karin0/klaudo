@@ -6,7 +6,7 @@ edition = '2024'
 [dependencies]
 clap = { version = '4.6.7', default-features = false, features = ['std', 'derive', 'help', 'usage', 'error-context'] }
 dotenvy = '0.15.7'
-kuriero = { git = 'https://github.com/karin0/kuriero.git', rev = '4de0447dbbdf83f85203ff46dd7d0bc8ad447192' }
+kuriero = { git = 'https://github.com/karin0/kuriero.git', rev = 'fa2be2b3ab6a130c60eea31f002692d01705a6e4' }
 libc = '0.2.189'
 pulldown-cmark = { version = '0.13.4', default-features = false }
 serde = { version = '1.0.229', features = ['derive'] }

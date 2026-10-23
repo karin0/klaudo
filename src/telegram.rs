@@ -72,6 +72,13 @@ impl Place {
     }
 }
 
+/// A message to act on: where it was sent, and the name of the guest who sent it, which
+/// is `None` for the user.
+pub struct Admitted {
+    pub place: Place,
+    pub guest: Option<String>,
+}
+
 pub struct Telegram {
     client: Client,
     chat_id: i64,
@@ -79,6 +86,8 @@ pub struct Telegram {
     /// The directories whose sessions post in `CHAT_ID`; every other goes to the user's
     /// private chat.
     projects: Vec<PathBuf>,
+    /// The people besides the user answered in `CHAT_ID`, on the sessions of `projects`.
+    guests: Vec<i64>,
     /// Whether each update polled is logged as Telegram sent it.
     trace: bool,
 }
@@ -91,6 +100,7 @@ impl Telegram {
         let chat_id = id(&required("CHAT_ID"), "CHAT_ID");
         let user_id = user(chat_id, setting("USER_ID").map(|user| id(&user, "USER_ID")));
         let projects = setting("CHAT_PROJECTS").map_or_else(Vec::new, |value| projects(&value));
+        let guests = setting("GUEST_IDS").map_or_else(Vec::new, |value| guests(chat_id, &value));
         // The test stands a recording server in front of the daemon here.
         let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
         let trace = setting("TRACE_UPDATES").is_some();
@@ -99,6 +109,7 @@ impl Telegram {
             chat_id,
             user_id,
             projects,
+            guests,
             trace,
         }
     }
@@ -332,21 +343,33 @@ impl Telegram {
 
     /// Where a turn of the project at `dir` goes when nobody asked for it from the chat.
     pub fn chat(&self, dir: &Path) -> i64 {
-        if listed(&self.projects, dir) {
+        if self.shared(dir) {
             self.chat_id
         } else {
             self.user_id
         }
     }
 
-    /// Where a message the chat sent was sent, when it is one to act on: the user's own,
-    /// sent in `CHAT_ID` or in the user's private chat with the bot, whose id is the
-    /// user's.
-    pub fn accepts(&self, sender: Option<&User>, message: &Message) -> Option<Place> {
+    /// Whether the sessions in `dir` are open to guests.
+    pub fn shared(&self, dir: &Path) -> bool {
+        listed(&self.projects, dir)
+    }
+
+    /// Who sent a message the chat sent and where, when it is one to act on: the user's
+    /// own, sent in `CHAT_ID` or in the user's private chat with the bot, whose id is the
+    /// user's, or a guest's, sent in `CHAT_ID`.
+    pub fn accepts(&self, sender: Option<&User>, message: &Message) -> Option<Admitted> {
+        let sender = sender?;
         let place = Place::of(message);
-        (sender.map(|sender| sender.id) == Some(self.user_id)
-            && (place.chat == self.chat_id || place.chat == self.user_id))
-            .then_some(place)
+        let guest = if sender.id == self.user_id {
+            None
+        } else if self.guests.contains(&sender.id) {
+            Some(name(sender))
+        } else {
+            return None;
+        };
+        (place.chat == self.chat_id || (guest.is_none() && place.chat == self.user_id))
+            .then_some(Admitted { place, guest })
     }
 
     /// A plain message with a button on each row, each button carrying `(label, data)`.
@@ -389,30 +412,36 @@ impl Telegram {
         });
     }
 
-    /// Lists `commands` in the command menu of both chats Klaŭdo answers in, shown to
-    /// the user alone, since nobody else is answered.
-    pub fn register(&self, commands: &[(&str, &str)]) {
-        let commands: Vec<BotCommand> = commands
-            .iter()
-            .map(|&(command, description)| BotCommand {
-                command,
-                description,
-            })
-            .collect();
-        let mut scopes = vec![CommandScope::Chat {
-            chat_id: self.user_id,
-        }];
+    /// Lists `commands` in the command menu of both chats Klaŭdo answers the user in,
+    /// and `guests` in each guest's menu of `CHAT_ID`, each shown to that person alone.
+    pub fn register(&self, commands: &[(&str, &str)], guests: &[(&str, &str)]) {
+        let (commands, guests) = (bot_commands(commands), bot_commands(guests));
+        let mut scopes = vec![(
+            CommandScope::Chat {
+                chat_id: self.user_id,
+            },
+            &commands,
+        )];
         if self.chat_id != self.user_id {
-            scopes.push(CommandScope::ChatMember {
-                chat_id: self.chat_id,
-                user_id: self.user_id,
-            });
+            scopes.push((
+                CommandScope::ChatMember {
+                    chat_id: self.chat_id,
+                    user_id: self.user_id,
+                },
+                &commands,
+            ));
         }
-        for scope in scopes {
-            self.call(&SetMyCommands {
-                commands: &commands,
-                scope,
-            });
+        scopes.extend(self.guests.iter().map(|&user_id| {
+            (
+                CommandScope::ChatMember {
+                    chat_id: self.chat_id,
+                    user_id,
+                },
+                &guests,
+            )
+        }));
+        for (scope, commands) in scopes {
+            self.call(&SetMyCommands { commands, scope });
         }
     }
 
@@ -430,6 +459,16 @@ impl Telegram {
 }
 
 /// A call that failed on every attempt worth making costs its message alone.
+fn bot_commands<'a>(commands: &[(&'a str, &'a str)]) -> Vec<BotCommand<'a>> {
+    commands
+        .iter()
+        .map(|&(command, description)| BotCommand {
+            command,
+            description,
+        })
+        .collect()
+}
+
 fn logged<R>(method: &str, result: Result<R, kuriero::Error>) -> Option<R> {
     result
         .inspect_err(|error| eprintln!("{method}: {error}"))
@@ -606,6 +645,28 @@ fn listed(projects: &[PathBuf], dir: &Path) -> bool {
     projects.iter().any(|project| dir.starts_with(project))
 }
 
+/// `GUEST_IDS` as a list of ids separated by `,`. A guest is answered in `CHAT_ID` alone,
+/// so a private `CHAT_ID`, which no guest can write in, holds none.
+fn guests(chat: i64, value: &str) -> Vec<i64> {
+    assert!(
+        chat < 0,
+        "CHAT_ID in {} is a private chat, so GUEST_IDS has nowhere to be answered",
+        env_file().display()
+    );
+    value
+        .split(',')
+        .map(|guest| id(guest.trim(), "GUEST_IDS"))
+        .collect()
+}
+
+/// How a person signs their messages in Telegram.
+fn name(user: &User) -> String {
+    match &user.last_name {
+        Some(last) => format!("{} {last}", user.first_name),
+        None => user.first_name.clone(),
+    }
+}
+
 /// The user a chat without `USER_ID` belongs to, which is the private chat's own id. A
 /// group's id is negative and belongs to nobody, so a group needs `USER_ID`.
 fn user(chat: i64, user: Option<i64>) -> i64 {
@@ -688,6 +749,23 @@ mod tests {
     #[should_panic(expected = "not an absolute directory")]
     fn a_relative_project_stops_the_process() {
         projects("/home/u/work:work");
+    }
+
+    #[test]
+    fn guests_are_listed_by_id() {
+        assert_eq!(guests(-1001, "7, 8,9"), [7, 8, 9]);
+    }
+
+    #[test]
+    #[should_panic(expected = "GUEST_IDS has nowhere")]
+    fn guests_of_a_private_chat_stop_the_process() {
+        guests(42, "7");
+    }
+
+    #[test]
+    #[should_panic(expected = "GUEST_IDS in")]
+    fn a_guest_that_is_no_id_stops_the_process() {
+        guests(-1001, "7,alice");
     }
 
     #[test]

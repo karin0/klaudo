@@ -9,9 +9,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::hook::{self, Event};
-use crate::telegram::{self, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound};
+use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound};
 
 use super::Machine;
+use super::chat::unreminded;
 use super::render::{Call, Outcome, first_line, listing, took};
 use super::usage::status_line;
 
@@ -174,6 +175,8 @@ pub(super) struct Ask {
     pub(super) text: String,
     pub(super) place: Place,
     pub(super) message: i64,
+    /// The name of the guest who sent the text, which is `None` for the user.
+    pub(super) guest: Option<String>,
 }
 
 /// One turn, from the event that started it to its Stop.
@@ -350,7 +353,10 @@ impl Machine {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        session.trail.prompt = first_line(event.prompt.as_deref().unwrap_or_default(), PROMPT_MAX);
+        session.trail.prompt = first_line(
+            unreminded(event.prompt.as_deref().unwrap_or_default()),
+            PROMPT_MAX,
+        );
         session.left(thread.place, thread.prompt);
         if running {
             session.queued.push_back(thread);
@@ -819,7 +825,8 @@ impl Machine {
     /// Escape on an idle prompt opens the `/rewind` picker. The button goes with that
     /// message, so a press finding no turn showing it is on a message a restarted daemon
     /// lost track of.
-    pub(super) fn stop(&mut self, place: Place, message: i64) {
+    pub(super) fn stop(&mut self, from: &Admitted, message: i64) {
+        let place = from.place;
         let Some(id) = self
             .sessions
             .iter()
@@ -833,6 +840,10 @@ impl Machine {
             self.say(place, "that turn is no longer running");
             return;
         };
+        let dir = self.sessions[&id].dir.clone();
+        if !self.reaches(from.guest.as_deref(), place, &dir) {
+            return;
+        }
         let turn = self.turn_mut(&id).expect("the turn just found");
         if turn.stopping.is_some() {
             return;
@@ -1066,6 +1077,7 @@ mod tests {
             text: text.to_owned(),
             place: HERE,
             message,
+            guest: None,
         };
         let mut asked = VecDeque::from([ask("first", 1), ask("second", 2)]);
         assert_eq!(
@@ -1089,6 +1101,7 @@ mod tests {
                 text: (*text).to_owned(),
                 place: HERE,
                 message,
+                guest: None,
             }));
             compaction(&asked).map(|ask| ask.message)
         };

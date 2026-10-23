@@ -189,9 +189,25 @@ that has exited is resumed in a window first, which the terminal then shows star
 Configuration below has such a program for a phone running Termux.
 
 `/compact` goes to a session like any other message. The daemon lists these commands
-in the command menu for the user alone.
+in the command menu of each person it answers, shown to that person alone.
 
-Only `USER_ID` is answered, in `CHAT_ID` or in that person's private chat with the bot.
+Only `USER_ID` is answered, in `CHAT_ID` or in that person's private chat with the bot,
+and the guests in `GUEST_IDS`, in `CHAT_ID` alone. A guest reaches only the sessions and
+directories inside `CHAT_PROJECTS`, whichever message, anchor, menu or button names
+them, and is answered `that project is not open to guests` otherwise. Whoever can type
+into a terminal can do as much as its shell, so the grant itself, who and which
+projects, is the boundary. Within it, the daemon types each guest's text inside
+`<guest>`, behind a `<system-reminder>` that names the guest, says how to address them,
+and limits Claude to routine development in the session's directory, away from the files
+outside it other than the toolchain's, the system's state and the local network. Each
+`@` a guest writes reaches the terminal as `&#64;`, since Claude Code would attach the
+file it names before Claude reads the reminder. A guest's `/compact` is typed as it was
+sent, and one with instructions follows the reminder, since the instructions would write
+the summary every later turn reads. Their other slash commands follow the reminder, so
+Claude Code reads them as text, which keeps `/model`, `/permissions` and the like out of
+a guest's reach. `/attach` would hand over the terminal itself, so a guest's menu leaves
+it out and the daemon refuses it to them.
+
 A turn a message started is posted where the message came from. A turn started in the
 terminal goes to `CHAT_ID` when its project is in `CHAT_PROJECTS`, and to the private
 chat otherwise. In a group, a bot in Telegram's default privacy mode receives only
@@ -266,17 +282,19 @@ arrow keys and Enter, which pasted text cannot drive.
 
 ## Configuration
 
-`BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID` and `CHAT_PROJECTS` come from
-`$XDG_CONFIG_HOME/klaudo/env` alone, read with `dotenvy`, so an exported variable
+`BOT_TOKEN`, `CHAT_ID` and the optional `USER_ID`, `CHAT_PROJECTS` and `GUEST_IDS` come
+from `$XDG_CONFIG_HOME/klaudo/env` alone, read with `dotenvy`, so an exported variable
 reaches nothing. The daemon reads the file once as it starts, so a change to it applies
 after `systemctl --user restart klaudo`. A private chat's id is its person's, so
 `USER_ID` defaults to `CHAT_ID`, and a group, whose id is negative, needs it set. A
-message Klaŭdo ignores
-is logged with its chat's and sender's ids, so `journalctl --user -u klaudo` shows what to
-write here.
+message Klaŭdo ignores is logged with its chat's and sender's ids, so `journalctl --user
+-u klaudo` shows what to write here.
 
 `CHAT_PROJECTS` lists absolute directories separated by `:`. A project inside one of
 them posts its terminal-started turns to `CHAT_ID`.
+
+`GUEST_IDS` lists user ids separated by `,`. Guests are answered in `CHAT_ID` alone, so a
+private `CHAT_ID` with `GUEST_IDS` set stops the daemon at startup.
 
 `IDLE_HOURS`, a whole number defaulting to 6, is how long a window the daemon opened
 stays open while its session idles.
