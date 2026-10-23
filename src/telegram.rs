@@ -103,7 +103,7 @@ impl Telegram {
         let guests = setting("GUEST_IDS").map_or_else(Vec::new, |value| guests(chat_id, &value));
         // The test stands a recording server in front of the daemon here.
         let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
-        let trace = setting("TRACE_UPDATES").is_some();
+        let trace = flag("TRACE_UPDATES");
         Self {
             client: Client::new(&base, &token),
             chat_id,
@@ -610,6 +610,22 @@ fn required(name: &str) -> String {
     setting(name).unwrap_or_else(|| panic!("{name} is not in {}", env_file().display()))
 }
 
+/// A setting that is `1` or `0`, and off when absent.
+pub fn flag(name: &str) -> bool {
+    setting(name).is_some_and(|value| {
+        switch(&value)
+            .unwrap_or_else(|| panic!("{name} in {} is neither 1 nor 0", env_file().display()))
+    })
+}
+
+fn switch(value: &str) -> Option<bool> {
+    match value {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
 /// A setting holding a whole number.
 pub fn number(name: &str) -> Option<u64> {
     let value = setting(name)?;
@@ -703,6 +719,15 @@ mod tests {
         let quote = "> q\n>\n".repeat(600);
         let code = format!("```\n{}```", "\n\nl".repeat(600));
         assert_eq!(blocks(&[list, table, quote, code].join("\n\n")), 4);
+    }
+
+    #[test]
+    fn a_flag_is_on_at_1_and_off_at_0_alone() {
+        assert_eq!(switch("1"), Some(true));
+        assert_eq!(switch("0"), Some(false));
+        for other in ["", "true", "false", "yes", "01"] {
+            assert_eq!(switch(other), None);
+        }
     }
 
     #[test]
