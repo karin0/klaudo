@@ -296,6 +296,10 @@ them posts its terminal-started turns to `CHAT_ID`.
 `GUEST_IDS` lists user ids separated by `,`. Guests are answered in `CHAT_ID` alone, so a
 private `CHAT_ID` with `GUEST_IDS` set stops the daemon at startup.
 
+`GUEST_PUSH`, set to anything, adds to the reminder that Claude may create commits and
+push them for a guest. Telegram gives no email, so Claude asks the guest for the name
+and email that a `Co-Authored-By` trailer on each of their commits credits.
+
 `IDLE_HOURS`, a whole number defaulting to 6, is how long a window the daemon opened
 stays open while its session idles.
 

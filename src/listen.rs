@@ -174,6 +174,7 @@ pub fn run() {
         ended_file,
         limits: None,
         attach,
+        guest_push: crate::telegram::setting("GUEST_PUSH").is_some(),
     };
     // Whatever exited while nothing was listening.
     machine.sweep();
@@ -396,6 +397,8 @@ struct Machine {
     limits: Option<(Limits, u64)>,
     /// The program `/attach` runs to show a pane on another terminal.
     attach: Option<PathBuf>,
+    /// Whether Claude may create commits and push them for a guest.
+    guest_push: bool,
 }
 
 /// A session the daemon has heard from: where it ran, which is where a reply to it
