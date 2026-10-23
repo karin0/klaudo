@@ -8,6 +8,7 @@ clap = { version = '4.6.7', default-features = false, features = ['std', 'derive
 dotenvy = '0.15.7'
 kuriero = { git = 'https://github.com/karin0/kuriero.git', rev = '4de0447dbbdf83f85203ff46dd7d0bc8ad447192' }
 libc = '0.2.189'
+pulldown-cmark = { version = '0.13.4', default-features = false }
 serde = { version = '1.0.229', features = ['derive'] }
 serde_json = '1.0.151'
 similar = { version = '3.2.0', default-features = false, features = ['std'] }

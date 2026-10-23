@@ -9,6 +9,7 @@ use kuriero::{
     ReplyParameters, RichInput, SendChatAction, SendMessage, SendRichMessage, Sent,
     SetMessageReaction, SetMyCommands, Update, User,
 };
+use pulldown_cmark::{Event, Options, Parser};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,6 +26,9 @@ const POLL_SECONDS: u64 = 50;
 /// dropping the rest unannounced, and rejects one rendering past 32768 characters.
 /// Markup only lengthens a body, so a body within this many bytes renders within both.
 pub const MAX_BYTES: usize = 32768;
+/// Telegram rejects a rich message of more top-level blocks than this, with a list, a
+/// table or a quotation counting as one.
+pub const MAX_BLOCKS: usize = 500;
 /// The longest placeholder Telegram shows in an input field.
 const PLACEHOLDER_MAX: usize = 64;
 /// What the daemon leaves on a message whose text reached a session's input box.
@@ -37,7 +41,7 @@ pub const ELLIPSIS: char = '\u{2026}';
 const FILE_NAME: &str = "message.md";
 
 /// A message as a rich message's markdown, and the HTML caption it carries as a
-/// markdown file once the markdown is past `MAX_BYTES`.
+/// markdown file once the markdown no longer `fits` a rich message.
 pub struct Post {
     pub markdown: String,
     pub caption: String,
@@ -121,7 +125,7 @@ impl Telegram {
         sound: Sound,
         reply_to: Option<i64>,
     ) -> Option<i64> {
-        if post.markdown.len() <= MAX_BYTES {
+        if fits(&post.markdown) {
             return self.send(place, &post.markdown, sound, reply_to);
         }
         let addressed = Addressed::new(place, reply_to);
@@ -507,6 +511,32 @@ fn clamp(markdown: &str) -> String {
     format!("{}{ELLIPSIS}", &markdown[..end])
 }
 
+/// Whether Telegram takes `markdown` as a rich message whole. Its blocks are counted by
+/// `pulldown_cmark`, which splits a `<details>` holding blank lines into several, so a
+/// body heavy with those goes as a file before it has to.
+pub fn fits(markdown: &str) -> bool {
+    markdown.len() <= MAX_BYTES && blocks(markdown) <= MAX_BLOCKS
+}
+
+pub fn blocks(markdown: &str) -> usize {
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let mut depth = 0usize;
+    let mut blocks = 0;
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Event::Start(_) => {
+                blocks += usize::from(depth == 0);
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            Event::Rule => blocks += usize::from(depth == 0),
+            _ => {}
+        }
+    }
+    blocks
+}
+
 /// Where a machine's credentials live. It is the whole of where they come from, so a
 /// hook command is the binary's own path.
 fn env_file() -> PathBuf {
@@ -599,6 +629,19 @@ mod tests {
         let clamped = clamp(&long);
         assert!((MAX_BYTES - 2..=MAX_BYTES).contains(&clamped.len()));
         assert!(clamped.ends_with(ELLIPSIS));
+    }
+
+    #[test]
+    fn a_rich_message_holds_500_top_level_blocks_however_deep_they_nest() {
+        let paragraphs = |count: usize| vec!["p"; count].join("\n\n");
+        assert!(fits(&paragraphs(MAX_BLOCKS)));
+        assert!(!fits(&paragraphs(MAX_BLOCKS + 1)));
+        assert!(!fits(&format!("{}\n\n---", paragraphs(MAX_BLOCKS))));
+        let list = "- a\n  - b\n\n  c\n".repeat(600);
+        let table = format!("| a |\n|---|\n{}", "| r |\n".repeat(600));
+        let quote = "> q\n>\n".repeat(600);
+        let code = format!("```\n{}```", "\n\nl".repeat(600));
+        assert_eq!(blocks(&[list, table, quote, code].join("\n\n")), 4);
     }
 
     #[test]

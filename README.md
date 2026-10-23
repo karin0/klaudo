@@ -91,23 +91,24 @@ reply is routed by.
 ## Rich messages
 
 A message is posted with `sendRichMessage` and rewritten with `editMessageText`, both
-carrying the body in `rich_message.markdown`. Bot API 10.1 added the method in June 2026,
-and its markdown is a dialect of its own, documented at
+carrying the body in `rich_message.markdown`. Bot API 10.1 added the method in June
+2026, and its markdown is a dialect of its own, documented at
 <https://core.telegram.org/bots/api#rich-message-formatting-options>. `**text**` is bold
-and `*text*` italic, as in CommonMark. A rich message holds up to 500 blocks, and text
-rendering to 32768 characters against the 4096 of `sendMessage`. Telegram rejects
-longer text, but first keeps about 35000 bytes of it in UTF-8 and drops the rest
+and `*text*` italic, as in CommonMark. A rich message holds up to 500 top-level blocks,
+and text rendering to 32768 characters against the 4096 of `sendMessage`. Telegram
+rejects longer text, but first keeps about 35000 bytes of it in UTF-8 and drops the rest
 unannounced, so text in Chinese is cut near 11700 characters without an error. A body is
 measured in bytes of its markdown, which markup only lengthens.
 
-A body past 32768 bytes goes whole as `message.md`, a document captioned with its title
-in HTML, so a reply to it reaches the session as a reply to any message does. Clients
-render a markdown file in their in-app browser, where the desktop client shows HTML tags
-as their source, so the folded quotations stay within a rich message. The body stays one
-file because splitting it over rich messages would need a parser of the dialect to find
-where no construct is left open, as a `<details>` holding blank lines is, and a code
-block, whose text Telegram does not parse, scrolls sideways on every line. The length is
-decided before sending, since Telegram accepts a long body in Chinese and cuts it.
+A body past 32768 bytes or 500 top-level blocks goes whole as `message.md`, a document
+captioned with its title in HTML, so a reply to it reaches the session as a reply to any
+message does. Clients render a markdown file in their in-app browser, where the desktop
+client shows HTML tags as their source, so the folded quotations stay within a rich
+message. The body stays one file because splitting it over rich messages would need a
+parser of the dialect to find where no construct is left open, as a `<details>` holding
+blank lines is, and a code block, whose text Telegram does not parse, scrolls sideways
+on every line. The size is decided before sending, since Telegram accepts a long body in
+Chinese and cuts it.
 
 A backslash in front of a character the dialect owns is consumed. In front of any other
 character it stays, and a client copying the message hands it back, which is why
