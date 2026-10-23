@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::hook::{self, Event};
-use crate::telegram::{MAX_BYTES, Place, Post, Sound};
+use crate::telegram::{self, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound};
 
 use super::Machine;
 use super::render::{Call, Outcome, first_line, listing, took};
@@ -87,9 +87,10 @@ const WORDS: &[&str] = &[
     "Vibing",
 ];
 
-/// What a message carries around a segment's text, its title and status line, with room
-/// to spare.
+/// What a message carries around a segment's text, its title and status line, in bytes
+/// and blocks with room to spare.
 const FRAME: usize = 1024;
+const FRAME_BLOCKS: usize = 4;
 /// How much of a session's latest prompt its button in a `/resume` menu shows.
 const PROMPT_MAX: usize = 40;
 /// How much of the first line of what a failed tool reported its call shows, past which
@@ -281,7 +282,7 @@ impl Machine {
         post: &Post,
         buttons: &[(String, String)],
     ) -> Option<i64> {
-        let posted = if post.markdown.len() > MAX_BYTES {
+        let posted = if !telegram::fits(&post.markdown) {
             let filed = self
                 .telegram
                 .post(thread.place, post, Sound::Silent, thread.prompt);
@@ -445,7 +446,11 @@ impl Machine {
             .segment
             .as_mut()
             .filter(|segment| segment.said.is_some() && !segment.calls.is_empty())
-            .filter(|segment| segment.text().len() + FRAME > MAX_BYTES)
+            .filter(|segment| {
+                let text = segment.text();
+                text.len() + FRAME > MAX_BYTES
+                    || telegram::blocks(&text) + FRAME_BLOCKS > MAX_BLOCKS
+            })
         else {
             return;
         };
@@ -576,7 +581,7 @@ impl Machine {
             chat: thread.place.chat,
             message,
             elapsed,
-            filed: done.markdown.len() > MAX_BYTES,
+            filed: !telegram::fits(&done.markdown),
         });
         let Some(session) = self.sessions.get_mut(id) else {
             return;
@@ -612,7 +617,7 @@ impl Machine {
             self.telegram.refile(posted.chat, posted.message, &post);
             return;
         }
-        if post.markdown.len() <= MAX_BYTES {
+        if telegram::fits(&post.markdown) {
             self.telegram
                 .edit(posted.chat, posted.message, &post.markdown, &[]);
             return;
@@ -787,7 +792,7 @@ impl Machine {
         // A segment past a rich message reaches the chat as a file once it is complete,
         // and until then the live message keeps the last of it that fitted. A delta can
         // end anywhere in the markdown, so the text is never split at one.
-        if shown.markdown.len() > MAX_BYTES {
+        if !telegram::fits(&shown.markdown) {
             if live.is_some() {
                 if let Some(segment) = self.turn_mut(id).and_then(|turn| turn.segment.as_mut()) {
                     segment.written = Some((text, Instant::now()));

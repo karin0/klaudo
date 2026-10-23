@@ -110,12 +110,21 @@ fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
 /// so an answer longer than a rich message holds arrives whole as a markdown file.
 #[test]
 fn an_answer_past_a_rich_message_arrives_whole_as_a_file() {
+    answer_is_filed("long", &"字".repeat(12_000));
+}
+
+/// Telegram rejects a rich message of more than 500 top-level blocks.
+#[test]
+fn an_answer_of_more_blocks_than_a_rich_message_holds_arrives_whole_as_a_file() {
+    answer_is_filed("blocks", &vec!["p"; 501].join("\n\n"));
+}
+
+fn answer_is_filed(name: &str, answer: &str) {
     let (port, calls, _chat) = recorder();
-    let temporary = prepare("long", port);
+    let temporary = prepare(name, port);
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
-    let answer = "字".repeat(12_000);
 
     for event in [
         json!({"hook_event_name": "UserPromptSubmit", "prompt_id": "fedcba9876543210", "prompt": "write it all"}),
