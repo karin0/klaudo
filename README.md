@@ -223,11 +223,11 @@ Telegram puts a message naming none outside every topic, even a reply to a messa
 inside one. A message in a forum's topic replying to nothing arrives replying to the
 service message that opened the topic, which Klaŭdo reads as replying to nothing.
 
-A private chat in topic mode takes no message outside every topic: one sent there opens
-a topic whose name the service message marks as implicit. A message replying to nothing
-in such a topic, when no session has been there, goes to the most recent session outside
-every topic, which is where a turn started in the terminal is posted until a session of
-its project posts in a topic. A topic the user named reaches only its own sessions.
+A private chat in topic mode takes no message outside every topic, since one sent there
+opens a topic of its own. A turn started in the terminal is posted outside every topic
+until a session of its project posts in a topic, so a reply to one of its messages or
+`/resume` brings the session into a topic. A topic reaches only its own sessions, so a
+message sent outside every topic by mistake reaches no session.
 
 Topic mode slows the whole private chat. A reply to `/new` shows several seconds later
 where topic mode is on than where it is off.

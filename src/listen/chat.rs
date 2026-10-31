@@ -201,10 +201,7 @@ impl Machine {
     }
 
     /// Where a message goes: the session or anchor the message it replies to names, or
-    /// for a message replying to nothing, the most recent session in its place. A message
-    /// outside every topic of a private chat in topic mode opens a topic whose name is
-    /// implicit, so a topic like that holding no session reaches the sessions outside
-    /// every topic, where the turns started in the terminal are posted.
+    /// for a message replying to nothing, the most recent session in its place.
     pub(super) fn addressee(
         &self,
         place: Place,
@@ -212,21 +209,12 @@ impl Machine {
     ) -> Result<Option<String>, &'static str> {
         // A message in a topic that replies to nothing replies to the service message
         // that opened the topic.
-        if let Some(replied) = replied.filter(|replied| replied.opened.is_none()) {
-            return address(replied)
+        match replied.filter(|replied| replied.opened.is_none()) {
+            Some(replied) => address(replied)
                 .map(Some)
-                .ok_or("the message replied to names no session");
+                .ok_or("the message replied to names no session"),
+            None => Ok(self.latest(place)),
         }
-        let implicit = replied
-            .and_then(|replied| replied.opened.as_ref())
-            .is_some_and(|opened| opened.implicit);
-        let outside = implicit.then_some(Place {
-            topic: None,
-            ..place
-        });
-        Ok(self
-            .latest(place)
-            .or_else(|| outside.and_then(|outside| self.latest(outside))))
     }
 
     /// The directory of the session a message would reach, which leads a menu it asks for.

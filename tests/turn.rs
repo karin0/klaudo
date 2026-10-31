@@ -1161,11 +1161,10 @@ fn a_new_conversation_belongs_to_the_topic_it_was_asked_from() {
     drop(daemon);
 }
 
-/// A message outside every topic of a private chat in topic mode opens a topic of its
-/// own, which reaches the most recent session outside every topic, while a topic the user
-/// named reaches no session outside it.
+/// A topic holding no session reaches no session outside every topic, whether the user
+/// named it or a message outside every topic of a private chat in topic mode opened it.
 #[test]
-fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
+fn a_topic_reaches_no_session_outside_it() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("implicit", port);
     let root = temporary.path();
@@ -1192,7 +1191,7 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
 
     chat.says_in(GROUP, 78, OWNER, "anyone");
     chat.opens(GROUP, 79, OWNER, "anyone");
-    let made = collect(&calls, |call| call.markdown.starts_with("`01234567` "));
+    let made = collect(&calls, |call| call.body["message_thread_id"] == json!(79));
     let answered: Vec<_> = made
         .iter()
         .filter(|call| call.label.starts_with("sendRichMessage"))
@@ -1203,7 +1202,7 @@ fn a_topic_a_message_opened_reaches_the_sessions_outside_every_topic() {
             )
         })
         .collect();
-    assert_eq!(answered, [("no", Some(78)), ("`01234567`", Some(79))]);
+    assert_eq!(answered, [("no", Some(78)), ("no", Some(79))]);
     drop(daemon);
 }
 
