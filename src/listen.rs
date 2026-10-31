@@ -15,6 +15,7 @@ use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -302,16 +303,23 @@ struct Trail {
 struct Last {
     place: Place,
     message: Option<i64>,
-    /// Unix milliseconds.
+    /// Unix milliseconds, each later than the one before, so of two events the daemon
+    /// handles within a millisecond the later is still the more recent.
     at: u64,
 }
 
+/// The `at` of the latest `Last` made.
+static LATEST_AT: AtomicU64 = AtomicU64::new(0);
+
 impl Last {
     fn now(place: Place, message: Option<i64>) -> Self {
+        let now = now_millis();
+        let later = |latest: u64| now.max(latest + 1);
+        let latest = LATEST_AT.update(Ordering::Relaxed, Ordering::Relaxed, later);
         Self {
             place,
             message,
-            at: now_millis(),
+            at: later(latest),
         }
     }
 }
@@ -764,5 +772,20 @@ impl Machine {
 
     fn say(&self, place: Place, text: &str) {
         self.telegram.send(place, text, Sound::Silent, None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_later_last_is_more_recent_within_a_millisecond() {
+        let place = Place {
+            chat: 1,
+            topic: None,
+        };
+        let ats: Vec<u64> = (0..1000).map(|_| Last::now(place, None).at).collect();
+        assert!(ats.is_sorted_by(|earlier, later| earlier < later));
     }
 }
