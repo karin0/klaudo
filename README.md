@@ -151,7 +151,8 @@ is the first choice `/new` alone offers, without the menu. Telegram refuses to e
 message carrying `ForceReply`, so an anchor takes no button back to the projects.
 
 tmux runs `claude` through its `default-shell` as a non-interactive shell with the tmux
-server's environment, so `claude` has to be on the `PATH` that shell ends up with. A
+server's environment and the daemon's `PATH`, so `claude` has to be on the `PATH` that
+shell ends up with after its startup files. A
 directory added only by an interactive shell's startup file, as the native installer's
 `~/.local/bin` often is, makes the window exit at once, and the daemon answers that the
 window closed before its session started.

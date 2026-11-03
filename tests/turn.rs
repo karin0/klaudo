@@ -1255,7 +1255,7 @@ fn a_topic_resumes_its_latest_session() {
         || {
             std::fs::read_to_string(&log).is_ok_and(|log| {
                 log.lines()
-                    .any(|line| line.ends_with(&format!("--resume {exited}")))
+                    .any(|line| line.ends_with(&format!("--resume '{exited}'")))
             })
         },
         "the topic's exited session was not resumed",
@@ -1306,7 +1306,7 @@ fn a_topic_resumes_its_most_recent_session_whichever_ended_last() {
         "no session was resumed",
     );
     let log = std::fs::read_to_string(&log).expect("the tmux log");
-    assert!(log.contains(&format!("--resume {later}")), "{log}");
+    assert!(log.contains(&format!("--resume '{later}'")), "{log}");
     drop(daemon);
 }
 
@@ -1345,7 +1345,7 @@ fn a_topic_message_passes_a_session_that_has_said_nothing() {
     wait_for(
         || {
             std::fs::read_to_string(&log)
-                .is_ok_and(|log| log.contains(&format!("--resume {spoke}")))
+                .is_ok_and(|log| log.contains(&format!("--resume '{spoke}'")))
         },
         "the session that spoke was not resumed",
     );
@@ -1420,7 +1420,7 @@ fn a_topic_message_reaches_the_conversation_that_left_its_last_message() {
             std::fs::read_to_string(&log).is_ok_and(|log| {
                 [quiet, talked]
                     .iter()
-                    .all(|id| log.contains(&format!("--resume {id}")))
+                    .all(|id| log.contains(&format!("--resume '{id}'")))
             })
         },
         "both sessions were not resumed",
@@ -1428,7 +1428,7 @@ fn a_topic_message_reaches_the_conversation_that_left_its_last_message() {
     let log = std::fs::read_to_string(&log).expect("the tmux log");
     let first = log.lines().find(|line| line.contains("--resume"));
     assert!(
-        first.is_some_and(|line| line.ends_with(talked)),
+        first.is_some_and(|line| line.ends_with(&format!("'{talked}'"))),
         "the first message resumes the session with the newer message: {log}"
     );
 
@@ -1539,7 +1539,7 @@ fn what_the_daemon_knows_outlives_a_restart() {
         std::fs::read_to_string(root.join("tmux.log"))
             .unwrap_or_default()
             .lines()
-            .filter(|line| line.ends_with("--resume fedcba9876543210"))
+            .filter(|line| line.ends_with("--resume 'fedcba9876543210'"))
             .count()
     };
     assert_eq!(resumed(), 1);
@@ -1634,7 +1634,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         .collect();
     let window = |opening: &str, id: &str| {
         format!(
-            "{opening} -P -F #{{pane_id}} #{{socket_path}} -c {} -n {} claude --resume {id}",
+            "{opening} -P -F #{{pane_id}} #{{socket_path}} -c {} -n {} claude --resume '{id}'",
             root.display(),
             root.file_name().expect("a name").display()
         )
@@ -1645,6 +1645,15 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
         [
             window("new-session -d -s klaudo", "0123456789abcdef"),
             window("new-window -t =klaudo:", "fedcba9876543210"),
+        ]
+    );
+    // Each window's command is one argument, which tmux runs through its shell.
+    let commands = std::fs::read_to_string(root.join("commands")).expect("windows were opened");
+    assert_eq!(
+        commands.lines().collect::<Vec<_>>(),
+        [
+            "claude --resume '0123456789abcdef'",
+            "claude --resume 'fedcba9876543210'",
         ]
     );
 
@@ -2826,7 +2835,8 @@ fn prepare(name: &str, port: u16) -> TempDir {
     // test never reaches the tmux server of the machine it runs on. Its session exists
     // once a `new-session` has been recorded, every pane is in it and shows the terminal
     // a `tty` file beside the log names, and its windows stay open until a `closed` file
-    // appears there. What is pasted into a pane is appended to a `typed` file there.
+    // appears there. What is pasted into a pane is appended to a `typed` file there, and the
+    // last argument of each `new-` call, the window's command, to a `commands` file.
     std::fs::create_dir_all(root.join("bin")).expect("binary directory");
     let tmux = root.join("bin/tmux");
     std::fs::write(
@@ -2846,6 +2856,7 @@ display-message)
   exit ;;
 esac
 printf '%s\n' "$*" >> "$log"
+case "$1" in new-*) eval "printf '%s\\n' \"\${$#}\"" >> "$dir/commands" ;; esac
 [ "$1" = load-buffer ] && cat >> "$dir/typed"
 case "$1" in new-*) echo "%$(grep -c '^new-' "$log") $dir/tmux.sock" ;; esac
 "#,

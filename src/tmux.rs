@@ -166,10 +166,15 @@ pub fn open(cwd: &Path, resume: Option<&str>) -> Result<Pane, String> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("claude");
+    // tmux runs a command given as one argument through its `default-shell`, whose
+    // startup files put the user's directories on `PATH`, and execs one given as several.
+    let claude = resume.map_or_else(
+        || "claude".to_owned(),
+        |id| format!("claude --resume '{}'", id.replace('\'', r"'\''")),
+    );
     let output = command
         .args(["-P", "-F", "#{pane_id} #{socket_path}"])
-        .args(["-c", directory, "-n", name, "claude"])
-        .args(resume.map(|id| ["--resume", id]).into_iter().flatten())
+        .args(["-c", directory, "-n", name, &claude])
         .output()
         .map_err(|error| format!("tmux: {error}"))?;
     let printed = String::from_utf8_lossy(&output.stdout);
