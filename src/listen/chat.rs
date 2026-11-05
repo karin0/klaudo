@@ -6,8 +6,8 @@ use std::time::Duration;
 use kuriero::{CallbackQuery, Entity, Message, RichText, User};
 
 use crate::hook;
-use crate::telegram::{Admitted, Place};
-use crate::tmux::{self, Pane};
+use crate::telegram::{Admitted, Place, Sound};
+use crate::tmux::{self, Pane, Start};
 
 use super::render::code;
 use super::turn::{Ask, STOP, Thread};
@@ -24,6 +24,8 @@ const SPLIT: &str = "split";
 /// Claude Code's own command, which the daemon types into the terminal like any prompt.
 pub(super) const BRANCH: &str = "branch";
 pub(super) const ATTACH: &str = "attach";
+/// What the button confirming a branch of a session outside tmux carries ahead of its id.
+const FORK: &str = "fork";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
 const SESSION: &str = "session";
 /// What the button leading a `/resume` menu of sessions back to its projects carries.
@@ -77,10 +79,14 @@ impl Machine {
     /// ask that waited for it, while each ask that opened a new conversation had a
     /// window of its own.
     pub(super) fn started(&mut self, id: &str) {
-        let Some(dir) = self.sessions.get(id).map(|session| session.dir.clone()) else {
+        let Some((dir, pane)) = self
+            .sessions
+            .get(id)
+            .map(|session| (session.dir.clone(), session.pane.clone()))
+        else {
             return;
         };
-        let waiting = self.waiting(id, &dir);
+        let waiting = self.waiting(id, &dir, pane.as_ref());
         let asks: Vec<Ask> = waiting
             .into_iter()
             .rev()
@@ -95,18 +101,25 @@ impl Machine {
     }
 
     /// The positions in `opening` of the asks waiting for session `id` in `dir`, in
-    /// order: every one resuming it, or with none, the oldest that opened a new
-    /// conversation in `dir`.
-    pub(super) fn waiting(&self, id: &str, dir: &Path) -> Vec<usize> {
-        let resuming: Vec<usize> = (0..self.opening.len())
-            .filter(|&index| self.opening[index].resume.as_deref() == Some(id))
+    /// `pane`, in order: every one resuming it or branching into its pane, or with none,
+    /// the oldest that opened a new conversation in `dir`.
+    pub(super) fn waiting(&self, id: &str, dir: &Path, pane: Option<&Pane>) -> Vec<usize> {
+        let claimed: Vec<usize> = (0..self.opening.len())
+            .filter(|&index| {
+                let opening = &self.opening[index];
+                match &opening.start {
+                    Start::Resume(resumed) => resumed == id,
+                    Start::Fork(_) => pane == Some(&opening.pane),
+                    Start::New => false,
+                }
+            })
             .collect();
-        if !resuming.is_empty() {
-            return resuming;
+        if !claimed.is_empty() {
+            return claimed;
         }
         self.opening
             .iter()
-            .position(|opening| opening.resume.is_none() && opening.dir == dir)
+            .position(|opening| opening.start == Start::New && opening.dir == dir)
             .into_iter()
             .collect()
     }
@@ -202,7 +215,7 @@ impl Machine {
                 Some(body) => match expand(&body) {
                     Some(cwd) => {
                         if self.reaches(ask.guest.as_deref(), place, &cwd) {
-                            self.open(cwd, None, Awaiting::Prompt(ask));
+                            self.open(cwd, Start::New, Awaiting::Prompt(ask));
                         }
                     }
                     None => self.say(place, &format!("{} is not a directory", code(&body))),
@@ -303,6 +316,7 @@ impl Machine {
                     self.telegram.remenu(place.chat, menu, &text, &buttons);
                 }
             }
+            Some((FORK, id)) => self.fork(&from, press.from.id, message, id),
             Some((SESSION, id)) => {
                 if let Some(anchor) = self.resumption(&from, id) {
                     self.summon(
@@ -480,17 +494,30 @@ impl Machine {
         }
     }
 
-    /// A branch `/branch` made goes to a topic of its own, under the name Claude Code
-    /// gave it, where its project's conversations are in topics.
-    pub(super) fn branched(&mut self, id: &str, title: &str) {
-        let place = self.sessions[id].trail.last.map(|last| last.place);
-        if let Some(place) = place.filter(|place| place.topic.is_some()) {
-            self.split(id, place.chat, title);
-        }
+    /// A branch goes to a topic of its own where its project's conversations are in
+    /// topics, under the `title` Claude Code gave it. A branch `claude --fork-session`
+    /// made has no title, so its topic goes by the prompt it carried over.
+    pub(super) fn branched(&mut self, id: &str, title: Option<&str>) {
+        let trail = &self.sessions[id].trail;
+        let Some(place) = trail
+            .last
+            .map(|last| last.place)
+            .filter(|place| place.topic.is_some())
+        else {
+            return;
+        };
+        let name = match title {
+            Some(title) => title.to_owned(),
+            None if trail.prompt.is_empty() => String::new(),
+            None => format!("{} (Branch)", trail.prompt),
+        };
+        self.split(id, place.chat, &name);
     }
 
     /// Moves session `id` to a topic of `chat` opened for it alone, under `name`, or its
-    /// address where `name` is empty. Whether the session got there.
+    /// address where `name` is empty. Whether the session got there. A prompt still
+    /// waiting for the session to start goes along: it is posted there in place of the
+    /// anchor, and its turn replies to it there.
     fn split(&mut self, id: &str, chat: i64, name: &str) -> bool {
         let Some((dir, left)) = self
             .known()
@@ -511,9 +538,29 @@ impl Machine {
             chat,
             topic: Some(topic),
         };
-        let Some(anchor) = self.beckon(place, id, &dir, None) else {
+        let pane = self
+            .sessions
+            .get(id)
+            .and_then(|session| session.pane.clone());
+        let carried = self
+            .waiting(id, &dir, pane.as_ref())
+            .into_iter()
+            .find(|&index| matches!(self.opening[index].ask, Awaiting::Prompt(_)));
+        let anchor = match carried.map(|index| &self.opening[index].ask) {
+            Some(Awaiting::Prompt(ask)) => {
+                let head = hook::Head::new(&dir, id, None);
+                let prompt = hook::compose(&head, "", "", &hook::quote(&ask.text)).markdown;
+                self.telegram.send(place, &prompt, Sound::Silent, None)
+            }
+            _ => self.beckon(place, id, &dir, None),
+        };
+        let Some(anchor) = anchor else {
             return false;
         };
+        if let Some(Awaiting::Prompt(ask)) = carried.map(|index| &mut self.opening[index].ask) {
+            ask.place = place;
+            ask.message = anchor;
+        }
         if let Some(trail) = self.trail_mut(id) {
             trail.own = Some(Own { topic: place, left });
         }
@@ -615,21 +662,16 @@ impl Machine {
         self.telegram.anchor(place, &message, &placeholder, None)
     }
 
-    /// Opens a window for a conversation, a new one or the session `resume` names, and
-    /// keeps what it was asked for until the session there reports that it is ready. A
-    /// session already being resumed gets no second window, which would run it twice.
-    pub(super) fn open(
-        &mut self,
-        dir: PathBuf,
-        resume: Option<String>,
-        ask: Awaiting,
-    ) -> Option<Pane> {
+    /// Opens a window for a conversation as `start` says, and keeps what it was asked
+    /// for until the session there reports that it is ready. A session already being
+    /// resumed gets no second window, which would run it twice.
+    pub(super) fn open(&mut self, dir: PathBuf, start: Start, ask: Awaiting) -> Option<Pane> {
         let resuming = self
             .opening
             .iter()
-            .find(|opening| resume.is_some() && opening.resume == resume)
+            .find(|opening| matches!(start, Start::Resume(_)) && opening.start == start)
             .map(|opening| opening.pane.clone());
-        let pane = match resuming.map_or_else(|| tmux::open(&dir, resume.as_deref()), Ok) {
+        let pane = match resuming.map_or_else(|| tmux::open(&dir, &start), Ok) {
             Ok(pane) => pane,
             Err(error) => {
                 self.say(ask.place(), &format!("tmux: {}", hook::prose(&error)));
@@ -638,7 +680,7 @@ impl Machine {
         };
         self.opening.push(Opening {
             dir,
-            resume,
+            start,
             pane: pane.clone(),
             ask,
         });
@@ -671,12 +713,15 @@ impl Machine {
             }
             self.ended[index].trail.last = typed;
             self.save_ended();
-            self.open(dir, Some(id), Awaiting::Prompt(ask));
+            self.open(dir, Start::Resume(id), Awaiting::Prompt(ask));
             return;
         };
         let (id, dir) = (id.clone(), session.dir.clone());
         if !self.reaches(ask.guest.as_deref(), place, &dir) {
             return;
+        }
+        if session.pane.is_none() {
+            return self.confirm(&id, &ask);
         }
         // `/compact` is a command only at the start of the prompt, and compacting is
         // routine work. Instructions would write the summary every later turn reads.
@@ -700,6 +745,55 @@ impl Machine {
         session.asked.push_back(ask);
         session.idle_since = now_millis();
         session.trail.last = typed;
+    }
+
+    /// Asks whether to branch session `id`, which runs outside tmux, into a window of its
+    /// own and type the message of `ask` there.
+    fn confirm(&self, id: &str, ask: &Ask) {
+        let text = format!(
+            "{} runs outside tmux, where nothing can be typed into it. Branch it into a \
+             window of its own and send this there? The branch works on the same files.",
+            code(&hook::address(id, None))
+        );
+        let button = ("Branch and send".to_owned(), format!("{FORK} {id}"));
+        self.telegram
+            .buttoned(ask.place, &text, Some(ask.message), &[button]);
+    }
+
+    /// The press confirming a branch of session `id`, on `confirmation`: opens a window
+    /// running a branch of it, to type the message the confirmation replies to into once
+    /// the branch is ready. Only the sender of that message confirms it.
+    fn fork(&mut self, from: &Admitted, presser: i64, confirmation: &Message, id: &str) {
+        let place = from.place;
+        let Some(asked) = confirmation.replied.as_deref().filter(|asked| {
+            asked
+                .from
+                .as_ref()
+                .is_some_and(|sender| sender.id == presser)
+        }) else {
+            return;
+        };
+        let text = asked.text.as_deref().unwrap_or_default().trim();
+        let Some(dir) = self
+            .known()
+            .find(|(known, _, _)| *known == id)
+            .map(|(_, dir, _)| dir.to_owned())
+        else {
+            return self.say(place, &unseen(id));
+        };
+        if !self.reaches(from.guest.as_deref(), place, &dir) {
+            return;
+        }
+        let ask = Ask {
+            text: unaddressed(text),
+            place,
+            message: asked.id,
+            guest: from.guest.clone(),
+        };
+        let start = Start::Fork(id.to_owned());
+        if self.open(dir, start, Awaiting::Prompt(ask)).is_some() {
+            self.telegram.delete(place.chat, confirmation.id);
+        }
     }
 
     /// The pane of running session `id`, while it still shows the session, or what the

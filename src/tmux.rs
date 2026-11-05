@@ -144,10 +144,19 @@ impl Pane {
     }
 }
 
-/// Opens a window running a session in `cwd`, the one `resume` names or a new one, and
-/// returns its pane. That session's own `SessionStart` says it is ready to type into,
-/// so nothing here waits for it.
-pub fn open(cwd: &Path, resume: Option<&str>) -> Result<Pane, String> {
+/// The conversation a window opens: a new one, the session an id names, or a branch of
+/// that session, which leaves the session itself to whatever runs it.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Start {
+    New,
+    Resume(String),
+    Fork(String),
+}
+
+/// Opens a window running a session in `cwd` as `start` says, and returns its pane. That
+/// session's own `SessionStart` says it is ready to type into, so nothing here waits for
+/// it.
+pub fn open(cwd: &Path, start: &Start) -> Result<Pane, String> {
     let exact = format!("={OWNED_SESSION}");
     // `new-session -A` attaches to a session already there even with `-d`, and this
     // process has no terminal to attach with, so the first window opens the session.
@@ -168,10 +177,12 @@ pub fn open(cwd: &Path, resume: Option<&str>) -> Result<Pane, String> {
         .unwrap_or("claude");
     // tmux runs a command given as one argument through its `default-shell`, whose
     // startup files put the user's directories on `PATH`, and execs one given as several.
-    let claude = resume.map_or_else(
-        || "claude".to_owned(),
-        |id| format!("claude --resume '{}'", id.replace('\'', r"'\''")),
-    );
+    let resume = |id: &str| format!("claude --resume '{}'", id.replace('\'', r"'\''"));
+    let claude = match start {
+        Start::New => "claude".to_owned(),
+        Start::Resume(id) => resume(id),
+        Start::Fork(id) => format!("{} --fork-session", resume(id)),
+    };
     let output = command
         .args(["-P", "-F", "#{pane_id} #{socket_path}"])
         .args(["-c", directory, "-n", name, &claude])

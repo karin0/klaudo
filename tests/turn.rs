@@ -942,12 +942,10 @@ fn a_message_replying_to_nothing_goes_to_the_most_recent_session_in_its_chat() {
                 .markdown
                 .split_once(' ')
                 .expect("an address and a reason");
-            // The session reports the terminal the test itself was started from, and a
-            // build machine may have given it none.
+            // The sessions run outside tmux, so a message reaching one is answered by
+            // the offer to branch it.
             assert!(
-                why == "has no terminal to type into"
-                    || (why.starts_with("is on `/dev/pts/")
-                        && why.ends_with("`, which no tmux pane holds")),
+                why.starts_with("runs outside tmux"),
                 "the answer reads {:?}",
                 call.markdown
             );
@@ -2133,6 +2131,115 @@ fn a_branch_outside_every_topic_stays_there() {
     drop(daemon);
 }
 
+/// A message to a session outside tmux is answered with a button, whose press by the
+/// message's sender opens a window running a branch of the session, which goes to a topic
+/// of its own named after the prompt it carried over and is typed the message, which goes
+/// along to that topic with the turn answering it.
+#[test]
+fn a_session_outside_tmux_is_branched_once_confirmed() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("fork", port);
+    let root = temporary.path();
+    let original = in_topic_77(root);
+    let daemon = daemon(root);
+
+    chat.says_in(GROUP, 77, OWNER, "try another way");
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let confirmation = made.last().expect("the confirmation");
+    assert!(
+        confirmation.markdown.contains("runs outside tmux"),
+        "{}",
+        confirmation.markdown
+    );
+    assert_eq!(confirmation.reply, replying_to(9000));
+    let data = format!("fork {original}");
+    let asked = json!({"message_id": 9000, "date": now(), "chat": {"id": GROUP},
+        "from": person(OWNER), "text": "try another way",
+        "message_thread_id": 77, "is_topic_message": true});
+    // Only the sender of the message confirms it.
+    chat.presses_replying(GUEST, confirmation, &data, Some(77), &asked);
+    chat.presses_replying(OWNER, confirmation, &data, Some(77), &asked);
+    let made = collect(&calls, |call| call.label == "deleteMessage");
+    assert_eq!(
+        made.last().expect("the deletion").target,
+        Some(confirmation.id)
+    );
+    let commands = std::fs::read_to_string(root.join("commands")).expect("a window was opened");
+    assert_eq!(
+        commands.lines().collect::<Vec<_>>(),
+        [format!("claude --resume '{original}' --fork-session")]
+    );
+
+    // The branch reports from the pane of the window, as `claude --fork-session` does,
+    // with no title.
+    std::fs::write(
+        root.join("start.json"),
+        json!({"hook_event_name": "SessionStart", "session_id": "fedcba9876543210",
+            "cwd": project(root), "source": "fork"})
+        .to_string(),
+    )
+    .expect("an event");
+    let mut branch = within(root, "script")
+        .args([
+            "-qc",
+            "tty > tty; \"$KLAUDO\" < start.json; exec sleep 30",
+            "/dev/null",
+        ])
+        .env("KLAUDO", env!("CARGO_BIN_EXE_klaudo"))
+        .env("SHELL", "/bin/sh")
+        .env(
+            "TMUX",
+            format!("{},1,0", root.join("bin/../tmux.sock").display()),
+        )
+        .env("TMUX_PANE", "%1")
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("a branch on a terminal");
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let opened = made
+        .iter()
+        .find(|call| call.label == "createForumTopic")
+        .expect("the topic");
+    assert_eq!(
+        opened.body,
+        json!({"chat_id": GROUP, "name": "fix the parser (Branch)"})
+    );
+    // The message goes along to the branch's topic, where its turn replies to it.
+    let prompt = made.last().expect("the prompt");
+    assert_eq!(prompt.body["message_thread_id"], json!(opened.id));
+    assert!(
+        prompt.markdown.ends_with(">try another way"),
+        "{}",
+        prompt.markdown
+    );
+    assert!(
+        prompt.body["reply_markup"].is_null(),
+        "no anchor besides the prompt"
+    );
+    let typed = root.join("typed");
+    wait_for(
+        || std::fs::read_to_string(&typed).is_ok_and(|typed| typed == "try another way"),
+        "the message was never typed into the branch",
+    );
+    for event in [
+        json!({"hook_event_name": "UserPromptSubmit", "session_id": "fedcba9876543210",
+            "cwd": project(root), "prompt": "try another way"}),
+        json!({"hook_event_name": "Stop", "session_id": "fedcba9876543210",
+            "last_assistant_message": "tried"}),
+    ] {
+        hook(root, &event);
+    }
+    let made = collect(&calls, |call| call.markdown.ends_with("tried"));
+    let answer = made.last().expect("the answer");
+    assert_eq!(answer.body["message_thread_id"], json!(opened.id));
+    assert_eq!(answer.reply, replying_to(prompt.id));
+    let _ = branch.kill();
+    let _ = branch.wait();
+    drop(daemon);
+}
+
 /// A turn summoned while it runs goes on under the anchor: the message showing it moves
 /// there, and the answer replies to the anchor, while the prompt stays where it was.
 #[test]
@@ -3247,6 +3354,18 @@ impl Chat {
 
     /// A press on a button of `menu` where it stands in topic `topic`.
     fn presses_in(&self, sender: i64, menu: &Call, data: &str, topic: Option<i64>) {
+        self.presses_replying(sender, menu, data, topic, &serde_json::Value::Null);
+    }
+
+    /// A press on a button of `menu`, which replies to `replied` in topic `topic`.
+    fn presses_replying(
+        &self,
+        sender: i64,
+        menu: &Call,
+        data: &str,
+        topic: Option<i64>,
+        replied: &serde_json::Value,
+    ) {
         self.deliver(json!({
             "callback_query": {
                 "id": "query",
@@ -3259,6 +3378,7 @@ impl Chat {
                     "reply_markup": menu.body["reply_markup"],
                     "message_thread_id": topic,
                     "is_topic_message": topic.is_some(),
+                    "reply_to_message": replied,
                 },
                 "data": data,
             },

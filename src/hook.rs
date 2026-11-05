@@ -269,7 +269,7 @@ fn fold(text: &str, credit: &str, room: usize) -> String {
 
 /// A block quotation, which every line carries its own marker of because a line without
 /// one ends the quote.
-fn quote(text: &str) -> String {
+pub fn quote(text: &str) -> String {
     text.lines()
         .map(|line| format!(">{}", prose(line)))
         .collect::<Vec<_>>()

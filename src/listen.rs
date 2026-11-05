@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hook::{self, Event};
 use crate::telegram::{Place, Sound, Telegram};
-use crate::tmux::{self, Pane};
+use crate::tmux::{self, Pane, Start};
 
 use chat::{ATTACH, BRANCH, COMMANDS, tilde};
 use render::{code, took};
@@ -498,9 +498,10 @@ fn now_millis() -> u64 {
 /// What the chat asked, waiting for the session of the window the daemon opened for it.
 struct Opening {
     dir: PathBuf,
-    /// The session the window resumes, which is what the ask waits for. A new
-    /// conversation waits for the next session to start in `dir`.
-    resume: Option<String>,
+    /// What the window runs. The ask waits for the session the window resumes, for the
+    /// next session to start in the window's pane where it runs a branch, and for the
+    /// next session to start in `dir` where it runs a new conversation.
+    start: Start,
     pane: Pane,
     ask: Awaiting,
 }
@@ -565,10 +566,17 @@ impl Machine {
                 self.save_ended();
             } else {
                 // A conversation opened from the chat belongs where it was asked for.
-                let asked = self
-                    .waiting(&id, &session.dir)
+                let opening = self
+                    .waiting(&id, &session.dir, session.pane.as_ref())
                     .first()
-                    .map(|&index| self.opening[index].ask.place());
+                    .map(|&index| &self.opening[index]);
+                // A branch carries its conversation over, latest prompt included.
+                if let Some(Start::Fork(origin)) = opening.map(|opening| &opening.start)
+                    && let Some((_, _, trail)) = self.known().find(|(id, _, _)| id == origin)
+                {
+                    session.trail.prompt.clone_from(&trail.prompt);
+                }
+                let asked = opening.map(|opening| opening.ask.place());
                 let place = asked
                     .or_else(|| self.inherited(&session.dir))
                     .unwrap_or_else(|| session.home(&self.telegram));
@@ -587,7 +595,7 @@ impl Machine {
         match event.hook_event_name.as_str() {
             "SessionStart" => {
                 if event.source.as_deref() == Some("fork") {
-                    self.branched(&id, event.session_title.as_deref().unwrap_or_default());
+                    self.branched(&id, event.session_title.as_deref());
                 }
                 self.started(&id);
             }

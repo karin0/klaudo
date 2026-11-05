@@ -7,7 +7,7 @@ use kuriero::Message;
 
 use crate::process;
 use crate::telegram::{Place, Sound};
-use crate::tmux::Pane;
+use crate::tmux::{Pane, Start};
 
 use super::chat::{NEW, NOTHING_RAN, unseen};
 use super::{Awaiting, Machine};
@@ -67,6 +67,6 @@ impl Machine {
             return None;
         };
         let (dir, id) = (ended.dir.clone(), ended.id.clone());
-        self.open(dir, Some(id), Awaiting::Terminal(place))
+        self.open(dir, Start::Resume(id), Awaiting::Terminal(place))
     }
 }
