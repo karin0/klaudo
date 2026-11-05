@@ -711,6 +711,45 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
     drop(daemon);
 }
 
+/// `PostToolUse` carries the tool's whole output, which can run to megabytes, and the
+/// call still shows as finished.
+#[test]
+fn a_call_with_a_large_output_still_finishes() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("large", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "read it"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "reading"}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Read",
+               "tool_input": {"file_path": "/big"}}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Read",
+               "duration_ms": 30, "tool_response": {"content": "x".repeat(4 << 20)}}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "done"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!("0123456789abcdef");
+        event["cwd"] = json!(project(root));
+        hook(root, &event);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    assert_eq!(
+        holding(&made),
+        [
+            ("silent", ">read it"),
+            ("silent", "reading\n\n● **Read**  `/big` **30ms**"),
+            ("ring", "done"),
+        ]
+        .map(|(sound, body)| (sound, body.to_owned()))
+    );
+    drop(daemon);
+}
+
 /// A run that would not fit under the words introducing it leaves them their message
 /// and goes on in one of its own.
 #[test]

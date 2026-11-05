@@ -5,12 +5,13 @@ mod process;
 mod telegram;
 mod tmux;
 
-use std::io::Read;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixDatagram};
+use std::io::{self, Read, Write};
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::channel;
+use std::time::Duration;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use hook::Event;
@@ -53,7 +54,7 @@ fn main() {
         Some(Command::Listen) => listen::run(),
         Some(Command::Send { files }) => send(&files),
         Some(Command::Status) => {
-            if !hand_over(&wrapped("{\"status\":", &stdin())) {
+            if !hand_over(wrapped("{\"status\":", &stdin())) {
                 eprintln!("klaudo: no daemon is listening");
             }
         }
@@ -159,26 +160,41 @@ fn forward(raw: &[u8]) -> bool {
     })
     .to_string();
     let head = format!("{},\"event\":", context.trim_end_matches('}'));
-    hand_over(&wrapped(&head, raw))
+    hand_over(wrapped(&head, raw))
 }
 
 /// `raw` as the last field of an object that `head` opens. Concatenated rather than
 /// re-serialised, because a delta's hook runs inside the budget that holds the
 /// terminal's own output back.
 fn wrapped(head: &str, raw: &[u8]) -> Vec<u8> {
-    let mut datagram = Vec::with_capacity(head.len() + raw.len() + 1);
-    datagram.extend_from_slice(head.as_bytes());
-    datagram.extend_from_slice(raw);
-    datagram.push(b'}');
-    datagram
+    let mut request = Vec::with_capacity(head.len() + raw.len() + 1);
+    request.extend_from_slice(head.as_bytes());
+    request.extend_from_slice(raw);
+    request.push(b'}');
+    request
 }
 
-fn hand_over(datagram: &[u8]) -> bool {
-    let (Some(target), Ok(socket)) = (listen::socket_path(), UnixDatagram::unbound()) else {
-        return false;
-    };
-    let _ = socket.set_write_timeout(Some(HANDOFF_TIMEOUT));
-    socket.send_to(datagram, target).is_ok()
+fn hand_over(request: Vec<u8>) -> bool {
+    listen::socket_path().is_some_and(|target| ask(target, request, HANDOFF_TIMEOUT).is_ok())
+}
+
+/// Writes `request` to the daemon on a connection of its own and returns the connection,
+/// where an answer may follow. Connecting waits while the daemon's backlog is full, so
+/// the connection is made on a thread of its own that this process abandons after `wait`.
+fn ask(target: PathBuf, request: Vec<u8>, wait: Duration) -> io::Result<UnixStream> {
+    let (sent, connection) = channel();
+    std::thread::spawn(move || {
+        let connected = UnixStream::connect(target).and_then(|mut connection| {
+            connection.write_all(&request)?;
+            connection.shutdown(Shutdown::Write)?;
+            Ok(connection)
+        });
+        // The caller stops listening once `wait` passes.
+        let _ = sent.send(connected);
+    });
+    connection
+        .recv_timeout(wait)
+        .unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
 }
 
 /// Asks the daemon where the files go and uploads them from here, so the uploads hold
@@ -227,87 +243,34 @@ fn send(files: &[PathBuf]) {
     }
 }
 
-/// The answer arrives at an abstract address, which vanishes with this process however
-/// it ends. Anyone on the machine can send to such an address, so only an answer from
-/// the daemon's own socket counts.
+/// The answer comes back on the connection the question went out on, which only the
+/// daemon holds the other end of.
 fn locate(
     listening: &Path,
     session: Option<&str>,
     cwd: &Path,
 ) -> Result<listen::Placement, String> {
-    let unreachable = |error: std::io::Error| -> ! {
+    let unreachable = |error: io::Error| -> ! {
         fail(&format!("the daemon at {}: {error}", listening.display()))
     };
-    let name = format!("klaudo-send-{}", std::process::id());
-    let socket = SocketAddr::from_abstract_name(&name)
-        .and_then(|address| UnixDatagram::bind_addr(&address))
-        .expect("bind");
-    let request = serde_json::json!({"session": session, "cwd": cwd, "reply": name});
-    if let Err(error) = socket.send_to(request.to_string().as_bytes(), listening) {
-        unreachable(error);
-    }
-    let deadline = Instant::now() + LOCATE_WAIT;
-    let mut answer = vec![0; 64 * 1024];
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            fail(&format!(
-                "the daemon at {} did not answer within {}s",
-                listening.display(),
-                LOCATE_WAIT.as_secs()
-            ));
-        }
-        socket.set_read_timeout(Some(left)).expect("read timeout");
-        let (size, from) = match socket.recv_from(&mut answer) {
-            Ok(received) => received,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
-            Err(error) => unreachable(error),
-        };
-        if from.as_pathname() == Some(listening) {
-            return serde_json::from_slice(&answer[..size]).expect("the daemon's answer");
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// An answer from any socket but the daemon's is dropped, so a local user who
-    /// guesses the address cannot say where the file goes.
-    #[test]
-    fn only_the_daemon_answers_where_a_file_goes() {
-        let directory = tempfile::tempdir().expect("a directory of the test's own");
-        let listening = directory.path().join("listen.sock");
-        let daemon = UnixDatagram::bind(&listening).expect("bind the daemon");
-        std::thread::spawn(move || {
-            let mut request = vec![0; 4096];
-            let size = daemon.recv(&mut request).expect("the question");
-            let request: serde_json::Value =
-                serde_json::from_slice(&request[..size]).expect("a JSON question");
-            let reply =
-                SocketAddr::from_abstract_name(request["reply"].as_str().expect("a reply address"))
-                    .expect("an abstract address");
-            let impostor = UnixDatagram::unbound().expect("socket");
-            impostor
-                .send_to_addr(br#"{"Err": "from someone else"}"#, &reply)
-                .expect("the forged answer");
-            daemon
-                .send_to_addr(
-                    br#"{"Ok": {"place": {"chat": 7, "topic": 5}, "reply_to": 3, "caption": null}}"#,
-                    &reply,
-                )
-                .expect("the answer");
-        });
-
-        let placement = locate(&listening, None, Path::new("/")).expect("the daemon's answer");
-        assert_eq!(
-            (
-                placement.place.chat,
-                placement.place.topic,
-                placement.reply_to
-            ),
-            (7, Some(5), Some(3))
-        );
+    let request = serde_json::json!({"locate": {"session": session, "cwd": cwd}});
+    let mut connection = ask(
+        listening.to_path_buf(),
+        request.to_string().into_bytes(),
+        LOCATE_WAIT,
+    )
+    .unwrap_or_else(|error| unreachable(error));
+    connection
+        .set_read_timeout(Some(LOCATE_WAIT))
+        .expect("read timeout");
+    let mut answer = Vec::new();
+    match connection.read_to_end(&mut answer) {
+        Ok(_) => serde_json::from_slice(&answer).expect("the daemon's answer"),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => fail(&format!(
+            "the daemon at {} did not answer within {}s",
+            listening.display(),
+            LOCATE_WAIT.as_secs()
+        )),
+        Err(error) => unreachable(error),
     }
 }

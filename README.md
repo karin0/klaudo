@@ -243,9 +243,7 @@ of the directory it runs in. A line in `~/.claude/CLAUDE.md` pointing at `klaudo
 is enough for Claude to learn it.
 
 The command asks the daemon where the files go and uploads them itself, so its exit
-status says whether every file arrived. The answer comes to an abstract socket address,
-which any local user can send to, so the command takes only an answer sent from the
-daemon's own socket.
+status says whether every file arrived.
 
 ## Keystroke delivery
 
@@ -269,8 +267,9 @@ is on.
 holds both, to be merged into `~/.claude/settings.json`. The binary is installed as
 `/usr/local/bin/klaudo`, on the `PATH` Claude Code runs hooks with.
 
-The hook writes the event to the datagram socket `$XDG_RUNTIME_DIR/klaudo/listen.sock`
-with `$TMUX`, `$TMUX_PANE` and its parent's pid, and exits. Because of `exec`, that
+The hook writes the event to the stream socket `$XDG_RUNTIME_DIR/klaudo/listen.sock`
+with `$TMUX`, `$TMUX_PANE` and its parent's pid, and exits. `PostToolUse` carries the
+tool's whole output, which can pass the size limit of a datagram. Because of `exec`, that
 parent is the session itself. The status line is the one place Claude Code reports the
 context and the plan's limits, so `klaudo status` forwards it and prints nothing.
 

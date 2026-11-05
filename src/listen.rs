@@ -11,12 +11,12 @@ mod usage;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::net::{SocketAddr, UnixDatagram};
+use std::io::{Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kuriero::{CallbackQuery, Message};
@@ -47,9 +47,9 @@ const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(50);
 /// After a rejected poll, before asking again.
 const RETRY: Duration = Duration::from_secs(5);
-/// A send past the socket's own limit fails, and the hook falls back to reporting the
-/// event itself, so this only has to cover a clamped message with room to spare.
-const DATAGRAM_MAX: usize = 200 * 1024;
+/// A peer writes its whole request as soon as it connects, so one silent for this long
+/// has stalled and would hold up every connection behind it.
+const READ_WAIT: Duration = Duration::from_secs(1);
 /// How many exited sessions a reply can still resume, oldest forgotten first. An entry is
 /// an id, a directory and the start of a prompt, so the list stays within a few hundred
 /// kilobytes.
@@ -77,28 +77,32 @@ struct Handoff {
     event: Event,
 }
 
-/// What reaches the socket, from a hook, from the poller reading the chat, or from
-/// `klaudo send` asking where a file goes. That question waits for the answer at the
-/// abstract address `reply`, and names no session when it ran outside Claude Code, which
-/// leaves `cwd` to say where the file goes.
+/// What a connection to the socket carries, from a hook, from the status line, or from
+/// `klaudo send` asking where a file goes.
 #[derive(Deserialize)]
 #[serde(untagged)]
+enum Request {
+    Hook(Box<Handoff>),
+    Status { status: Status },
+    Locate { locate: Question },
+}
+
+/// The question `klaudo send` asks. It names no session when the command ran outside
+/// Claude Code, which leaves `cwd` to say where the file goes.
+#[derive(Deserialize)]
+struct Question {
+    session: Option<String>,
+    cwd: PathBuf,
+}
+
+/// What the machine handles, in the order it landed: a request with the connection that
+/// waits for its answer, or an update the poller read from the chat.
 enum Arrival {
     Hook(Box<Handoff>),
-    Press {
-        press: CallbackQuery,
-    },
-    Status {
-        status: Status,
-    },
-    Chat {
-        message: Message,
-    },
-    Locate {
-        session: Option<String>,
-        cwd: PathBuf,
-        reply: String,
-    },
+    Status(Status),
+    Locate(Question, UnixStream),
+    Press(CallbackQuery),
+    Chat(Message),
 }
 
 /// Where the files `klaudo send` uploads go, and the caption that addresses each of them.
@@ -119,8 +123,8 @@ pub fn run() {
 
     let path = directory.join("listen.sock");
     let _ = fs::remove_file(&path);
-    let socket = UnixDatagram::bind(&path).expect("bind");
-    let answers = socket.try_clone().expect("socket");
+    let listener = UnixListener::bind(&path).expect("bind");
+    let (landed, arrivals) = channel();
     let telegram = Arc::new(Telegram::new());
     let attach = crate::telegram::setting("ATTACH_COMMAND").map(PathBuf::from);
     let commands: Vec<_> = COMMANDS
@@ -134,8 +138,9 @@ pub fn run() {
         .filter(|&(command, _)| command != ATTACH)
         .collect();
     let poller = Arc::clone(&telegram);
-    std::thread::spawn(move || poll(&poller, &path, &commands, &guests));
-    let arrivals = read(socket);
+    let updates = landed.clone();
+    std::thread::spawn(move || poll(&poller, &updates, &commands, &guests));
+    std::thread::spawn(move || read(&listener, &landed));
 
     let running_file = directory.join("state.json");
     // A list a different version wrote may not parse, and it only saves the sessions
@@ -152,7 +157,6 @@ pub fn run() {
         load(&ended_file).unwrap_or_else(|error| panic!("{}: {error}", ended_file.display()));
     let mut machine = Machine {
         telegram,
-        answers,
         sessions: running
             .into_iter()
             .map(|running| {
@@ -193,23 +197,37 @@ pub fn run() {
     }
 }
 
-/// Moves every datagram out of the socket's buffer as it lands. A Telegram call holds
-/// the machine for as long as the call takes, and the socket's own buffer is a few
-/// hundred deltas deep, past which a hook's handoff fails and that hook posts its event
-/// by itself, one message per delta.
-fn read(socket: UnixDatagram) -> Receiver<Arrival> {
-    let (sender, arrivals) = channel();
-    std::thread::spawn(move || {
-        let mut buffer = vec![0u8; DATAGRAM_MAX];
-        loop {
-            let size = socket.recv(&mut buffer).expect("recv");
-            match serde_json::from_slice(&buffer[..size]) {
-                Ok(arrival) => sender.send(arrival).expect("the machine is running"),
-                Err(error) => eprintln!("unreadable arrival: {error}"),
+/// Reads each connection to its end as it lands and queues what it carried, so a
+/// Telegram call holding the machine holds up no hook. A request of any size arrives
+/// whole, and only a question keeps its connection, to be answered on it.
+fn read(listener: &UnixListener, landed: &Sender<Arrival>) {
+    for connection in listener.incoming() {
+        let mut connection = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("accept: {error}");
+                continue;
             }
+        };
+        connection
+            .set_read_timeout(Some(READ_WAIT))
+            .expect("read timeout");
+        let mut request = Vec::new();
+        if let Err(error) = connection.read_to_end(&mut request) {
+            eprintln!("arrival: {error}");
+            continue;
         }
-    });
-    arrivals
+        let arrival = match serde_json::from_slice(&request) {
+            Ok(Request::Hook(handoff)) => Arrival::Hook(handoff),
+            Ok(Request::Status { status }) => Arrival::Status(status),
+            Ok(Request::Locate { locate }) => Arrival::Locate(locate, connection),
+            Err(error) => {
+                eprintln!("unreadable arrival: {error}");
+                continue;
+            }
+        };
+        landed.send(arrival).expect("the machine is running");
+    }
 }
 
 fn acquire(lock: &File) -> bool {
@@ -227,15 +245,19 @@ fn acquire(lock: &File) -> bool {
     }
 }
 
-/// Reads the chat and hands each message to the process's own socket, so events from
-/// the hooks and messages from the phone arrive through one queue in the order they
-/// landed. Messages older than this loop are the backlog Telegram still holds, and
-/// typing those into a terminal would replay an afternoon of asks.
-fn poll(telegram: &Telegram, target: &Path, commands: &[(&str, &str)], guests: &[(&str, &str)]) {
+/// Reads the chat and queues each update beside the requests, so events from the hooks
+/// and messages from the phone are handled in the order they landed. Messages older
+/// than this loop are the backlog Telegram still holds, and typing those into a terminal
+/// would replay an afternoon of asks.
+fn poll(
+    telegram: &Telegram,
+    landed: &Sender<Arrival>,
+    commands: &[(&str, &str)],
+    guests: &[(&str, &str)],
+) {
     telegram.register(commands, guests);
     let started =
         i64::try_from(now_millis() / 1000).expect("any u64 of milliseconds fits an i64 in seconds");
-    let socket = UnixDatagram::unbound().expect("socket");
     let mut offset = 0;
     loop {
         let Some(updates) = telegram.updates(offset) else {
@@ -246,17 +268,12 @@ fn poll(telegram: &Telegram, target: &Path, commands: &[(&str, &str)], guests: &
             offset = update.id + 1;
             // A press only redraws a menu or posts an anchor, so a backlog of them
             // replays nothing a terminal would take.
-            let handoff = match (update.callback_query, update.message) {
-                (Some(press), _) => serde_json::json!({"press": press}),
-                (None, Some(message)) if message.date >= started => {
-                    serde_json::json!({"message": message})
-                }
+            let arrival = match (update.callback_query, update.message) {
+                (Some(press), _) => Arrival::Press(press),
+                (None, Some(message)) if message.date >= started => Arrival::Chat(message),
                 _ => continue,
-            }
-            .to_string();
-            if let Err(error) = socket.send_to(handoff.as_bytes(), target) {
-                eprintln!("forward: {error}");
-            }
+            };
+            landed.send(arrival).expect("the machine is running");
         }
     }
 }
@@ -387,8 +404,6 @@ impl Session {
 
 struct Machine {
     telegram: Arc<Telegram>,
-    /// Where `klaudo send` hears where its file goes.
-    answers: UnixDatagram,
     sessions: BTreeMap<String, Session>,
     opening: Vec<Opening>,
     /// Every exited session, oldest first.
@@ -492,22 +507,16 @@ impl Machine {
             Arrival::Hook(handoff) => {
                 self.hook(handoff.pid, handoff.tmux.zip(handoff.pane), &handoff.event);
             }
-            Arrival::Press { press } => self.press(&press),
-            Arrival::Status { status } => self.status(status),
-            Arrival::Chat { message } => self.chat(&message),
-            Arrival::Locate {
-                session,
-                cwd,
-                reply,
-            } => {
-                let placement = self.locate(session.as_deref(), &cwd);
+            Arrival::Status(status) => self.status(status),
+            Arrival::Locate(question, mut asker) => {
+                let placement = self.locate(question.session.as_deref(), &question.cwd);
                 let answer = serde_json::to_vec(&placement).expect("a placement serializes");
-                let sent = SocketAddr::from_abstract_name(reply.as_bytes())
-                    .and_then(|address| self.answers.send_to_addr(&answer, &address));
-                if let Err(error) = sent {
-                    eprintln!("answer {reply}: {error}");
+                if let Err(error) = asker.write_all(&answer) {
+                    eprintln!("answer {}: {error}", question.cwd.display());
                 }
             }
+            Arrival::Press(press) => self.press(&press),
+            Arrival::Chat(message) => self.chat(&message),
         }
     }
 
