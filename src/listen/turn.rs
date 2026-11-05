@@ -94,6 +94,8 @@ const FRAME: usize = 1024;
 const FRAME_BLOCKS: usize = 4;
 /// How much of a session's latest prompt its button in a `/resume` menu shows.
 const PROMPT_MAX: usize = 40;
+/// How many characters of a text block missing from the chat its warning quotes.
+const UNPOSTED_MAX: usize = 80;
 /// How much of the first line of what a failed tool reported its call shows, past which
 /// it stops reading at a glance.
 const WHY_MAX: usize = 60;
@@ -202,6 +204,8 @@ pub(super) struct Turn {
     /// Where Claude Code writes the session's transcript, which is the one record of an
     /// interruption.
     transcript: Option<PathBuf>,
+    /// How long the transcript was as the turn opened.
+    opened: u64,
     stopping: Option<Stopping>,
 }
 
@@ -214,6 +218,10 @@ struct Stopping {
 
 impl Turn {
     fn new(prompt_id: String, thread: Thread, transcript: Option<PathBuf>) -> Self {
+        let opened = transcript
+            .as_ref()
+            .and_then(|path| fs::metadata(path).ok())
+            .map_or(0, |metadata| metadata.len());
         Self {
             segment: Some(Segment::new()),
             seed: seed(&prompt_id),
@@ -225,6 +233,7 @@ impl Turn {
             pending: Vec::new(),
             typing: None,
             transcript,
+            opened,
             stopping: None,
         }
     }
@@ -689,6 +698,23 @@ impl Machine {
             .telegram
             .post(thread.place, &message, Sound::Ring, thread.prompt);
         session.left(thread.place, answer);
+        if let (Some(path), Some(said)) = (&turn.transcript, &event.last_assistant_message) {
+            let posted: String = turn
+                .sealed
+                .iter()
+                .filter(|segment| segment.posted.is_some())
+                .map(Segment::text)
+                .chain([said.clone()])
+                .collect();
+            let entries = entries(path, turn.opened);
+            for (uuid, text) in unposted(&entries, &turn.prompt_id, &posted) {
+                eprintln!(
+                    "{} {uuid}: missing from the chat: {}",
+                    path.display(),
+                    first_line(text, UNPOSTED_MAX)
+                );
+            }
+        }
         // This event carries the last segment's text, so the message that was showing
         // it goes rather than standing above the one that repeats it.
         if let Some(live) = turn.live {
@@ -935,9 +961,9 @@ fn transcript(event: &Event) -> Option<PathBuf> {
     event.transcript_path.as_ref().map(PathBuf::from)
 }
 
-/// True once the transcript at `path` holds an interruption written past byte `from`. A
-/// line still being written fails to parse and is read whole on the next look.
-fn interrupted(path: &Path, from: u64) -> bool {
+/// The entries written to the transcript at `path` past byte `from`. A line still being
+/// written fails to parse and is left out.
+fn entries(path: &Path, from: u64) -> Vec<serde_json::Value> {
     let mut appended = Vec::new();
     let read = File::open(path).and_then(|mut file| {
         file.seek(SeekFrom::Start(from))?;
@@ -945,19 +971,64 @@ fn interrupted(path: &Path, from: u64) -> bool {
     });
     if let Err(error) = read {
         eprintln!("{}: {error}", path.display());
-        return false;
+        return Vec::new();
     }
     String::from_utf8_lossy(&appended)
         .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// True once the transcript at `path` holds an interruption written past byte `from`,
+/// which is read whole on the next look if its line is still being written.
+fn interrupted(path: &Path, from: u64) -> bool {
+    entries(path, from)
+        .iter()
         .filter(|entry| entry["type"] == "user")
-        .filter_map(|entry| entry["message"]["content"].as_array().cloned())
+        .filter_map(|entry| entry["message"]["content"].as_array())
         .flatten()
         .any(|part| {
             part["text"]
                 .as_str()
                 .is_some_and(|text| text.starts_with(INTERRUPTED))
         })
+}
+
+/// The text blocks of the main conversation that `posted` lacks, among `entries` from
+/// the prompt `prompt_id` on, with the uuid of the entry holding each, whitespace aside.
+/// A branch's transcript opens with the conversation it copied, whose prompts carry the
+/// id of the branch's first, so the prompt is the last entry typed under that id, which
+/// the results of the turn's tool calls are not. A diagnostic for text that goes missing
+/// from the chat, to be removed once its cause is found.
+fn unposted<'a>(
+    entries: &'a [serde_json::Value],
+    prompt_id: &str,
+    posted: &str,
+) -> Vec<(&'a str, &'a str)> {
+    let bare = |text: &str| text.split_whitespace().collect::<String>();
+    let posted = bare(posted);
+    let from = entries
+        .iter()
+        .rposition(|entry| {
+            entry["type"] == "user"
+                && entry["promptId"] == prompt_id
+                && entry["message"]["content"].is_string()
+        })
+        .unwrap_or(0);
+    entries[from..]
+        .iter()
+        .filter(|entry| entry["type"] == "assistant" && entry["isSidechain"] != true)
+        .flat_map(|entry| {
+            let uuid = entry["uuid"].as_str().unwrap_or_default();
+            entry["message"]["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|part| part["type"] == "text")
+                .filter_map(move |part| Some((uuid, part["text"].as_str()?)))
+        })
+        .filter(|(_, text)| !posted.contains(&bare(text)))
+        .collect()
 }
 
 /// The chat message that carried a prompt, when the daemon is the one that typed it.
@@ -1041,6 +1112,29 @@ mod tests {
         assert_eq!(seed("turn_1"), seed("turn_1"));
         assert_ne!(seed("turn_1"), seed("turn_2"));
         assert!(seed("") < WORDS.len() as u64);
+    }
+
+    #[test]
+    fn text_of_the_main_conversation_the_chat_lacks_is_reported() {
+        let said = |uuid: &str, kind: &str, text: &str, sidechain: bool| {
+            serde_json::json!({"type": "assistant", "uuid": uuid, "isSidechain": sidechain,
+                "message": {"content": [{"type": kind, kind: text}]}})
+        };
+        let asked = |content: serde_json::Value| serde_json::json!({"type": "user", "promptId": "p", "message": {"content": content}});
+        let entries = [
+            asked(serde_json::json!("asked in the conversation branched")),
+            said("z", "text", "copied from the conversation branched", false),
+            asked(serde_json::json!("asked")),
+            said("a", "text", "posted  as\nsaid", false),
+            said("b", "text", "never posted", false),
+            asked(serde_json::json!([{"type": "tool_result", "content": "read"}])),
+            said("c", "thinking", "never shown", false),
+            said("d", "text", "a subagent's", true),
+        ];
+        assert_eq!(
+            unposted(&entries, "p", "on it\n\nposted as said\n\n● **Read**"),
+            [("b", "never posted")]
+        );
     }
 
     #[test]
