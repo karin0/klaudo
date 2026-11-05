@@ -24,6 +24,7 @@ const SPLIT: &str = "split";
 /// Claude Code's own command, which the daemon types into the terminal like any prompt.
 pub(super) const BRANCH: &str = "branch";
 pub(super) const ATTACH: &str = "attach";
+const CANCEL: &str = "cancel";
 /// What the button confirming a branch of a session outside tmux carries ahead of its id.
 const FORK: &str = "fork";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
@@ -61,6 +62,10 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
         "Open the terminal of the conversation it replies to",
     ),
     ("compact", "Compact the conversation it replies to"),
+    (
+        CANCEL,
+        "Close the reply box an earlier message keeps opening",
+    ),
 ];
 
 /// What a message reaching no session is answered with.
@@ -124,6 +129,63 @@ impl Machine {
             .collect()
     }
 
+    /// Carries out `text` where it is one of the daemon's own commands, which reach no
+    /// session, and says whether it was one.
+    fn commanded(
+        &mut self,
+        from: &Admitted,
+        text: &str,
+        carrier: i64,
+        replied: Option<&Message>,
+    ) -> bool {
+        let place = from.place;
+        match command(text) {
+            Some((NEW, "")) => {
+                let lead = self.reached(place, replied);
+                if let Some(buttons) = self.choices(place, NEW, lead) {
+                    self.telegram
+                        .menu(place, "Open a conversation in:", &buttons);
+                }
+            }
+            Some((NEW, argument)) => {
+                self.anchor(from, argument);
+            }
+            Some((CLEAR, _)) => {
+                if let Some(dir) = self.reached(place, replied) {
+                    self.anchor(from, &tilde(dir));
+                } else {
+                    self.say(place, NOTHING_RAN);
+                }
+            }
+            Some((RESUME, _)) => {
+                self.resume(from, self.reached(place, replied));
+            }
+            Some((USAGE, _)) => {
+                self.usage(from, carrier, replied);
+            }
+            Some((DIFF, _)) => {
+                self.diff(from, carrier, replied);
+            }
+            Some((SPLIT, _)) => {
+                self.split_off(from, replied);
+            }
+            Some((CANCEL, _)) => {
+                self.telegram.unanchor(
+                    place,
+                    "closed the reply box, which Telegram Desktop shows once you switch away and back",
+                );
+            }
+            Some((ATTACH, _)) if from.guest.is_some() => {
+                self.say(place, "a guest cannot attach to a terminal");
+            }
+            Some((ATTACH, _)) => {
+                self.attach(place, carrier, replied);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// A message from the chat. What it replies to says where it goes: a message from a
     /// session reaches that session, and the message `/new` left behind opens a
     /// conversation in the directory it names. A message replying to nothing goes to
@@ -139,52 +201,8 @@ impl Machine {
         }
         let carrier = message.id;
         let replied = message.replied.as_deref();
-        match command(text) {
-            Some((NEW, "")) => {
-                let lead = self.reached(place, replied);
-                if let Some(buttons) = self.choices(place, NEW, lead) {
-                    self.telegram
-                        .menu(place, "Open a conversation in:", &buttons);
-                }
-                return;
-            }
-            Some((NEW, argument)) => {
-                self.anchor(&from, argument);
-                return;
-            }
-            Some((CLEAR, _)) => {
-                if let Some(dir) = self.reached(place, replied) {
-                    self.anchor(&from, &tilde(dir));
-                } else {
-                    self.say(place, NOTHING_RAN);
-                }
-                return;
-            }
-            Some((RESUME, _)) => {
-                self.resume(&from, self.reached(place, replied));
-                return;
-            }
-            Some((USAGE, _)) => {
-                self.usage(&from, carrier, replied);
-                return;
-            }
-            Some((DIFF, _)) => {
-                self.diff(&from, carrier, replied);
-                return;
-            }
-            Some((SPLIT, _)) => {
-                self.split_off(&from, replied);
-                return;
-            }
-            Some((ATTACH, _)) if from.guest.is_some() => {
-                self.say(place, "a guest cannot attach to a terminal");
-                return;
-            }
-            Some((ATTACH, _)) => {
-                self.attach(place, carrier, replied);
-                return;
-            }
-            _ => {}
+        if self.commanded(&from, text, carrier, replied) {
+            return;
         }
         let ask = Ask {
             text: unaddressed(text),

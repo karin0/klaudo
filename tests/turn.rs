@@ -4039,3 +4039,30 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
     );
     drop(daemon);
 }
+
+/// `/cancel` closes the reply box in its topic with a message of its own, which stays
+/// since the box returns once it is gone, and reaches no session.
+#[test]
+fn cancel_closes_the_reply_box_in_its_topic() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("cancel", port);
+    let root = temporary.path();
+    in_topic_77(root);
+    let daemon = daemon(root);
+
+    chat.says_in(GROUP, 77, OWNER, "/cancel");
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let sent: Vec<_> = made
+        .iter()
+        .filter(|call| call.label.starts_with("sendRichMessage"))
+        .map(|call| {
+            (
+                call.body["message_thread_id"].clone(),
+                call.body["reply_markup"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(sent, [(json!(77), json!({"remove_keyboard": true}))]);
+    assert!(made.iter().all(|call| call.label != "deleteMessage"));
+    drop(daemon);
+}

@@ -202,6 +202,18 @@ impl Telegram {
         self.call(&body).map(|sent| sent.id)
     }
 
+    /// A silent message removing the reply markup anchors left in `place`, which stays
+    /// in effect only while the message does.
+    pub fn unanchor(&self, place: Place, markdown: &str) -> Option<i64> {
+        let body = SendRichMessage {
+            reply_markup: Some(ReplyMarkup::RemoveKeyboard {
+                remove_keyboard: true,
+            }),
+            ..rich(place, markdown, Sound::Silent, None)
+        };
+        self.call(&body).map(|sent| sent.id)
+    }
+
     /// Posts files without a sound, under an HTML caption where one is given, since a
     /// document takes no rich message. More than one file is an album, whose first file
     /// alone carries the caption, so it is the one a reply reaches the session from.
