@@ -2072,6 +2072,67 @@ fn a_split_session_goes_to_a_topic_of_its_own() {
     drop(daemon);
 }
 
+/// A branch `/branch` made goes to a topic of its own under the name Claude Code gave it,
+/// while a new session of its project still takes the topic the project's conversations
+/// are in.
+#[test]
+fn a_branch_goes_to_a_topic_of_its_own() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("branch", port);
+    let root = temporary.path();
+    in_topic_77(root);
+    let daemon = daemon(root);
+
+    let branch = "fedcba9876543210";
+    hook(
+        root,
+        &json!({"hook_event_name": "SessionStart", "session_id": branch, "cwd": project(root),
+            "source": "fork", "session_title": "fix the parser (Branch)"}),
+    );
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let opened = made
+        .iter()
+        .find(|call| call.label == "createForumTopic")
+        .expect("the topic");
+    assert_eq!(
+        opened.body,
+        json!({"chat_id": GROUP, "name": "fix the parser (Branch)"})
+    );
+
+    assert_eq!(
+        prompted_in(root, &calls, &[branch, "5555555555555555"]),
+        [json!(opened.id), json!(77)]
+    );
+    drop(daemon);
+}
+
+/// A branch of a project whose conversations are outside every topic stays there with
+/// them.
+#[test]
+fn a_branch_outside_every_topic_stays_there() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("branch-untopiced", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+
+    let branch = "fedcba9876543210";
+    hook(
+        root,
+        &json!({"hook_event_name": "SessionStart", "session_id": branch, "cwd": project(root),
+            "source": "fork", "session_title": "a (Branch)"}),
+    );
+    assert_eq!(
+        prompted_in(root, &calls, &[branch]),
+        [serde_json::Value::Null]
+    );
+    assert!(
+        drained(&calls)
+            .iter()
+            .all(|call| call.label != "createForumTopic")
+    );
+    drop(daemon);
+}
+
 /// A turn summoned while it runs goes on under the anchor: the message showing it moves
 /// there, and the answer replies to the anchor, while the prompt stays where it was.
 #[test]

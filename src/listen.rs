@@ -27,7 +27,7 @@ use crate::hook::{self, Event};
 use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::{self, Pane};
 
-use chat::{ATTACH, COMMANDS, tilde};
+use chat::{ATTACH, BRANCH, COMMANDS, tilde};
 use render::{code, took};
 use turn::{Ask, SETTLE, Thread, Turn};
 use usage::{Limits, Status, Window};
@@ -135,7 +135,7 @@ pub fn run() {
     let guests: Vec<_> = commands
         .iter()
         .copied()
-        .filter(|&(command, _)| command != ATTACH)
+        .filter(|&(command, _)| command != ATTACH && command != BRANCH)
         .collect();
     let poller = Arc::clone(&telegram);
     let updates = landed.clone();
@@ -585,7 +585,12 @@ impl Machine {
         }
 
         match event.hook_event_name.as_str() {
-            "SessionStart" => self.started(&id),
+            "SessionStart" => {
+                if event.source.as_deref() == Some("fork") {
+                    self.branched(&id, event.session_title.as_deref().unwrap_or_default());
+                }
+                self.started(&id);
+            }
             "UserPromptSubmit" => self.submitted(&id, event),
             "MessageDisplay" => self.delta(&id, event),
             "PreToolUse" => self.calling(&id, event),

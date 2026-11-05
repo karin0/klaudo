@@ -79,6 +79,12 @@ pub struct Event {
     pub trigger: Option<String>,
     #[serde(default)]
     pub compact_summary: Option<String>,
+    /// How a session started, `fork` for a branch `/branch` made of another conversation.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The name Claude Code gave the conversation.
+    #[serde(default)]
+    pub session_title: Option<String>,
     #[serde(flatten)]
     rest: Map<String, Value>,
 }

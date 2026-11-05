@@ -207,7 +207,8 @@ sent, and one with instructions follows the reminder, since the instructions wou
 the summary every later turn reads. Their other slash commands follow the reminder, so
 Claude Code reads them as text, which keeps `/model`, `/permissions` and the like out of
 a guest's reach. `/attach` would hand over the terminal itself, so a guest's menu leaves
-it out and the daemon refuses it to them.
+it out and the daemon refuses it to them. A guest's menu also leaves out `/branch`, which
+reaches Claude as text like their other slash commands.
 
 A turn a message started is posted where the message came from. A turn started in the
 terminal goes to `CHAT_ID` when its project is in `CHAT_PROJECTS`, and to the private
@@ -231,9 +232,11 @@ until a session of its project posts in a topic, so a reply to one of its messag
 message sent outside every topic by mistake reaches no session.
 
 `/split` opens a topic for the session a message would reach, named after its latest
-prompt, and moves the session there the way `/resume` does. A session in a topic opened for
-it still counts toward the topic it left, so a new session of its project goes there, and
-each topic keeps one conversation. In a group,
+prompt, and moves the session there the way `/resume` does. Claude Code's `/branch`, typed
+in the terminal or sent from the chat, starts a new session, and where its project's
+conversations are in topics the daemon opens a topic for it under the name Claude Code gave
+the branch. A session in a topic opened for it still counts toward the topic it left, so a
+new session of its project goes there, and each topic keeps one conversation. In a group,
 Telegram lets the bot open a topic only with the `can_manage_topics` right.
 
 Topic mode slows the whole private chat. A reply to `/new` shows several seconds later

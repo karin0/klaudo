@@ -21,6 +21,8 @@ const CLEAR: &str = "clear";
 const USAGE: &str = "usage";
 const DIFF: &str = "diff";
 const SPLIT: &str = "split";
+/// Claude Code's own command, which the daemon types into the terminal like any prompt.
+pub(super) const BRANCH: &str = "branch";
 pub(super) const ATTACH: &str = "attach";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
 const SESSION: &str = "session";
@@ -39,6 +41,10 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     (
         SPLIT,
         "Move the conversation it replies to into a topic of its own",
+    ),
+    (
+        BRANCH,
+        "Branch the conversation it replies to into a topic of its own",
     ),
     (
         USAGE,
@@ -471,6 +477,15 @@ impl Machine {
         let (id, name) = (id.to_owned(), trail.prompt.clone());
         if !self.split(&id, place.chat, &name) {
             self.say(place, "could not move the session to a topic of its own");
+        }
+    }
+
+    /// A branch `/branch` made goes to a topic of its own, under the name Claude Code
+    /// gave it, where its project's conversations are in topics.
+    pub(super) fn branched(&mut self, id: &str, title: &str) {
+        let place = self.sessions[id].trail.last.map(|last| last.place);
+        if let Some(place) = place.filter(|place| place.topic.is_some()) {
+            self.split(id, place.chat, title);
         }
     }
 
