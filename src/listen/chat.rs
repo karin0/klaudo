@@ -11,7 +11,7 @@ use crate::tmux::{self, Pane};
 
 use super::render::code;
 use super::turn::{Ask, STOP, Thread};
-use super::{Awaiting, Last, Machine, Opening, Session, Trail, now_millis};
+use super::{Awaiting, Last, Machine, Opening, Own, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
@@ -20,6 +20,7 @@ const RESUME: &str = "resume";
 const CLEAR: &str = "clear";
 const USAGE: &str = "usage";
 const DIFF: &str = "diff";
+const SPLIT: &str = "split";
 pub(super) const ATTACH: &str = "attach";
 /// What a button picking one session of a `/resume` menu carries ahead of its id.
 const SESSION: &str = "session";
@@ -35,6 +36,10 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
         "Open a conversation in the project of the one it replies to",
     ),
     (RESUME, "Resume a recent conversation"),
+    (
+        SPLIT,
+        "Move the conversation it replies to into a topic of its own",
+    ),
     (
         USAGE,
         "Show the plan's limits and the context of the conversation it replies to",
@@ -146,6 +151,10 @@ impl Machine {
             }
             Some((DIFF, _)) => {
                 self.diff(&from, carrier, replied);
+                return;
+            }
+            Some((SPLIT, _)) => {
+                self.split_off(&from, replied);
                 return;
             }
             Some((ATTACH, _)) if from.guest.is_some() => {
@@ -342,16 +351,17 @@ impl Machine {
     }
 
     /// Where a session new to the daemon in `dir` starts out: the place in the
-    /// project's chat of the project's most recent session, so a conversation restarted
-    /// in a project stays in its topic.
+    /// project's chat of the project's most recent session, which a session in a topic of
+    /// its own stands for in the place it left, so a conversation restarted in a project
+    /// stays in its topic.
     pub(super) fn inherited(&self, dir: &Path) -> Option<Place> {
         let chat = self.telegram.chat(dir);
         self.known()
             .filter(|(_, known, _)| *known == dir)
-            .filter_map(|(_, _, trail)| trail.last)
-            .filter(|last| last.place.chat == chat)
-            .max_by_key(|last| last.at)
-            .map(|last| last.place)
+            .filter_map(|(_, _, trail)| trail.standing())
+            .filter(|&(place, _)| place.chat == chat)
+            .max_by_key(|&(_, at)| at)
+            .map(|(place, _)| place)
     }
 
     /// A `/resume` menu: the sessions of the project `lead`, or with none, the projects
@@ -426,14 +436,91 @@ impl Machine {
         if !self.reaches(from.guest.as_deref(), place, dir) {
             return None;
         }
-        let head = hook::Head::new(dir, id, None);
-        let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir))).markdown;
         let last = trail
             .last
             .filter(|last| last.place == place)
             .and_then(|last| last.message);
+        self.beckon(place, id, dir, last)
+    }
+
+    /// Posts in `place` an anchor addressed to session `id` of `dir`.
+    fn beckon(&self, place: Place, id: &str, dir: &Path, reply_to: Option<i64>) -> Option<i64> {
+        let head = hook::Head::new(dir, id, None);
+        let message = hook::compose(&head, "", "", &hook::prose(&tilde(dir))).markdown;
         let placeholder = format!("prompt for {}", hook::address(id, None));
-        self.telegram.anchor(place, &message, &placeholder, last)
+        self.telegram
+            .anchor(place, &message, &placeholder, reply_to)
+    }
+
+    /// `/split`: moves the session a message would reach to a topic of its own, named
+    /// after its latest prompt.
+    fn split_off(&mut self, from: &Admitted, replied: Option<&Message>) {
+        let place = from.place;
+        let address = match self.addressee(place, replied) {
+            Ok(address) => address.filter(|address| address != NEW),
+            Err(error) => return self.say(place, error),
+        };
+        let Some((id, dir, trail)) =
+            address.and_then(|address| self.known().find(|(id, _, _)| id.starts_with(&address)))
+        else {
+            return self.say(place, NOTHING_RAN);
+        };
+        if !self.reaches(from.guest.as_deref(), place, dir) {
+            return;
+        }
+        let (id, name) = (id.to_owned(), trail.prompt.clone());
+        if !self.split(&id, place.chat, &name) {
+            self.say(place, "could not move the session to a topic of its own");
+        }
+    }
+
+    /// Moves session `id` to a topic of `chat` opened for it alone, under `name`, or its
+    /// address where `name` is empty. Whether the session got there.
+    fn split(&mut self, id: &str, chat: i64, name: &str) -> bool {
+        let Some((dir, left)) = self
+            .known()
+            .find(|(known, _, _)| *known == id)
+            .and_then(|(_, dir, trail)| Some((dir.to_owned(), trail.standing()?.0)))
+        else {
+            return false;
+        };
+        let name = if name.is_empty() {
+            hook::address(id, None)
+        } else {
+            name.to_owned()
+        };
+        let Some(topic) = self.telegram.topic(chat, &name) else {
+            return false;
+        };
+        let place = Place {
+            chat,
+            topic: Some(topic),
+        };
+        let Some(anchor) = self.beckon(place, id, &dir, None) else {
+            return false;
+        };
+        if let Some(trail) = self.trail_mut(id) {
+            trail.own = Some(Own { topic: place, left });
+        }
+        self.summon(
+            id,
+            Thread {
+                place,
+                prompt: Some(anchor),
+            },
+        );
+        true
+    }
+
+    fn trail_mut(&mut self, id: &str) -> Option<&mut Trail> {
+        match self.sessions.get_mut(id) {
+            Some(session) => Some(&mut session.trail),
+            None => self
+                .ended
+                .iter_mut()
+                .find(|ended| ended.id == id)
+                .map(|ended| &mut ended.trail),
+        }
     }
 
     /// Moves session `id` to `thread`, whose anchor becomes the last message of its

@@ -2000,6 +2000,78 @@ fn a_session_goes_where_resume_summons_it() {
     drop(daemon);
 }
 
+/// The running session of a test that last posted in topic 77 of the group after the
+/// prompt `fix the parser`.
+fn in_topic_77(root: &Path) -> &'static str {
+    let id = "0123456789abcdef";
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([{
+            "id": id,
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "idle_since": 0,
+            "trail": {"prompt": "fix the parser", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
+        }])
+        .to_string(),
+    )
+    .expect("the state");
+    id
+}
+
+/// The topic each session's next prompt is posted in.
+fn prompted_in(root: &Path, calls: &Receiver<Call>, sessions: &[&str]) -> Vec<serde_json::Value> {
+    sessions
+        .iter()
+        .map(|session| {
+            hook(
+                root,
+                &json!({"hook_event_name": "UserPromptSubmit", "session_id": session, "cwd": project(root), "prompt": "again"}),
+            );
+            let made = collect(calls, |call| call.markdown.ends_with(">again"));
+            made.last().expect("the prompt").body["message_thread_id"].clone()
+        })
+        .collect()
+}
+
+/// `/split` moves the session a message reaches to a topic opened for it alone, named
+/// after its latest prompt, while a new session of its project still takes the topic the
+/// project's conversations are in, however many times the session was split.
+#[test]
+fn a_split_session_goes_to_a_topic_of_its_own() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("split", port);
+    let root = temporary.path();
+    let split = in_topic_77(root);
+    let daemon = daemon(root);
+
+    // Split again from the topic it was split to, the session still stands for topic 77.
+    let mut topic = 77;
+    for _ in 0..2 {
+        chat.says_in(GROUP, topic, OWNER, "/split");
+        let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+        let opened = made
+            .iter()
+            .find(|call| call.label == "createForumTopic")
+            .expect("the topic");
+        assert_eq!(
+            opened.body,
+            json!({"chat_id": GROUP, "name": "fix the parser"})
+        );
+        let anchor = made.last().expect("the anchor");
+        assert_eq!(anchor.body["message_thread_id"], json!(opened.id));
+        topic = opened.id;
+    }
+
+    assert_eq!(
+        prompted_in(root, &calls, &[split, "fedcba9876543210"]),
+        [json!(topic), json!(77)]
+    );
+    drop(daemon);
+}
+
 /// A turn summoned while it runs goes on under the anchor: the message showing it moves
 /// there, and the answer replies to the anchor, while the prompt stays where it was.
 #[test]
@@ -3266,6 +3338,9 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         let result = match method.as_str() {
             "setMyCommands" | "deleteMessage" | "setMessageReaction" | "answerCallbackQuery" => {
                 json!(true)
+            }
+            "createForumTopic" => {
+                json!({"message_thread_id": id, "name": body["name"], "icon_color": 7_322_096})
             }
             _ => json!({"message_id": id}),
         };

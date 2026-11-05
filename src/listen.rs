@@ -310,6 +310,16 @@ struct Session {
 struct Trail {
     prompt: String,
     last: Option<Last>,
+    own: Option<Own>,
+}
+
+/// A topic opened for one session alone, which no new session inherits, and the place
+/// the session stood for in its project when it moved there, which it still counts toward
+/// as the place a new session of its project goes.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct Own {
+    topic: Place,
+    left: Place,
 }
 
 /// The last message of a conversation, the session's own or one the daemon typed into
@@ -358,6 +368,17 @@ impl Trail {
         self.last
             .filter(|last| last.place == place)
             .map(|last| (last.message.is_some(), last.at))
+    }
+
+    /// Where the conversation stands for its project, and since when: the place of its
+    /// last message, or the place it left while it is in a topic of its own.
+    fn standing(&self) -> Option<(Place, u64)> {
+        let last = self.last?;
+        let place = match self.own {
+            Some(own) if own.topic == last.place => own.left,
+            _ => last.place,
+        };
+        Some((place, last.at))
     }
 
     fn at(&self) -> Option<u64> {

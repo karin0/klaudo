@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use kuriero::{
     AnswerCallbackQuery, BotCommand, Button, ChatAction, Client, CommandScope, Content,
-    DeleteMessage, EditMessageText, Keyboard, Message, Method, ParseMode, Reaction, ReplyMarkup,
-    ReplyParameters, RichInput, SendChatAction, SendMessage, SendRichMessage, Sent,
-    SetMessageReaction, SetMyCommands, Update, User,
+    CreateForumTopic, DeleteMessage, EditMessageText, Keyboard, Message, Method, ParseMode,
+    Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction, SendMessage,
+    SendRichMessage, Sent, SetMessageReaction, SetMyCommands, Update, User,
 };
 use pulldown_cmark::{Event, Options, Parser};
 use serde::de::IgnoredAny;
@@ -31,6 +31,8 @@ pub const MAX_BYTES: usize = 32768;
 pub const MAX_BLOCKS: usize = 500;
 /// The longest placeholder Telegram shows in an input field.
 const PLACEHOLDER_MAX: usize = 64;
+/// The longest name Telegram gives a topic.
+const TOPIC_NAME_MAX: usize = 128;
 /// What the daemon leaves on a message whose text reached a session's input box.
 const SEEN: &str = "👀";
 /// What a cut body ends with.
@@ -310,6 +312,17 @@ impl Telegram {
             content: Content::Rich(RichInput::Markdown(markdown)),
             reply_markup: (!buttons.is_empty()).then(|| keyboard(buttons)),
         });
+    }
+
+    /// Opens a topic in `chat` under the start of `name`, and gives the id a message sent
+    /// there names.
+    pub fn topic(&self, chat: i64, name: &str) -> Option<i64> {
+        let name: String = name.chars().take(TOPIC_NAME_MAX).collect();
+        self.call(&CreateForumTopic {
+            chat_id: chat,
+            name: &name,
+        })
+        .map(|topic| topic.id)
     }
 
     /// Takes back a message the daemon posted, which is how the one showing a turn's

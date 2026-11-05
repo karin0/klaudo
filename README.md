@@ -230,6 +230,12 @@ until a session of its project posts in a topic, so a reply to one of its messag
 `/resume` brings the session into a topic. A topic reaches only its own sessions, so a
 message sent outside every topic by mistake reaches no session.
 
+`/split` opens a topic for the session a message would reach, named after its latest
+prompt, and moves the session there the way `/resume` does. A session in a topic opened for
+it still counts toward the topic it left, so a new session of its project goes there, and
+each topic keeps one conversation. In a group,
+Telegram lets the bot open a topic only with the `can_manage_topics` right.
+
 Topic mode slows the whole private chat. A reply to `/new` shows several seconds later
 where topic mode is on than where it is off.
 
