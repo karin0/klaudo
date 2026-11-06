@@ -6,6 +6,7 @@ mod attach;
 mod chat;
 mod diff;
 mod render;
+mod transcript;
 mod turn;
 mod usage;
 
@@ -29,6 +30,7 @@ use crate::tmux::{self, Pane, Start};
 
 use chat::{ATTACH, BRANCH, COMMANDS, tilde};
 use render::{code, took};
+use transcript::Transcript;
 use turn::{Ask, SETTLE, Thread, Turn};
 use usage::{Limits, Status, Window};
 
@@ -302,6 +304,7 @@ struct Session {
     trail: Trail,
     /// The context its status line last reported, and when, in Unix seconds.
     window: Option<(Window, u64)>,
+    transcript: Option<Transcript>,
 }
 
 /// What a `/resume` menu shows of a session and leads back to: the start of its latest
@@ -399,6 +402,7 @@ impl Session {
             idle_since,
             trail: Trail::default(),
             window: None,
+            transcript: None,
         }
     }
 
@@ -590,6 +594,14 @@ impl Machine {
         session.idle_since = now_millis();
         if let Some(directory) = directory {
             session.dir = directory;
+        }
+        if let Some(path) = &event.transcript_path
+            && session
+                .transcript
+                .as_ref()
+                .is_none_or(|transcript| transcript.path != Path::new(path))
+        {
+            session.transcript = Some(Transcript::new(PathBuf::from(path)));
         }
 
         match event.hook_event_name.as_str() {

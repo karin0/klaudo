@@ -188,7 +188,11 @@ terminal stay where they were posted, since their turns reply to them.
 reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as
 a dialog that takes every key until dismissed, which is why the daemon answers it. The
 message showing a running turn and the answer closing it end with the same figures, as
-in `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`.
+in `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`. A session in the VS Code extension draws no
+status line, so its context shows as the tokens alone, which Claude Code's transcript
+records of each call. The daemon reads them from where the transcript ended when it first
+heard of the session, since the transcript of a long conversation runs to tens of
+megabytes.
 
 `/diff` answers with the unstaged changes of the working tree holding the directory of
 the session a message would reach, each file drawn in pictures folded under a line of
@@ -296,7 +300,7 @@ The hook writes the event to the stream socket `$XDG_RUNTIME_DIR/klaudo/listen.s
 with `$TMUX`, `$TMUX_PANE` and its parent's pid, and exits. `PostToolUse` carries the
 tool's whole output, which can pass the size limit of a datagram. Because of `exec`, that
 parent is the session itself. The status line is the one place Claude Code reports the
-context and the plan's limits, so `klaudo status` forwards it and prints nothing.
+context window and the plan's limits, so `klaudo status` forwards it and prints nothing.
 
 `SessionStart` fires once the session is ready for input, after the trust dialog, which
 is how a window opened from the chat knows when to type its first prompt.

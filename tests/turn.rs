@@ -3878,6 +3878,67 @@ fn a_turn_ends_with_a_status_line() {
     drop(daemon);
 }
 
+/// A session that draws no status line has its context counted from the latest call its
+/// transcript shows, from where the transcript ended when the daemon first heard of it.
+#[test]
+fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("counted", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    std::fs::create_dir(root.join("a")).expect("a project");
+    let transcript = root.join("transcript.jsonl");
+    let said = |cached: u64| {
+        json!({"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": {
+            "input_tokens": 2, "cache_creation_input_tokens": 98,
+            "cache_read_input_tokens": cached, "output_tokens": 459,
+        }}})
+    };
+    std::fs::write(&transcript, format!("{}\n", said(999_000))).expect("the transcript");
+    let event = |event: serde_json::Value| {
+        let mut event = event;
+        event["session_id"] = json!("aaaaaaaa");
+        event["cwd"] = json!(root.join("a"));
+        event["prompt_id"] = json!("p1");
+        event["transcript_path"] = json!(transcript);
+        event
+    };
+
+    hook(
+        root,
+        &event(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"})),
+    );
+    chat.says(OWNER, OWNER, "/usage");
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    let answer = &made.last().expect("the answer").markdown;
+    assert!(
+        answer.ends_with("\ncontext: not reported yet\nlimits: not reported yet"),
+        "{answer}"
+    );
+
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .expect("the transcript");
+    writeln!(file, "{}", said(167_000)).expect("a call");
+    hook(
+        root,
+        &event(json!({"hook_event_name": "Stop", "last_assistant_message": "done"})),
+    );
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let answer = &made.last().expect("the answer").markdown;
+    assert!(answer.ends_with("done\n\n`167.1k`"), "{answer}");
+
+    chat.says(OWNER, OWNER, "/usage");
+    let made = collect(&calls, |call| call.label == "sendMessage");
+    let answer = &made.last().expect("the answer").markdown;
+    assert!(
+        answer.ends_with("\ncontext: 167.1k, from the transcript\nlimits: not reported yet"),
+        "{answer}"
+    );
+    drop(daemon);
+}
+
 /// The limits `usage_is_answered_from_the_status_lines` reports at `now`, as the answer
 /// writes them.
 fn limits(now: u64) -> String {

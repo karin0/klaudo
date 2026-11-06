@@ -10,7 +10,7 @@ use kuriero::Message;
 use crate::telegram::Admitted;
 
 use super::chat::{NEW, ago};
-use super::{Machine, now_millis};
+use super::{Machine, Session, now_millis};
 
 /// What Claude Code hands a session's status line, as `klaudo status` forwards it. Both
 /// parts are absent until the session's first API call returns.
@@ -37,6 +37,22 @@ struct Usage {
     cache_written: u64,
     #[serde(rename = "cache_read_input_tokens")]
     cache_read: u64,
+}
+
+/// How full a session's context is: what its status line last reported, and when, in
+/// Unix seconds, or else the tokens its transcript shows the latest call sent.
+pub(super) enum Context<'a> {
+    Reported(&'a Window, u64),
+    Counted(u64),
+}
+
+impl Session {
+    pub(super) fn context(&mut self) -> Option<Context<'_>> {
+        match &self.window {
+            Some((window, at)) => Some(Context::Reported(window, *at)),
+            None => self.transcript.as_mut()?.tokens().map(Context::Counted),
+        }
+    }
 }
 
 /// The plan's limits, which every session of the account reports alike.
@@ -73,26 +89,31 @@ impl Machine {
     /// to `replied` would reach. With such a session the answer goes under its head, so a
     /// reply to the answer reaches it too. When a limit resets is written by each reader's
     /// client, in their own zone.
-    pub(super) fn usage(&self, from: &Admitted, asked: i64, replied: Option<&Message>) {
+    pub(super) fn usage(&mut self, from: &Admitted, asked: i64, replied: Option<&Message>) {
         let place = from.place;
         let address = match self.addressee(place, replied) {
             Ok(address) => address.filter(|address| address != NEW),
             Err(error) => return self.say(place, error),
         };
-        let reached = address.and_then(|address| self.addressed(&address));
-        if let Some((_, session)) = reached
-            && !self.reaches(from.guest.as_deref(), place, &session.dir)
+        let reached = address
+            .and_then(|address| self.addressed(&address))
+            .map(|(id, session)| (id.clone(), session.dir.clone()));
+        if let Some((_, dir)) = &reached
+            && !self.reaches(from.guest.as_deref(), place, dir)
         {
             return;
         }
         let now = now_millis() / 1000;
         let mut rows = Vec::new();
         let mut ages = Vec::new();
-        if let Some((_, session)) = reached {
-            match &session.window {
-                Some((window, at)) => {
-                    ages.push(format!("context {}", ago_since(now, *at)));
-                    rows.push(match (&window.current_usage, window.used_percentage) {
+        let mut head = None;
+        if let Some((id, _)) = &reached {
+            let session = self.sessions.get_mut(id).expect("a session just found");
+            head = Some(session.head(id, None).html());
+            rows.push(match session.context() {
+                Some(Context::Reported(window, at)) => {
+                    ages.push(format!("context {}", ago_since(now, at)));
+                    match (&window.current_usage, window.used_percentage) {
                         (Some(usage), Some(percentage)) => format!(
                             "{}context {percentage:.0}%, {} of {}",
                             gauge(percentage),
@@ -100,10 +121,13 @@ impl Machine {
                             tokens(window.context_window_size),
                         ),
                         _ => "context: nothing has been sent yet".to_owned(),
-                    });
+                    }
                 }
-                None => rows.push("context: not reported yet".to_owned()),
-            }
+                Some(Context::Counted(count)) => {
+                    format!("context: {}, from the transcript", tokens(count))
+                }
+                None => "context: not reported yet".to_owned(),
+            });
         }
         match &self.limits {
             Some((limits, at)) => {
@@ -127,8 +151,8 @@ impl Machine {
             rows.push(format!("reported: {}", ages.join(", ")));
         }
         let said = rows.join("\n");
-        let answer = match reached {
-            Some((id, session)) => format!("{}\n{said}", session.head(id, None).html()),
+        let answer = match head {
+            Some(head) => format!("{head}\n{said}"),
             None => said,
         };
         self.telegram.html(place, &answer, asked);
@@ -187,18 +211,21 @@ fn until(left: Duration, gap: &str) -> String {
 /// a turn: how full the context is, then how much of each limit is used and how long
 /// until it resets.
 pub(super) fn status_line(
-    window: Option<&(Window, u64)>,
+    context: Option<Context<'_>>,
     limits: Option<&(Limits, u64)>,
 ) -> Option<String> {
     let now = now_millis() / 1000;
-    let context = window.and_then(|(window, _)| {
-        let usage = window.current_usage.as_ref()?;
-        Some(format!(
-            "{:.0}% {}/{}",
-            window.used_percentage?,
-            tokens(usage.uncached + usage.cache_written + usage.cache_read),
-            tokens(window.context_window_size),
-        ))
+    let context = context.and_then(|context| match context {
+        Context::Reported(window, _) => {
+            let usage = window.current_usage.as_ref()?;
+            Some(format!(
+                "{:.0}% {}/{}",
+                window.used_percentage?,
+                tokens(usage.uncached + usage.cache_written + usage.cache_read),
+                tokens(window.context_window_size),
+            ))
+        }
+        Context::Counted(count) => Some(tokens(count)),
     });
     let limits = limits
         .into_iter()

@@ -2,10 +2,9 @@
 //! messages the chat shows of it.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::{self, File};
+use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::hook::{self, Event};
@@ -14,6 +13,7 @@ use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound}
 use super::Machine;
 use super::chat::unreminded;
 use super::render::{Call, Outcome, first_line, listing, took};
+use super::transcript;
 use super::usage::status_line;
 
 /// The longest the message showing an open segment goes without its clock advancing,
@@ -199,9 +199,6 @@ pub(super) struct Turn {
     /// When the chat is next shown the session typing. A session waiting on a dialog is
     /// not typing.
     pub(super) typing: Option<Instant>,
-    /// Where Claude Code writes the session's transcript, which is the one record of an
-    /// interruption.
-    transcript: Option<PathBuf>,
     stopping: Option<Stopping>,
 }
 
@@ -213,7 +210,7 @@ struct Stopping {
 }
 
 impl Turn {
-    fn new(prompt_id: String, thread: Thread, transcript: Option<PathBuf>) -> Self {
+    fn new(prompt_id: String, thread: Thread) -> Self {
         Self {
             segment: Some(Segment::new()),
             seed: seed(&prompt_id),
@@ -224,7 +221,6 @@ impl Turn {
             sealed: Vec::new(),
             pending: Vec::new(),
             typing: None,
-            transcript,
             stopping: None,
         }
     }
@@ -364,7 +360,6 @@ impl Machine {
             session.turn = Some(Turn::new(
                 event.prompt_id.clone().unwrap_or_default(),
                 thread,
-                transcript(event),
             ));
         }
     }
@@ -395,7 +390,7 @@ impl Machine {
             place,
             prompt: None,
         });
-        session.turn = Some(Turn::new(named.to_owned(), thread, transcript(event)));
+        session.turn = Some(Turn::new(named.to_owned(), thread));
         true
     }
 
@@ -679,7 +674,7 @@ impl Machine {
         let head = session.head(id, Some(&turn.prompt_id));
         let mut message = hook::message(event, &head, &took(turn.started.elapsed()));
         if event.hook_event_name == "Stop"
-            && let Some(line) = status_line(session.window.as_ref(), self.limits.as_ref())
+            && let Some(line) = status_line(session.context(), self.limits.as_ref())
         {
             message.markdown = format!("{}\n\n{line}", message.markdown);
         }
@@ -776,7 +771,7 @@ impl Machine {
     /// holding it is sent once the turn has run long enough to be worth watching, and
     /// rewritten as the segment grows.
     pub(super) fn show(&mut self, id: &str) {
-        let Some(session) = self.sessions.get(id) else {
+        let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
         let Some(turn) = session.turn.as_ref() else {
@@ -791,7 +786,7 @@ impl Machine {
         let live = turn.live;
         let thread = turn.thread;
         let mut footer = status(elapsed, turn.seed);
-        if let Some(line) = status_line(session.window.as_ref(), self.limits.as_ref()) {
+        if let Some(line) = status_line(session.context(), self.limits.as_ref()) {
             footer = format!("{footer}\n\n{line}");
         }
         let mut shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));
@@ -844,11 +839,19 @@ impl Machine {
         if !self.reaches(from.guest.as_deref(), place, &dir) {
             return;
         }
-        let turn = self.turn_mut(&id).expect("the turn just found");
-        if turn.stopping.is_some() {
+        let session = &self.sessions[&id];
+        if session
+            .turn
+            .as_ref()
+            .is_some_and(|turn| turn.stopping.is_some())
+        {
             return;
         }
-        let Some(path) = turn.transcript.clone() else {
+        let Some(path) = session
+            .transcript
+            .as_ref()
+            .map(|transcript| transcript.path.clone())
+        else {
             self.say(place, "the session names no transcript to tell a stop by");
             return;
         };
@@ -877,13 +880,16 @@ impl Machine {
     /// would, and says in its thread that it did not stop once `STOP_WAIT` has passed
     /// without that.
     pub(super) fn stopped(&mut self, id: &str) {
-        let Some(turn) = self.turn_mut(id) else {
+        let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        let (Some(stopping), Some(path)) = (&turn.stopping, &turn.transcript) else {
+        let (Some(turn), Some(transcript)) = (session.turn.as_mut(), &session.transcript) else {
             return;
         };
-        if interrupted(path, stopping.from) {
+        let Some(stopping) = &turn.stopping else {
+            return;
+        };
+        if interrupted(&transcript.path, stopping.from) {
             self.interrupted(id);
             return;
         }
@@ -930,28 +936,13 @@ impl Machine {
     }
 }
 
-/// Where an event says the session's transcript is.
-fn transcript(event: &Event) -> Option<PathBuf> {
-    event.transcript_path.as_ref().map(PathBuf::from)
-}
-
-/// True once the transcript at `path` holds an interruption written past byte `from`. A
-/// line still being written fails to parse and is read whole on the next look.
+/// True once the transcript at `path` holds an interruption written past byte `from`.
 fn interrupted(path: &Path, from: u64) -> bool {
-    let mut appended = Vec::new();
-    let read = File::open(path).and_then(|mut file| {
-        file.seek(SeekFrom::Start(from))?;
-        file.read_to_end(&mut appended)
-    });
-    if let Err(error) = read {
-        eprintln!("{}: {error}", path.display());
-        return false;
-    }
-    String::from_utf8_lossy(&appended)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    transcript::entries(path, from)
+        .0
+        .iter()
         .filter(|entry| entry["type"] == "user")
-        .filter_map(|entry| entry["message"]["content"].as_array().cloned())
+        .filter_map(|entry| entry["message"]["content"].as_array())
         .flatten()
         .any(|part| {
             part["text"]
