@@ -689,7 +689,7 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
             (
                 "silent",
                 "on it\n\n\
-                 × **Bash**  `cargo test` **4s**  \n⎿ Exit code 1  \n\
+                 × **Bash**  `cargo test` **4s**  \n⎿ `Exit code 1`  \n\
                  ● [Explore] **Read**  `/src/listen.rs` **12ms**  \n⎿ 120 lines"
             ),
             (
@@ -697,7 +697,7 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
                 "one test fails\n\n\
                  ● **Edit**  `/src/hook.rs` **20ms**  \n⎿ \\+1 −1  \n\
                  ● **mcp\\_\\_telegram\\_\\_history** **30ms**  \n\
-                 ```\n{\"chat\":\"x\"}\n```  \n```\none\ntwo\n```"
+                 ⎿ `{\"chat\":\"x\"}`  \n⎿ `one`  \n`two`"
             ),
             ("ring", "fixed"),
         ]

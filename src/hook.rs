@@ -26,6 +26,10 @@ const SUBJECT: [&str; 7] = [
 /// glance: seven lines of a phone's screen, which the call a reader is following may
 /// fill.
 pub const SUBJECT_MAX: usize = 300;
+/// How many lines of what a command printed or an error said a call keeps, and how
+/// many characters of them: about five lines of a phone's screen.
+pub const OUTPUT_LINES: usize = 5;
+pub const OUTPUT_MAX: usize = 400;
 
 /// How many bytes of the reasoning a compaction's model writes ahead of its summary the
 /// message carries, since that reasoning is the part of the message a reader skips.
@@ -144,21 +148,25 @@ impl Event {
     /// terminal summarizes for its own tools, read from each tool's `tool_response`,
     /// whose format Claude Code does not publish. A tool with no known summary gives the
     /// text it returned, or nothing when it returned an object.
-    pub fn result(&self) -> String {
+    pub fn result(&self) -> Produced {
         let Some(response) = &self.tool_response else {
-            return String::new();
+            return Produced::Summed(String::new());
         };
         if self.mcp() {
-            return text(response);
+            return Produced::Printed(text(response));
         }
         let count = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64);
-        match self.tool_name.as_deref().unwrap_or_default() {
-            "Bash" => ["stdout", "stderr"]
-                .iter()
-                .filter_map(|key| response.get(*key)?.as_str())
-                .find_map(|output| output.lines().rev().find(|line| !line.trim().is_empty()))
-                .unwrap_or_default()
-                .to_owned(),
+        Produced::Summed(match self.tool_name.as_deref().unwrap_or_default() {
+            "Bash" => {
+                return Produced::Printed(
+                    ["stdout", "stderr"]
+                        .iter()
+                        .filter_map(|key| response.get(*key)?.as_str())
+                        .map(|output| tail(output, OUTPUT_LINES, OUTPUT_MAX))
+                        .find(|output| !output.is_empty())
+                        .unwrap_or_default(),
+                );
+            }
             "Read" => response
                 .get("file")
                 .and_then(|file| count(file, "numLines"))
@@ -175,7 +183,7 @@ impl Event {
                 .unwrap_or_default(),
             _ if response.is_object() => String::new(),
             _ => text(response),
-        }
+        })
     }
 
     fn field(&self, keys: &[&str]) -> String {
@@ -243,6 +251,50 @@ impl Event {
 
 /// A tool's output as text. MCP returns a list of content blocks, of which an image
 /// is shown as a placeholder, and a tool that failed returns a string.
+/// What a finished call produced.
+#[derive(Debug, PartialEq)]
+pub enum Produced {
+    /// Text the call printed: the last lines of a command's output, or an MCP tool's
+    /// text.
+    Printed(String),
+    /// What Claude Code's terminal sums the call up with, empty where it says nothing.
+    Summed(String),
+}
+
+/// The lines of `text` that are not blank. The folded calls are one block HTML tag,
+/// which a blank line would end.
+fn filled(text: &str) -> impl DoubleEndedIterator<Item = &str> {
+    text.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+}
+
+/// The first `count` lines of `text` that are not blank, cut to `max` characters and an
+/// ellipsis past that.
+pub fn head(text: &str, count: usize, max: usize) -> String {
+    let kept = filled(text).take(count).collect::<Vec<_>>().join("\n");
+    if kept.chars().count() <= max {
+        return kept;
+    }
+    kept.chars().take(max).chain([ELLIPSIS]).collect()
+}
+
+/// The last `count` lines of `text` that are not blank, cut to `max` characters past
+/// that, an ellipsis and the end.
+pub fn tail(text: &str, count: usize, max: usize) -> String {
+    let mut kept: Vec<&str> = filled(text).rev().take(count).collect();
+    kept.reverse();
+    let kept = kept.join("\n");
+    let length = kept.chars().count();
+    if length <= max {
+        return kept;
+    }
+    [ELLIPSIS]
+        .into_iter()
+        .chain(kept.chars().skip(length + 1 - max))
+        .collect()
+}
+
 fn text(response: &Value) -> String {
     match response {
         Value::Null => String::new(),
@@ -540,6 +592,14 @@ mod tests {
     }
 
     #[test]
+    fn an_excerpt_keeps_its_lines_but_not_the_blank_ones() {
+        assert_eq!(head("a\n\n  \nb\nc\n", 2, 5), "a\nb");
+        assert_eq!(head("abcdef", 1, 5), "abcde\u{2026}");
+        assert_eq!(tail("a\n\n  \nb\nc\n", 2, 5), "b\nc");
+        assert_eq!(tail("abcdef", 1, 5), "\u{2026}cdef");
+    }
+
+    #[test]
     fn a_finished_call_sums_up_its_output_by_its_tool() {
         use serde_json::json;
         let result = |name: &str, response: serde_json::Value| {
@@ -557,34 +617,54 @@ mod tests {
                 "Bash",
                 json!({"stdout": "running\ntest result: ok\n\n", "stderr": ""})
             ),
-            "test result: ok"
+            Produced::Printed("running\ntest result: ok".to_owned())
         );
         assert_eq!(
             result("Bash", json!({"stdout": "", "stderr": "warning"})),
-            "warning"
+            Produced::Printed("warning".to_owned())
         );
+        // A command keeps its last lines, and the end of them past its room.
+        let many = "1\n2\n3\n4\n5\n6\n7\n8\n9\n";
+        assert_eq!(
+            result("Bash", json!({"stdout": many})),
+            Produced::Printed("5\n6\n7\n8\n9".to_owned())
+        );
+        let wide = format!("a{}", "x".repeat(OUTPUT_MAX));
+        let Produced::Printed(cut) = result("Bash", json!({"stdout": wide})) else {
+            panic!("a command prints");
+        };
+        assert_eq!(cut, format!("\u{2026}{}", "x".repeat(OUTPUT_MAX - 1)));
         assert_eq!(
             result("Read", json!({"type": "text", "file": {"numLines": 120}})),
-            "120 lines"
+            Produced::Summed("120 lines".to_owned())
         );
         let patch = json!({"structuredPatch": [{"lines": [" a", "-b", "+c", "+d"]}]});
-        assert_eq!(result("Edit", patch), "+2 \u{2212}1");
+        assert_eq!(
+            result("Edit", patch),
+            Produced::Summed("+2 \u{2212}1".to_owned())
+        );
         assert_eq!(
             result(
                 "Write",
                 json!({"type": "create", "content": "a\nb\n", "structuredPatch": []})
             ),
-            "+2"
+            Produced::Summed("+2".to_owned())
         );
-        assert_eq!(result("Glob", json!({"numFiles": 3})), "3 files");
+        assert_eq!(
+            result("Glob", json!({"numFiles": 3})),
+            Produced::Summed("3 files".to_owned())
+        );
         assert_eq!(
             result("Grep", json!({"mode": "content", "numLines": 7})),
-            "7 lines"
+            Produced::Summed("7 lines".to_owned())
         );
-        assert_eq!(result("Skill", json!({"success": true})), "");
+        assert_eq!(
+            result("Skill", json!({"success": true})),
+            Produced::Summed(String::new())
+        );
         assert_eq!(
             result("TaskOutput", json!("Error: no task")),
-            "Error: no task"
+            Produced::Summed("Error: no task".to_owned())
         );
         // An MCP call shows its arguments and its whole text, an image as a placeholder.
         let mcp = event(serde_json::json!({
@@ -599,8 +679,14 @@ mod tests {
         }));
         assert_eq!(mcp.subject(), "");
         assert_eq!(mcp.arguments().as_deref(), Some(r#"{"id":5,"q":"a"}"#));
-        assert_eq!(mcp.result(), "a thumbnail\n[image]");
-        assert_eq!(result("mcp__x__y", json!({"ok": true})), r#"{"ok":true}"#);
+        assert_eq!(
+            mcp.result(),
+            Produced::Printed("a thumbnail\n[image]".to_owned())
+        );
+        assert_eq!(
+            result("mcp__x__y", json!({"ok": true})),
+            Produced::Printed(r#"{"ok":true}"#.to_owned())
+        );
         assert_eq!(
             event(
                 serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s",

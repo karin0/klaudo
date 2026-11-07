@@ -63,19 +63,21 @@ Klaŭdo puts a call's command, path or pattern in a code span, so markdown insid
 stays literal, and escapes the markdown in every other sentence a person or a tool
 wrote. Claude Code answers in markdown, and Klaŭdo posts that markdown as it is.
 
-A finished call sums up its output in a line, as Claude Code's terminal does: the last
-line a command printed, the lines a file read or an edit changed, or the files a search
-matched. An MCP tool follows no schema Klaŭdo could read a subject or a summary from,
-and its arguments and output are usually what a reader opens the call for, so its call
-shows both nearly whole in code blocks.
+A finished call sums up its output in a line, as Claude Code's terminal does: the lines
+a file read or an edit changed, or the files a search matched. A command shows the last
+five lines it printed, and a failure the first five lines of its error, while they stay
+in view as the next paragraph describes. An MCP tool follows no schema Klaŭdo could read
+a subject or a summary from, and its arguments and output are usually what a reader
+opens the call for, so its call shows both nearly whole. Printed text goes in a code
+span per line, since a phone scrolls a code block sideways and wraps a span.
 
 The calls from the first one still running to the end stay in view, or else the latest
 call alone, since they are what a reader follows a turn by, and their commands and
-summaries read more than twice as far as the others'. The calls ahead of them fold into
-one expandable quotation once everything they show together runs past 120 characters,
-three lines of a phone's screen. Markdown isn't parsed inside a block HTML tag, so the
-folded calls are written in HTML, and a blank line keeps the quotation apart from the
-lines under it.
+summaries read more than twice as far as the others', which show one line of what a
+command printed or an error said. The calls ahead of them fold into one expandable
+quotation once everything they show together runs past 120 characters, three lines of a
+phone's screen. Markdown isn't parsed inside a block HTML tag, so the folded calls are
+written in HTML, and a blank line keeps the quotation apart from the lines under it.
 
 Telegram's message drafts would do the open segment's job in one call, and Klaŭdo was
 built on them first. A draft expires thirty seconds after its last frame, no method

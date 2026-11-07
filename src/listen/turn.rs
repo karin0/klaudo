@@ -7,13 +7,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::hook::{self, Event};
+use crate::hook::{self, Event, Produced};
 use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound};
 
 use super::Machine;
 use super::chat::unreminded;
 use super::render::{
-    ARGUMENTS_MAX, Call, Outcome, RESULT_MAX, SUMMARY_MAX, clip, first_line, listing, took,
+    ARGUMENTS_MAX, Call, Outcome, RESULT_MAX, SUMMARY_MAX, first_line, listing, took,
 };
 use super::transcript;
 use super::usage::status_line;
@@ -486,7 +486,7 @@ impl Machine {
                 subject: event.subject(),
                 arguments: event
                     .arguments()
-                    .map(|arguments| clip(&arguments, ARGUMENTS_MAX)),
+                    .map(|arguments| hook::head(&arguments, usize::MAX, ARGUMENTS_MAX)),
                 outcome: Outcome::Running,
             },
         ));
@@ -522,17 +522,20 @@ impl Machine {
             return;
         };
         let took = Duration::from_millis(event.duration_ms.unwrap_or_default());
-        let shown = |text: &str| {
+        let printed = |text: &str| {
             if event.mcp() {
-                clip(text, RESULT_MAX)
+                hook::head(text, usize::MAX, RESULT_MAX)
             } else {
-                first_line(text, SUMMARY_MAX)
+                hook::head(text, hook::OUTPUT_LINES, hook::OUTPUT_MAX)
             }
         };
         let outcome = if event.hook_event_name == "PostToolUseFailure" {
-            Outcome::Failed(took, shown(event.error.as_deref().unwrap_or("failed")))
+            Outcome::Failed(took, printed(event.error.as_deref().unwrap_or("failed")))
         } else {
-            Outcome::Done(took, shown(&event.result()))
+            match event.result() {
+                Produced::Printed(text) => Outcome::Printed(took, printed(&text)),
+                Produced::Summed(text) => Outcome::Summed(took, first_line(&text, SUMMARY_MAX)),
+            }
         };
         let Some(turn) = self.turn_mut(id) else {
             return;
@@ -1071,7 +1074,7 @@ mod tests {
             description: String::new(),
             subject: "a".to_owned(),
             arguments: None,
-            outcome: Outcome::Done(Duration::from_secs(1), String::new()),
+            outcome: Outcome::Summed(Duration::from_secs(1), String::new()),
         });
         assert_eq!(
             segment.text(),

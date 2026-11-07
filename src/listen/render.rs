@@ -23,10 +23,12 @@ const FOLD_OVER: usize = 120;
 /// it stops reading at a glance.
 pub(super) const SUMMARY_MAX: usize = 160;
 
-/// How far a call's description, subject and summary read.
+/// How far a call's description, subject and summary read, and whether what it
+/// printed reads whole or as the one line that matters most.
 struct Room {
     subject: usize,
     summary: usize,
+    whole: bool,
 }
 
 /// The calls in view under a folded run are what a reader follows a turn by, so they
@@ -34,12 +36,14 @@ struct Room {
 const OPEN: Room = Room {
     subject: hook::SUBJECT_MAX,
     summary: SUMMARY_MAX,
+    whole: true,
 };
 /// The calls ahead of them read three lines of a phone's screen for a command and one
 /// for a summary.
 const AHEAD: Room = Room {
     subject: 120,
     summary: 60,
+    whole: false,
 };
 /// How far an MCP call's arguments and its result read. They are what a reader opens
 /// such a call for, and the measured calls fit these at the arguments' maximum and the
@@ -48,11 +52,24 @@ pub(super) const ARGUMENTS_MAX: usize = 500;
 pub(super) const RESULT_MAX: usize = 1500;
 
 /// How a tool call went, how long it took getting there, and what it produced or why
-/// it failed, empty where it reported nothing.
+/// it failed, empty where it reported nothing. What a call printed and why it failed
+/// read in a code span per line, which a phone wraps.
 pub(super) enum Outcome {
     Running,
-    Done(Duration, String),
+    /// The last lines a command printed, or an MCP tool's text.
+    Printed(Duration, String),
+    /// What Claude Code's terminal sums the call up with.
+    Summed(Duration, String),
     Failed(Duration, String),
+}
+
+impl Outcome {
+    fn took(&self) -> Option<Duration> {
+        match self {
+            Self::Running => None,
+            Self::Printed(took, _) | Self::Summed(took, _) | Self::Failed(took, _) => Some(*took),
+        }
+    }
 }
 
 /// One tool call, from the event that announced it to the one that said how it went.
@@ -77,31 +94,37 @@ impl Call {
     /// The tool and the time are bold, so the eye finds a call and its cost down a run
     /// of lines whose middles are of every length.
     fn line(&self, markup: &Markup, room: &Room) -> String {
-        let (mark, took, result) = match &self.outcome {
-            Outcome::Running => (RUNNING, String::new(), ""),
-            Outcome::Done(took, result) => (
-                DONE,
-                format!(" {}", (markup.bold)(&spent(*took))),
-                result.as_str(),
-            ),
-            Outcome::Failed(took, why) => (
-                FAILED,
-                format!(" {}", (markup.bold)(&spent(*took))),
-                why.as_str(),
-            ),
+        let mark = match self.outcome {
+            Outcome::Running => RUNNING,
+            Outcome::Printed(..) | Outcome::Summed(..) => DONE,
+            Outcome::Failed(..) => FAILED,
         };
-        let shown = |text: &str| (!text.is_empty()).then(|| text.to_owned());
-        let (arguments, result) = match &self.arguments {
-            Some(arguments) => (
-                shown(arguments).map(|text| (markup.block)(&text)),
-                shown(result).map(|text| (markup.block)(&text)),
-            ),
-            None => (
-                None,
-                shown(result)
-                    .map(|text| format!("⎿ {}", (markup.text)(&first_line(&text, room.summary)))),
-            ),
+        let took = self
+            .outcome
+            .took()
+            .map(|took| format!(" {}", (markup.bold)(&spent(took))))
+            .unwrap_or_default();
+        let printed = |text: &str| {
+            text.lines()
+                .map(markup.code)
+                .collect::<Vec<_>>()
+                .join(markup.newline)
         };
+        let arguments = self
+            .arguments
+            .as_deref()
+            .filter(|arguments| !arguments.is_empty())
+            .map(|arguments| format!("⎿ {}", printed(arguments)));
+        let result = self.produced(room).map(|(text, code)| {
+            format!(
+                "⎿ {}",
+                if code {
+                    printed(&text)
+                } else {
+                    (markup.text)(&text)
+                }
+            )
+        });
         let agent = match &self.agent {
             Some(agent) => format!("[{agent}] "),
             None => String::new(),
@@ -133,28 +156,42 @@ impl Call {
         .join(markup.newline)
     }
 
+    /// What the call produced as `room` shows it, and whether it is text the call
+    /// printed or an error, which read as code. An MCP call's text is what a reader
+    /// opens it for, so it reads whole anywhere, and any other call ahead of the calls
+    /// in view shows the line a reader looks for first: the last a command printed, or
+    /// the first of an error.
+    fn produced(&self, room: &Room) -> Option<(String, bool)> {
+        let (text, last) = match &self.outcome {
+            Outcome::Running => return None,
+            Outcome::Summed(_, text) => {
+                return (!text.is_empty()).then(|| (first_line(text, room.summary), false));
+            }
+            Outcome::Printed(_, text) => (text, true),
+            Outcome::Failed(_, text) => (text, false),
+        };
+        let text = if room.whole || self.arguments.is_some() {
+            text.clone()
+        } else {
+            let line = if last {
+                text.lines().last()
+            } else {
+                text.lines().next()
+            };
+            first_line(line.unwrap_or_default(), room.summary)
+        };
+        (!text.is_empty()).then_some((text, true))
+    }
+
     /// How long the call reads ahead of the calls in view, by the words that wrap on a
     /// phone.
     fn length(&self) -> usize {
-        let result = match &self.outcome {
-            Outcome::Running => "",
-            Outcome::Done(_, text) | Outcome::Failed(_, text) => text,
-        };
-        let result = match self.arguments {
-            Some(_) => result.chars().count(),
-            None => first_line(result, AHEAD.summary).chars().count(),
-        };
         [&self.description, &self.subject]
             .iter()
-            .map(|text| first_line(text, AHEAD.subject).chars().count())
-            .chain([
-                self.arguments
-                    .as_deref()
-                    .unwrap_or_default()
-                    .chars()
-                    .count(),
-                result,
-            ])
+            .map(|text| first_line(text, AHEAD.subject))
+            .chain(self.arguments.clone())
+            .chain(self.produced(&AHEAD).map(|(text, _)| text))
+            .map(|text| text.chars().count())
             .sum()
     }
 }
@@ -164,7 +201,6 @@ impl Call {
 struct Markup {
     bold: fn(&str) -> String,
     code: fn(&str) -> String,
-    block: fn(&str) -> String,
     pub(super) text: fn(&str) -> String,
     newline: &'static str,
 }
@@ -172,7 +208,6 @@ struct Markup {
 const MARKDOWN: Markup = Markup {
     bold: |text| format!("**{}**", hook::prose(text)),
     code,
-    block: fence,
     text: hook::prose,
     newline: BREAK,
 };
@@ -180,7 +215,6 @@ const MARKDOWN: Markup = Markup {
 const HTML: Markup = Markup {
     bold: |text| format!("<b>{}</b>", hook::html(text)),
     code: |text| format!("<code>{}</code>", hook::html(text)),
-    block: |text| format!("<pre>{}</pre>", hook::html(text)),
     text: hook::html,
     newline: "<br>",
 };
@@ -195,12 +229,6 @@ fn ticks(text: &str) -> usize {
         longest = longest.max(ticks);
     }
     longest
-}
-
-/// A code block, fenced by at least the three backticks markdown opens one with.
-fn fence(text: &str) -> String {
-    let fence = "`".repeat((ticks(text) + 1).max(3));
-    format!("{fence}\n{text}\n{fence}")
 }
 
 /// A command reads as markdown where the message is markdown, so it travels as a code
@@ -267,20 +295,6 @@ pub(super) fn first_line(text: &str, max: usize) -> String {
     first.chars().take(max).chain("\u{2026}".chars()).collect()
 }
 
-/// `text` without its blank lines, cut to `max` characters and an ellipsis past that.
-/// The folded calls are one block HTML tag, which a blank line would end.
-pub(super) fn clip(text: &str, max: usize) -> String {
-    let kept = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if kept.chars().count() <= max {
-        return kept;
-    }
-    kept.chars().take(max).chain("\u{2026}".chars()).collect()
-}
-
 pub(super) fn took(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     match seconds {
@@ -326,7 +340,7 @@ mod tests {
             call(
                 "Bash",
                 "cargo test",
-                Outcome::Done(Duration::from_millis(1400), String::new())
+                Outcome::Summed(Duration::from_millis(1400), String::new())
             )
             .line(&MARKDOWN, &OPEN),
             "● **Bash**  `cargo test` **1s**"
@@ -335,7 +349,7 @@ mod tests {
             call(
                 "Bash",
                 "cargo test",
-                Outcome::Done(Duration::from_millis(12), String::new())
+                Outcome::Summed(Duration::from_millis(12), String::new())
             )
             .line(&MARKDOWN, &OPEN),
             "● **Bash**  `cargo test` **12ms**"
@@ -348,7 +362,7 @@ mod tests {
                 Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
             )
             .line(&MARKDOWN, &OPEN),
-            "× **Bash**  `cargo test` **4s**  \n⎿ Exit code 1"
+            "× **Bash**  `cargo test` **4s**  \n⎿ `Exit code 1`"
         );
         // A tool that describes its calls says that first and shows the command under it.
         let described = Call {
@@ -361,7 +375,7 @@ mod tests {
         };
         assert_eq!(
             described.line(&MARKDOWN, &OPEN),
-            "× **Bash**  run the tests **4s**  \n⎿ `cargo test`  \n⎿ Exit code 1"
+            "× **Bash**  run the tests **4s**  \n⎿ `cargo test`  \n⎿ `Exit code 1`"
         );
         let markup = Call {
             description: "find *.rs in _src_".to_owned(),
@@ -391,7 +405,7 @@ mod tests {
         let done = call(
             "Read",
             "src/listen.rs",
-            Outcome::Done(Duration::from_millis(12), "120 lines".to_owned()),
+            Outcome::Summed(Duration::from_millis(12), "120 lines".to_owned()),
         );
         assert_eq!(
             done.line(&MARKDOWN, &OPEN),
@@ -400,28 +414,61 @@ mod tests {
     }
 
     #[test]
-    fn an_mcp_call_shows_its_arguments_and_result_in_blocks() {
+    fn printed_lines_read_whole_in_view_and_as_one_line_ahead() {
+        let printed = call(
+            "Bash",
+            "cargo test",
+            Outcome::Printed(
+                Duration::from_secs(1),
+                "running\ntest result: ok".to_owned(),
+            ),
+        );
+        assert_eq!(
+            printed.line(&MARKDOWN, &OPEN),
+            "● **Bash**  `cargo test` **1s**  \n⎿ `running`  \n`test result: ok`"
+        );
+        // Ahead, a command shows the last line it printed, and an error its first.
+        assert_eq!(
+            printed.line(&HTML, &AHEAD),
+            "● <b>Bash</b>  <code>cargo test</code> <b>1s</b><br>⎿ <code>test result: ok</code>"
+        );
+        let failed = call(
+            "Bash",
+            "cargo test",
+            Outcome::Failed(
+                Duration::from_secs(1),
+                "Exit code 1\nerror[E0425]".to_owned(),
+            ),
+        );
+        assert_eq!(
+            failed.line(&HTML, &AHEAD),
+            "× <b>Bash</b>  <code>cargo test</code> <b>1s</b><br>⎿ <code>Exit code 1</code>"
+        );
+    }
+
+    #[test]
+    fn an_mcp_call_shows_its_arguments_and_result_a_line_of_code_at_a_time() {
         let mcp = |outcome| Call {
             arguments: Some(r#"{"chat":"x"}"#.to_owned()),
             ..call("mcp__telegram__history", "", outcome)
         };
         assert_eq!(
             mcp(Outcome::Running).line(&MARKDOWN, &OPEN),
-            "○ **mcp\\_\\_telegram\\_\\_history**  \n```\n{\"chat\":\"x\"}\n```"
+            "○ **mcp\\_\\_telegram\\_\\_history**  \n⎿ `{\"chat\":\"x\"}`"
         );
-        let done = mcp(Outcome::Done(
+        let done = mcp(Outcome::Printed(
             Duration::from_secs(1),
             "a < b\n```".to_owned(),
         ));
         assert_eq!(
             done.line(&MARKDOWN, &OPEN),
-            "● **mcp\\_\\_telegram\\_\\_history** **1s**  \n```\n{\"chat\":\"x\"}\n```  \n\
-             ````\na < b\n```\n````"
+            "● **mcp\\_\\_telegram\\_\\_history** **1s**  \n⎿ `{\"chat\":\"x\"}`  \n\
+             ⎿ `a < b`  \n```` ``` ````"
         );
         assert_eq!(
             done.line(&HTML, &OPEN),
             "● <b>mcp__telegram__history</b> <b>1s</b><br>\
-             <pre>{\"chat\":\"x\"}</pre><br><pre>a &lt; b\n```</pre>"
+             ⎿ <code>{\"chat\":\"x\"}</code><br>⎿ <code>a &lt; b</code><br><code>```</code>"
         );
         // A call with no arguments and an empty result shows neither.
         let bare = Call {
@@ -429,7 +476,7 @@ mod tests {
             ..call(
                 "mcp__x__y",
                 "",
-                Outcome::Done(Duration::from_secs(1), String::new()),
+                Outcome::Printed(Duration::from_secs(1), String::new()),
             )
         };
         assert_eq!(bare.line(&HTML, &OPEN), "● <b>mcp__x__y</b> <b>1s</b>");
@@ -448,7 +495,7 @@ mod tests {
             call(
                 "Bash",
                 "cargo test",
-                Outcome::Done(Duration::from_secs(1), String::new()),
+                Outcome::Summed(Duration::from_secs(1), String::new()),
             ),
         ]);
         assert_eq!(
@@ -463,7 +510,7 @@ mod tests {
             call(
                 "Bash",
                 subject,
-                Outcome::Done(Duration::from_secs(1), String::new()),
+                Outcome::Summed(Duration::from_secs(1), String::new()),
             )
         };
         let x = "x".repeat(FOLD_OVER / 2);
@@ -507,7 +554,7 @@ mod tests {
             call(
                 "Bash",
                 &long,
-                Outcome::Done(Duration::from_secs(1), summary.clone()),
+                Outcome::Summed(Duration::from_secs(1), summary.clone()),
             )
         };
         let listed = listing(&[done(), done()]);
@@ -544,12 +591,6 @@ mod tests {
         );
         // The calls it lists, and the line that counts the ones it does not.
         assert_eq!(listed.lines().count(), RUN_MAX + 1);
-    }
-
-    #[test]
-    fn a_clipped_text_keeps_its_lines_but_not_the_blank_ones() {
-        assert_eq!(clip("a\n\n  \nb\n", 5), "a\nb");
-        assert_eq!(clip("abcdef", 5), "abcde\u{2026}");
     }
 
     #[test]
