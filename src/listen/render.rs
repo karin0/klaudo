@@ -19,10 +19,20 @@ const BREAK: &str = "  \n";
 /// lines of a phone's screen, which is what a folded quotation still shows.
 const FOLD_OVER: usize = 120;
 
-/// How a tool call went, and how long it took getting there.
+/// How far a line summing up what a call produced or why it failed reads, past which
+/// it stops reading at a glance.
+pub(super) const SUMMARY_MAX: usize = 60;
+/// How far an MCP call's arguments and its result read. They are what a reader opens
+/// such a call for, and the measured calls fit these at the arguments' maximum and the
+/// result's ninetieth percentile, images aside.
+pub(super) const ARGUMENTS_MAX: usize = 500;
+pub(super) const RESULT_MAX: usize = 1500;
+
+/// How a tool call went, how long it took getting there, and what it produced or why
+/// it failed, empty where it reported nothing.
 pub(super) enum Outcome {
     Running,
-    Done(Duration),
+    Done(Duration, String),
     Failed(Duration, String),
 }
 
@@ -35,23 +45,41 @@ pub(super) struct Call {
     /// What the call says it is doing, empty where its tool describes no call of itself.
     pub(super) description: String,
     pub(super) subject: String,
+    /// An MCP call's arguments, shown whole with its result in blocks of their own,
+    /// absent for any other call, whose result is a line.
+    pub(super) arguments: Option<String>,
     pub(super) outcome: Outcome,
 }
 
 impl Call {
     /// A mark for how it went, the tool and what it says it is doing, and the time it
-    /// took. What it is working on and what a failure reported go on lines under that,
+    /// took. What it is working on and what it produced go on lines under that,
     /// where the eye finds them and a long command wraps without pushing the time away.
     /// The tool and the time are bold, so the eye finds a call and its cost down a run
     /// of lines whose middles are of every length.
     fn line(&self, markup: &Markup) -> String {
-        let (mark, took, why) = match &self.outcome {
-            Outcome::Running => (RUNNING, String::new(), None),
-            Outcome::Done(took) => (DONE, format!(" {}", (markup.bold)(&spent(*took))), None),
+        let (mark, took, result) = match &self.outcome {
+            Outcome::Running => (RUNNING, String::new(), ""),
+            Outcome::Done(took, result) => (
+                DONE,
+                format!(" {}", (markup.bold)(&spent(*took))),
+                result.as_str(),
+            ),
             Outcome::Failed(took, why) => (
                 FAILED,
                 format!(" {}", (markup.bold)(&spent(*took))),
-                Some(why),
+                why.as_str(),
+            ),
+        };
+        let shown = |text: &str| (!text.is_empty()).then(|| text.to_owned());
+        let (arguments, result) = match &self.arguments {
+            Some(arguments) => (
+                shown(arguments).map(|text| (markup.block)(&text)),
+                shown(result).map(|text| (markup.block)(&text)),
+            ),
+            None => (
+                None,
+                shown(result).map(|text| format!("⎿ {}", (markup.text)(&text))),
             ),
         };
         let agent = match &self.agent {
@@ -74,7 +102,8 @@ impl Call {
         [
             Some(head),
             under.map(|under| format!("⎿ {under}")),
-            why.map(|why| format!("⎿ {}", (markup.text)(why))),
+            arguments,
+            result,
         ]
         .into_iter()
         .flatten()
@@ -84,7 +113,19 @@ impl Call {
 
     /// How long the call reads, by the words that wrap on a phone.
     fn length(&self) -> usize {
-        self.description.chars().count() + self.subject.chars().count()
+        let result = match &self.outcome {
+            Outcome::Running => "",
+            Outcome::Done(_, text) | Outcome::Failed(_, text) => text,
+        };
+        [
+            self.description.as_str(),
+            &self.subject,
+            self.arguments.as_deref().unwrap_or_default(),
+            result,
+        ]
+        .iter()
+        .map(|text| text.chars().count())
+        .sum()
     }
 }
 
@@ -93,6 +134,7 @@ impl Call {
 struct Markup {
     bold: fn(&str) -> String,
     code: fn(&str) -> String,
+    block: fn(&str) -> String,
     pub(super) text: fn(&str) -> String,
     newline: &'static str,
 }
@@ -100,6 +142,7 @@ struct Markup {
 const MARKDOWN: Markup = Markup {
     bold: |text| format!("**{}**", hook::prose(text)),
     code,
+    block: fence,
     text: hook::prose,
     newline: BREAK,
 };
@@ -107,19 +150,33 @@ const MARKDOWN: Markup = Markup {
 const HTML: Markup = Markup {
     bold: |text| format!("<b>{}</b>", hook::html(text)),
     code: |text| format!("<code>{}</code>", hook::html(text)),
+    block: |text| format!("<pre>{}</pre>", hook::html(text)),
     text: hook::html,
     newline: "<br>",
 };
 
-/// A command reads as markdown where the message is markdown, so it travels as a code
-/// span, whose backticks have to outlast any run of them the command carries.
-pub(super) fn code(subject: &str) -> String {
+/// The longest run of backticks in `text`, which a code span or block around it has to
+/// outlast.
+fn ticks(text: &str) -> usize {
     let mut longest = 0;
     let mut ticks = 0;
-    for character in subject.chars() {
+    for character in text.chars() {
         ticks = if character == '`' { ticks + 1 } else { 0 };
         longest = longest.max(ticks);
     }
+    longest
+}
+
+/// A code block, fenced by at least the three backticks markdown opens one with.
+fn fence(text: &str) -> String {
+    let fence = "`".repeat((ticks(text) + 1).max(3));
+    format!("{fence}\n{text}\n{fence}")
+}
+
+/// A command reads as markdown where the message is markdown, so it travels as a code
+/// span, whose backticks have to outlast any run of them the command carries.
+pub(super) fn code(subject: &str) -> String {
+    let longest = ticks(subject);
     let fence = "`".repeat(longest + 1);
     // A span whose text opens or closes with a backtick needs the padding to keep it.
     match longest {
@@ -179,6 +236,20 @@ pub(super) fn first_line(text: &str, max: usize) -> String {
     first.chars().take(max).chain("\u{2026}".chars()).collect()
 }
 
+/// `text` without its blank lines, cut to `max` characters and an ellipsis past that.
+/// The folded calls are one block HTML tag, which a blank line would end.
+pub(super) fn clip(text: &str, max: usize) -> String {
+    let kept = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if kept.chars().count() <= max {
+        return kept;
+    }
+    kept.chars().take(max).chain("\u{2026}".chars()).collect()
+}
+
 pub(super) fn took(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     match seconds {
@@ -209,6 +280,7 @@ mod tests {
             name: name.to_owned(),
             description: String::new(),
             subject: subject.to_owned(),
+            arguments: None,
             outcome,
         }
     }
@@ -223,7 +295,7 @@ mod tests {
             call(
                 "Bash",
                 "cargo test",
-                Outcome::Done(Duration::from_millis(1400))
+                Outcome::Done(Duration::from_millis(1400), String::new())
             )
             .line(&MARKDOWN),
             "● **Bash**  `cargo test` **1s**"
@@ -232,7 +304,7 @@ mod tests {
             call(
                 "Bash",
                 "cargo test",
-                Outcome::Done(Duration::from_millis(12))
+                Outcome::Done(Duration::from_millis(12), String::new())
             )
             .line(&MARKDOWN),
             "● **Bash**  `cargo test` **12ms**"
@@ -281,6 +353,55 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_call_sums_up_what_it_produced_on_a_line_of_its_own() {
+        let done = call(
+            "Read",
+            "src/listen.rs",
+            Outcome::Done(Duration::from_millis(12), "120 lines".to_owned()),
+        );
+        assert_eq!(
+            done.line(&MARKDOWN),
+            "● **Read**  `src/listen.rs` **12ms**  \n⎿ 120 lines"
+        );
+    }
+
+    #[test]
+    fn an_mcp_call_shows_its_arguments_and_result_in_blocks() {
+        let mcp = |outcome| Call {
+            arguments: Some(r#"{"chat":"x"}"#.to_owned()),
+            ..call("mcp__telegram__history", "", outcome)
+        };
+        assert_eq!(
+            mcp(Outcome::Running).line(&MARKDOWN),
+            "○ **mcp\\_\\_telegram\\_\\_history**  \n```\n{\"chat\":\"x\"}\n```"
+        );
+        let done = mcp(Outcome::Done(
+            Duration::from_secs(1),
+            "a < b\n```".to_owned(),
+        ));
+        assert_eq!(
+            done.line(&MARKDOWN),
+            "● **mcp\\_\\_telegram\\_\\_history** **1s**  \n```\n{\"chat\":\"x\"}\n```  \n\
+             ````\na < b\n```\n````"
+        );
+        assert_eq!(
+            done.line(&HTML),
+            "● <b>mcp__telegram__history</b> <b>1s</b><br>\
+             <pre>{\"chat\":\"x\"}</pre><br><pre>a &lt; b\n```</pre>"
+        );
+        // A call with no arguments and an empty result shows neither.
+        let bare = Call {
+            arguments: Some(String::new()),
+            ..call(
+                "mcp__x__y",
+                "",
+                Outcome::Done(Duration::from_secs(1), String::new()),
+            )
+        };
+        assert_eq!(bare.line(&HTML), "● <b>mcp__x__y</b> <b>1s</b>");
+    }
+
+    #[test]
     fn a_command_travels_in_a_span_past_any_backticks_it_carries() {
         assert_eq!(code("cargo test"), "`cargo test`");
         assert_eq!(code("echo ```x```"), "```` echo ```x``` ````");
@@ -290,7 +411,11 @@ mod tests {
     fn a_run_keeps_its_calls_on_lines_of_their_own() {
         let listed = listing(&[
             call("Read", "src/listen.rs", Outcome::Running),
-            call("Bash", "cargo test", Outcome::Done(Duration::from_secs(1))),
+            call(
+                "Bash",
+                "cargo test",
+                Outcome::Done(Duration::from_secs(1), String::new()),
+            ),
         ]);
         assert_eq!(
             listed,
@@ -300,7 +425,13 @@ mod tests {
 
     #[test]
     fn finished_calls_fold_once_they_read_long_together() {
-        let done = |subject: &str| call("Bash", subject, Outcome::Done(Duration::from_secs(1)));
+        let done = |subject: &str| {
+            call(
+                "Bash",
+                subject,
+                Outcome::Done(Duration::from_secs(1), String::new()),
+            )
+        };
         let x = "x".repeat(FOLD_OVER / 2);
         let listed = listing(&[
             Call {
@@ -353,6 +484,12 @@ mod tests {
         );
         // The calls it lists, and the line that counts the ones it does not.
         assert_eq!(listed.lines().count(), RUN_MAX + 1);
+    }
+
+    #[test]
+    fn a_clipped_text_keeps_its_lines_but_not_the_blank_ones() {
+        assert_eq!(clip("a\n\n  \nb\n", 5), "a\nb");
+        assert_eq!(clip("abcdef", 5), "abcde\u{2026}");
     }
 
     #[test]

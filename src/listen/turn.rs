@@ -12,7 +12,9 @@ use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound}
 
 use super::Machine;
 use super::chat::unreminded;
-use super::render::{Call, Outcome, first_line, listing, took};
+use super::render::{
+    ARGUMENTS_MAX, Call, Outcome, RESULT_MAX, SUMMARY_MAX, clip, first_line, listing, took,
+};
 use super::transcript;
 use super::usage::status_line;
 
@@ -94,9 +96,6 @@ const FRAME: usize = 1024;
 const FRAME_BLOCKS: usize = 4;
 /// How much of a session's latest prompt its button in a `/resume` menu shows.
 const PROMPT_MAX: usize = 40;
-/// How much of the first line of what a failed tool reported its call shows, past which
-/// it stops reading at a glance.
-const WHY_MAX: usize = 60;
 
 /// One stretch of a turn: an assistant message and the run of tool calls it goes on to
 /// make. It is written into the turn's open message until the next one starts and that
@@ -485,6 +484,9 @@ impl Machine {
                 name: name.clone(),
                 description: event.description(),
                 subject: event.subject(),
+                arguments: event
+                    .arguments()
+                    .map(|arguments| clip(&arguments, ARGUMENTS_MAX)),
                 outcome: Outcome::Running,
             },
         ));
@@ -520,13 +522,17 @@ impl Machine {
             return;
         };
         let took = Duration::from_millis(event.duration_ms.unwrap_or_default());
+        let shown = |text: &str| {
+            if event.mcp() {
+                clip(text, RESULT_MAX)
+            } else {
+                first_line(text, SUMMARY_MAX)
+            }
+        };
         let outcome = if event.hook_event_name == "PostToolUseFailure" {
-            Outcome::Failed(
-                took,
-                first_line(event.error.as_deref().unwrap_or("failed"), WHY_MAX),
-            )
+            Outcome::Failed(took, shown(event.error.as_deref().unwrap_or("failed")))
         } else {
-            Outcome::Done(took)
+            Outcome::Done(took, shown(&event.result()))
         };
         let Some(turn) = self.turn_mut(id) else {
             return;
@@ -1056,7 +1062,8 @@ mod tests {
             name: "Read".to_owned(),
             description: String::new(),
             subject: "a".to_owned(),
-            outcome: Outcome::Done(Duration::from_secs(1)),
+            arguments: None,
+            outcome: Outcome::Done(Duration::from_secs(1), String::new()),
         });
         assert_eq!(
             segment.text(),

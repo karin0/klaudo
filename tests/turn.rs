@@ -655,14 +655,20 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
         json!({"hook_event_name": "PreToolUse", "tool_use_id": "t2", "tool_name": "Read",
                "tool_input": {"file_path": "/src/listen.rs"}, "agent_type": "Explore"}),
         json!({"hook_event_name": "PostToolUse", "tool_use_id": "t2", "tool_name": "Read",
-               "duration_ms": 12}),
+               "duration_ms": 12, "tool_response": {"file": {"numLines": 120}}}),
         json!({"hook_event_name": "PostToolUseFailure", "tool_use_id": "t1", "tool_name": "Bash",
                "duration_ms": 4187, "error": "Exit code 1\nassertion failed"}),
         json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "one test fails"}),
         json!({"hook_event_name": "PreToolUse", "tool_use_id": "t3", "tool_name": "Edit",
                "tool_input": {"file_path": "/src/hook.rs"}}),
         json!({"hook_event_name": "PostToolUse", "tool_use_id": "t3", "tool_name": "Edit",
-               "duration_ms": 20}),
+               "duration_ms": 20,
+               "tool_response": {"structuredPatch": [{"lines": ["-a", "+b"]}]}}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t4",
+               "tool_name": "mcp__telegram__history", "tool_input": {"chat": "x"}}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t4",
+               "tool_name": "mcp__telegram__history", "duration_ms": 30,
+               "tool_response": [{"type": "text", "text": "one\n\ntwo"}]}),
         json!({"hook_event_name": "MessageDisplay", "message_id": "m3", "index": 0, "delta": "fixed"}),
         json!({"hook_event_name": "Stop", "last_assistant_message": "fixed"}),
     ];
@@ -684,11 +690,14 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
                 "silent",
                 "on it\n\n\
                  × **Bash**  `cargo test` **4s**  \n⎿ Exit code 1  \n\
-                 ● [Explore] **Read**  `/src/listen.rs` **12ms**"
+                 ● [Explore] **Read**  `/src/listen.rs` **12ms**  \n⎿ 120 lines"
             ),
             (
                 "silent",
-                "one test fails\n\n● **Edit**  `/src/hook.rs` **20ms**"
+                "one test fails\n\n\
+                 ● **Edit**  `/src/hook.rs` **20ms**  \n⎿ \\+1 −1  \n\
+                 ● **mcp\\_\\_telegram\\_\\_history** **30ms**  \n\
+                 ```\n{\"chat\":\"x\"}\n```  \n```\none\ntwo\n```"
             ),
             ("ring", "fixed"),
         ]

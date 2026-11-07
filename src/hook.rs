@@ -57,6 +57,8 @@ pub struct Event {
     #[serde(default)]
     pub tool_input: Map<String, Value>,
     #[serde(default)]
+    pub tool_response: Option<Value>,
+    #[serde(default)]
     pub duration_ms: Option<u64>,
     #[serde(default)]
     pub prompt_id: Option<String>,
@@ -110,9 +112,70 @@ impl Event {
         self.field(&DESCRIPTION)
     }
 
-    /// What a tool call is working on, in one line.
+    /// What a tool call is working on, in one line. An MCP call has its arguments
+    /// shown whole, so it has no subject.
     pub fn subject(&self) -> String {
+        if self.mcp() {
+            return String::new();
+        }
         self.field(&SUBJECT)
+    }
+
+    /// Whether the call is to a tool of an MCP server, whose input and output follow
+    /// no schema Claude Code's own tools share.
+    pub fn mcp(&self) -> bool {
+        self.tool_name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("mcp__"))
+    }
+
+    /// An MCP call's arguments as compact JSON, empty when it takes none.
+    pub fn arguments(&self) -> Option<String> {
+        self.mcp().then(|| {
+            if self.tool_input.is_empty() {
+                String::new()
+            } else {
+                Value::Object(self.tool_input.clone()).to_string()
+            }
+        })
+    }
+
+    /// What a finished call produced: an MCP call's whole text, and what Claude Code's
+    /// terminal summarizes for its own tools, read from each tool's `tool_response`,
+    /// whose format Claude Code does not publish. A tool with no known summary gives the
+    /// text it returned, or nothing when it returned an object.
+    pub fn result(&self) -> String {
+        let Some(response) = &self.tool_response else {
+            return String::new();
+        };
+        if self.mcp() {
+            return text(response);
+        }
+        let count = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64);
+        match self.tool_name.as_deref().unwrap_or_default() {
+            "Bash" => ["stdout", "stderr"]
+                .iter()
+                .filter_map(|key| response.get(*key)?.as_str())
+                .find_map(|output| output.lines().rev().find(|line| !line.trim().is_empty()))
+                .unwrap_or_default()
+                .to_owned(),
+            "Read" => response
+                .get("file")
+                .and_then(|file| count(file, "numLines"))
+                .map(|lines| format!("{lines} lines"))
+                .unwrap_or_default(),
+            "Edit" | "MultiEdit" | "Write" => patched(response),
+            "Grep" if response.get("mode").and_then(Value::as_str) == Some("content") => {
+                count(response, "numLines")
+                    .map(|lines| format!("{lines} lines"))
+                    .unwrap_or_default()
+            }
+            "Grep" | "Glob" => count(response, "numFiles")
+                .map(|files| format!("{files} files"))
+                .unwrap_or_default(),
+            _ if response.is_object() => String::new(),
+            _ => text(response),
+        }
     }
 
     fn field(&self, keys: &[&str]) -> String {
@@ -175,6 +238,60 @@ impl Event {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         serde_json::to_string(&kept).expect("a parsed object re-serializes")
+    }
+}
+
+/// A tool's output as text. MCP returns a list of content blocks, of which an image
+/// is shown as a placeholder, and a tool that failed returns a string.
+fn text(response: &Value) -> String {
+    match response {
+        Value::Null => String::new(),
+        Value::String(text) => text.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .map(|block| match block.get("type").and_then(Value::as_str) {
+                Some("text") => block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                Some("image") => "[image]".to_owned(),
+                _ => block.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    }
+}
+
+/// The lines an edit added and removed, as `+3 −1`, counted from its patch. A file
+/// written new has no patch, and all of its lines are added.
+fn patched(response: &Value) -> String {
+    let lines: Vec<&str> = response
+        .get("structuredPatch")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|hunk| hunk.get("lines")?.as_array())
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let marked = |mark: char| lines.iter().filter(|line| line.starts_with(mark)).count();
+    let (added, removed) = match response.get("type").and_then(Value::as_str) {
+        Some("create") => (
+            response
+                .get("content")
+                .and_then(Value::as_str)
+                .map_or(0, |content| content.lines().count()),
+            0,
+        ),
+        _ => (marked('+'), marked('-')),
+    };
+    match (added, removed) {
+        (0, 0) => String::new(),
+        (added, 0) => format!("+{added}"),
+        (0, removed) => format!("\u{2212}{removed}"),
+        (added, removed) => format!("+{added} \u{2212}{removed}"),
     }
 }
 
@@ -420,6 +537,78 @@ mod tests {
         let long = call(serde_json::json!({"command": "x".repeat(SUBJECT_MAX + 5)})).1;
         assert_eq!(long.chars().count(), SUBJECT_MAX + 1);
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn a_finished_call_sums_up_its_output_by_its_tool() {
+        use serde_json::json;
+        let result = |name: &str, response: serde_json::Value| {
+            event(serde_json::json!({
+                "hook_event_name": "PostToolUse",
+                "session_id": "s",
+                "tool_name": name,
+                "tool_input": {"x": 1},
+                "tool_response": response,
+            }))
+            .result()
+        };
+        assert_eq!(
+            result(
+                "Bash",
+                json!({"stdout": "running\ntest result: ok\n\n", "stderr": ""})
+            ),
+            "test result: ok"
+        );
+        assert_eq!(
+            result("Bash", json!({"stdout": "", "stderr": "warning"})),
+            "warning"
+        );
+        assert_eq!(
+            result("Read", json!({"type": "text", "file": {"numLines": 120}})),
+            "120 lines"
+        );
+        let patch = json!({"structuredPatch": [{"lines": [" a", "-b", "+c", "+d"]}]});
+        assert_eq!(result("Edit", patch), "+2 \u{2212}1");
+        assert_eq!(
+            result(
+                "Write",
+                json!({"type": "create", "content": "a\nb\n", "structuredPatch": []})
+            ),
+            "+2"
+        );
+        assert_eq!(result("Glob", json!({"numFiles": 3})), "3 files");
+        assert_eq!(
+            result("Grep", json!({"mode": "content", "numLines": 7})),
+            "7 lines"
+        );
+        assert_eq!(result("Skill", json!({"success": true})), "");
+        assert_eq!(
+            result("TaskOutput", json!("Error: no task")),
+            "Error: no task"
+        );
+        // An MCP call shows its arguments and its whole text, an image as a placeholder.
+        let mcp = event(serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "s",
+            "tool_name": "mcp__telegram__media",
+            "tool_input": {"id": 5, "q": "a"},
+            "tool_response": [
+                {"type": "text", "text": "a thumbnail"},
+                {"type": "image", "source": {"data": "UklGR"}},
+            ],
+        }));
+        assert_eq!(mcp.subject(), "");
+        assert_eq!(mcp.arguments().as_deref(), Some(r#"{"id":5,"q":"a"}"#));
+        assert_eq!(mcp.result(), "a thumbnail\n[image]");
+        assert_eq!(result("mcp__x__y", json!({"ok": true})), r#"{"ok":true}"#);
+        assert_eq!(
+            event(
+                serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s",
+                                     "tool_name": "Read"})
+            )
+            .arguments(),
+            None
+        );
     }
 
     #[test]

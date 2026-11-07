@@ -53,6 +53,7 @@ A run of tool calls is a line per call:
 
 ● **Bash**  run the tests **4s**
 ⎿ `cargo test`
+⎿ test result: ok. 58 passed
 × **Bash**  lint everything **2s**
 ⎿ `cargo clippy`
 ⎿ Exit code 1
@@ -62,8 +63,14 @@ Klaŭdo puts a call's command, path or pattern in a code span, so markdown insid
 stays literal, and escapes the markdown in every other sentence a person or a tool
 wrote. Claude Code answers in markdown, and Klaŭdo posts that markdown as it is.
 
+A finished call sums up its output in a line, as Claude Code's terminal does: the last
+line a command printed, the lines a file read or an edit changed, or the files a search
+matched. An MCP tool follows no schema Klaŭdo could read a subject or a summary from,
+and its arguments and output are usually what a reader opens the call for, so its call
+shows both nearly whole in code blocks.
+
 The calls that finished ahead of the first one still running fold into one expandable
-quotation once their descriptions and subjects together run past 120 characters, three
+quotation once everything they show together runs past 120 characters, three
 lines of a phone's screen. The running calls stay under it in view. Markdown isn't
 parsed inside a block HTML tag, so the folded calls are written in HTML, and a blank
 line keeps the quotation apart from the lines under it.
