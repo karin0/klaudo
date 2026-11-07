@@ -98,7 +98,7 @@ struct Markup {
 }
 
 const MARKDOWN: Markup = Markup {
-    bold: |text| format!("**{text}**"),
+    bold: |text| format!("**{}**", hook::prose(text)),
     code,
     text: hook::prose,
     newline: BREAK,
@@ -273,6 +273,11 @@ mod tests {
             ..call("Grep", "fn seal", Outcome::Running)
         };
         assert_eq!(subagent.line(&MARKDOWN), "○ [Explore] **Grep**  `fn seal`");
+        // An MCP tool's name is written in the markdown it would otherwise be read as.
+        assert_eq!(
+            call("mcp__telegram__send", "", Outcome::Running).line(&MARKDOWN),
+            "○ **mcp\\_\\_telegram\\_\\_send**"
+        );
     }
 
     #[test]
