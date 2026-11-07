@@ -106,7 +106,7 @@ impl Call {
             .unwrap_or_default();
         let printed = |text: &str| {
             text.lines()
-                .map(markup.code)
+                .map(|line| (markup.code)(&indented(line)))
                 .collect::<Vec<_>>()
                 .join(markup.newline)
         };
@@ -284,6 +284,22 @@ pub(super) fn listing(calls: &[Call], live: bool) -> String {
         .chain((!open.is_empty()).then(|| open.join(BREAK)))
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// `line` with the blanks it opens with as ideographic spaces of two columns each,
+/// since Telegram drops the spaces a code span opens with and keeps those. A tab counts
+/// as four columns, and an odd column stays a space after them.
+fn indented(line: &str) -> String {
+    let body = line.trim_start_matches([' ', '\t']);
+    let columns: usize = line[..line.len() - body.len()]
+        .chars()
+        .map(|blank| if blank == '\t' { 4 } else { 1 })
+        .sum();
+    format!(
+        "{}{}{body}",
+        "\u{3000}".repeat(columns / 2),
+        " ".repeat(columns % 2)
+    )
 }
 
 /// How long a tool call took, in the units a tool call runs in.
@@ -488,6 +504,22 @@ mod tests {
             )
         };
         assert_eq!(bare.line(&HTML, &OPEN), "● <b>mcp__x__y</b> <b>1s</b>");
+    }
+
+    #[test]
+    fn printed_indentation_survives_as_ideographic_spaces() {
+        assert_eq!(indented("    a  b"), "\u{3000}\u{3000}a  b");
+        assert_eq!(indented("\t   a"), "\u{3000}\u{3000}\u{3000} a");
+        assert_eq!(indented("a"), "a");
+        let printed = call(
+            "Bash",
+            "python3 x.py",
+            Outcome::Failed(Duration::from_secs(1), "Traceback\n  File x.py".to_owned()),
+        );
+        assert_eq!(
+            printed.line(&MARKDOWN, &OPEN),
+            "× **Bash**  `python3 x.py` **1s**  \n⎿ `Traceback`  \n`\u{3000}File x.py`"
+        );
     }
 
     #[test]

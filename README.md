@@ -69,7 +69,9 @@ five lines it printed, and a failure the first five lines of its error, while th
 in view as the next paragraph describes. An MCP tool follows no schema Klaŭdo could read
 a subject or a summary from, and its arguments and output are usually what a reader
 opens the call for, so its call shows both nearly whole. Printed text goes in a code
-span per line, since a phone scrolls a code block sideways and wraps a span.
+span per line, since a phone scrolls a code block sideways and wraps a span. Telegram
+drops the spaces a span opens with, so a line's indentation goes in ideographic spaces
+of two columns each, which it keeps.
 
 While a run is the open segment, the calls from the first one still running to the end
 stay in view, or else the latest call alone, since they are what a reader follows a turn
