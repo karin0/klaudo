@@ -1,4 +1,4 @@
-//! A conversation copied up to the start of one of its turns, which `/rewind` makes.
+//! A conversation copied up to the end of one of its turns, which `/rewind` makes.
 
 use kuriero::Message;
 
@@ -11,11 +11,11 @@ use super::{Known, Last, Machine, Trail, transcript};
 
 impl Machine {
     /// Copies the conversation of the session a message replying to `replied` would
-    /// reach up to the start of the turn `replied` belongs to, or else of the first turn
-    /// after its latest compaction, into a session that has not run. The copy's head goes
-    /// where the message was sent, over the prompt of that turn, as Claude Code's own
-    /// `/rewind` hands the prompt back. A reply to it resumes the copy there, and so does
-    /// a message replying to nothing, since the copy left the latest message there.
+    /// reach up to the end of the turn `replied` belongs to, or else of its latest
+    /// compaction, into a session that has not run. The copy's head goes where the
+    /// message was sent, over the first prompt it left out, as Claude Code's own `/rewind`
+    /// hands that prompt back. A reply to it resumes the copy there, and so does a message
+    /// replying to nothing, since the copy left the latest message there.
     pub(super) fn rewind(&mut self, from: &Admitted, asked: i64, replied: Option<&Message>) {
         let place = from.place;
         let address = match self.addressee(place, replied) {
@@ -55,7 +55,7 @@ impl Machine {
             Ok(None) if turn.is_some() => {
                 return self.say(
                     place,
-                    "that turn is not in the session's transcript, or nothing precedes it",
+                    "that turn is not in the session's transcript, or nothing follows it",
                 );
             }
             Ok(None) => {
@@ -67,7 +67,7 @@ impl Machine {
             }
         };
         let body = format!(
-            "rewound {} to before\n\n{}",
+            "rewound {}, leaving out\n\n{}",
             code(&hook::address(&id, None)),
             hook::quote(&rewound.prompt),
         );

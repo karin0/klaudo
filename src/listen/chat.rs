@@ -55,7 +55,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         REWIND,
-        "Copy the conversation back to before the turn it replies to",
+        "Copy the conversation up to the end of the turn it replies to",
     ),
     (
         USAGE,

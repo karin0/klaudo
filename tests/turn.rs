@@ -2895,12 +2895,11 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
     drop(daemon);
 }
 
-/// `/rewind` copies an exited session's conversation up to the start of the turn the
-/// message it replies to belongs to, or else of the first turn after its latest
-/// compaction, into a session of its own, whose head quotes that turn's prompt and a reply
-/// resumes the copy from.
+/// `/rewind` copies an exited session's conversation up to the end of the turn the
+/// message it replies to belongs to, or else of its latest compaction, into a session of
+/// its own, whose head quotes the first prompt left out and a reply resumes the copy from.
 #[test]
-fn a_rewound_copy_resumes_from_before_a_turn() {
+fn a_rewound_copy_resumes_from_the_end_of_a_turn() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("rewind", port);
     let root = temporary.path();
@@ -2959,13 +2958,13 @@ fn a_rewound_copy_resumes_from_before_a_turn() {
     let (copy, said, kept) = rewind("01234567");
     assert!(
         said.ends_with(&format!(
-            "** `{}`\n\nrewound `01234567` to before\n\n>u2 \\*said\\*",
+            "** `{}`\n\nrewound `01234567`, leaving out\n\n>u2 \\*said\\*",
             &copy[..8]
         )),
         "{said}"
     );
     assert_eq!(kept, 3);
-    let (_, said, kept) = rewind("01234567/p3aaaaaa");
+    let (_, said, kept) = rewind("01234567/p2aaaaaa");
     assert!(said.ends_with(">u3 \\*said\\*"), "{said}");
     assert_eq!(kept, 4);
 

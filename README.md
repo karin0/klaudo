@@ -287,14 +287,17 @@ project goes there, and each topic keeps one conversation. In a group, Telegram 
 bot open a topic only with the `can_manage_topics` right.
 
 `/rewind` copies the conversation of the session a message would reach into a new
-session, back to before the turn of the message it replies to, as Claude Code's own
-`/rewind` restores one. A message that names no turn, such as one replying to nothing,
-goes back to before the first turn after the latest compaction. The copy's head is posted
-where the message was sent, over the prompt of that turn, as the picker hands the prompt
-back, so a reply resumes the copy there and the original stays as it was. A copy wanting
-a topic of its own takes `/split`. The picker takes only arrow keys, and
+session, up to the end of the turn of the message it replies to. Claude Code's own
+`/rewind` picker goes back to before the prompt picked, but a prompt sent from the chat
+is the sender's own message, which carries no head to reply to, so a reply picks the
+answer it was given and keeps it. A message that names no turn, such as one replying to
+nothing, keeps the conversation up to the end of its latest compaction, which is also
+what a reply to the compaction's summary keeps. The copy's head is posted where the
+message was sent, over the first prompt left out, as the picker hands that prompt back,
+so a reply resumes the copy there and the original stays as it was. A copy wanting a
+topic of its own takes `/split`. The picker takes only arrow keys, and
 `--resume-session-at` truncates a resumed conversation only in print mode, so the daemon
-writes the copy's transcript itself: the original's entries up to that prompt, each
+writes the copy's transcript itself: the original's entries up to the next prompt, each
 naming the new session, in the file beside the original's, where `claude --resume` looks
 for it. The turn is found by the prompt id that a message's head shortens, which the
 transcript records on every prompt. Only the conversation
