@@ -141,9 +141,8 @@ A message to a running session outside tmux, such as one in an editor, has no te
 to be typed into, so the daemon answers it with a button. Pressed by the message's
 sender, the button opens a window running `claude --resume --fork-session`, which copies
 the conversation into a new session and leaves the original running, and types the
-message there once the branch is ready. Where the branch goes to a topic of its own, as
-Topics below says, the message is posted there and the turn answering it follows. The
-branch works on the same files as the original.
+message there once the branch is ready. The branch stays in the original's topic, and
+works on the same files as the original.
 
 `/new <directory>` posts an anchor, and replying to it opens a window running `claude`
 there with the reply as its first prompt. `/new` alone offers a menu of the chat's
@@ -254,10 +253,11 @@ until a session of its project posts in a topic, so a reply to one of its messag
 message sent outside every topic by mistake reaches no session.
 
 `/split` opens a topic for the session a message would reach, named after its latest
-prompt, and moves the session there the way `/resume` does. Claude Code's `/branch`, typed
-in the terminal or sent from the chat, starts a new session, and where its project's
-conversations are in topics the daemon opens a topic for it under the name Claude Code gave
-the branch, or for a branch the daemon opened, under its latest prompt. A session in a
+prompt, and moves the session there the way `/resume` does. Claude Code's `/branch` starts
+a new session, the branch. Where `/branch` was sent from the chat and the project's
+conversations are in topics, the daemon opens a topic for the branch under the name Claude
+Code gave it, or else its latest prompt. A branch made in the terminal stays in the topic
+of the session it branched from. A session in a
 topic opened for it still counts toward the topic it left, so a new session of its
 project goes there, and each topic keeps one conversation. In a group, Telegram lets the
 bot open a topic only with the `can_manage_topics` right.

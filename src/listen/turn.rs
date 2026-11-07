@@ -697,7 +697,7 @@ impl Machine {
         let Some(session) = self.sessions.get(id) else {
             return;
         };
-        if let Some(ask) = compaction(&session.asked) {
+        if let Some(ask) = typed(&session.asked, "compact") {
             self.telegram.acknowledge(ask.place.chat, ask.message);
         }
     }
@@ -708,9 +708,7 @@ impl Machine {
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
-        let typed = compaction(&session.asked)
-            .map(|ask| ask.text.clone())
-            .and_then(|text| pair(&mut session.asked, &text));
+        let typed = take_typed(&mut session.asked, "compact");
         let head = session.head(id, event.prompt_id.as_deref());
         let thread = typed.unwrap_or_else(|| self.thread(&self.sessions[id]));
         let answer = self.telegram.post(
@@ -961,13 +959,22 @@ fn pair(asked: &mut VecDeque<Ask>, prompt: &str) -> Option<Thread> {
     })
 }
 
-/// The `/compact` the daemon typed into a session and Claude Code has yet to finish.
-fn compaction(asked: &VecDeque<Ask>) -> Option<&Ask> {
+/// The command `/<name>` the daemon typed into a session and Claude Code has yet to carry
+/// out, which it never reports as a prompt.
+fn typed<'a>(asked: &'a VecDeque<Ask>, name: &str) -> Option<&'a Ask> {
     asked.iter().find(|ask| {
         ask.text
-            .strip_prefix("/compact")
+            .strip_prefix('/')
+            .and_then(|rest| rest.strip_prefix(name))
             .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
     })
+}
+
+/// Takes the command `/<name>` the daemon typed into a session once Claude Code carried
+/// it out, along with everything typed before it.
+pub(super) fn take_typed(asked: &mut VecDeque<Ask>, name: &str) -> Option<Thread> {
+    let text = typed(asked, name)?.text.clone();
+    pair(asked, &text)
 }
 
 /// Where a turn starts in the list of status words, so two turns running at once do not
@@ -1086,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    fn a_compact_klaudo_typed_is_found_with_or_without_instructions() {
+    fn a_command_klaudo_typed_is_found_with_or_without_arguments() {
         let found = |texts: &[&str]| {
             let asked = VecDeque::from_iter(texts.iter().zip(1..).map(|(text, message)| Ask {
                 text: (*text).to_owned(),
@@ -1094,7 +1101,7 @@ mod tests {
                 message,
                 guest: None,
             }));
-            compaction(&asked).map(|ask| ask.message)
+            typed(&asked, "compact").map(|ask| ask.message)
         };
         assert_eq!(found(&["/compactor", "/compact"]), Some(2));
         assert_eq!(found(&["/compact keep the plan"]), Some(1));

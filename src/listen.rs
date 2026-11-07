@@ -574,14 +574,25 @@ impl Machine {
                     .waiting(&id, &session.dir, session.pane.as_ref())
                     .first()
                     .map(|&index| &self.opening[index]);
-                // A branch carries its conversation over, latest prompt included.
-                if let Some(Start::Fork(origin)) = opening.map(|opening| &opening.start)
-                    && let Some((_, _, trail)) = self.known().find(|(id, _, _)| id == origin)
-                {
+                let origin = match opening.map(|opening| &opening.start) {
+                    Some(Start::Fork(origin)) => Some(origin.as_str()),
+                    _ if event.source.as_deref() == Some("fork") => {
+                        self.branched_from(&id, session.pane.as_ref())
+                    }
+                    _ => None,
+                };
+                // A branch carries its conversation over, latest prompt and place included.
+                let origin = origin.and_then(|origin| {
+                    self.known()
+                        .find(|(id, _, _)| *id == origin)
+                        .map(|(_, _, trail)| trail)
+                });
+                if let Some(trail) = origin {
                     session.trail.prompt.clone_from(&trail.prompt);
                 }
                 let asked = opening.map(|opening| opening.ask.place());
                 let place = asked
+                    .or_else(|| origin?.last.map(|last| last.place))
                     .or_else(|| self.inherited(&session.dir))
                     .unwrap_or_else(|| session.home(&self.telegram));
                 session.trail.last = Some(Last::now(place, None));

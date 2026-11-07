@@ -10,7 +10,7 @@ use crate::telegram::{Admitted, Place, Sound};
 use crate::tmux::{self, Pane, Start};
 
 use super::render::code;
-use super::turn::{Ask, STOP, Thread};
+use super::turn::{Ask, STOP, Thread, take_typed};
 use super::{Awaiting, Last, Machine, Opening, Own, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
@@ -512,15 +512,34 @@ impl Machine {
         }
     }
 
-    /// A branch goes to a topic of its own where its project's conversations are in
-    /// topics, under the `title` Claude Code gave it. A branch `claude --fork-session`
-    /// made has no title, so its topic goes by the prompt it carried over.
+    /// The session branch `id` in `pane` was made from by `/branch`, which keeps running
+    /// there until the process exits: the one there to report last.
+    pub(super) fn branched_from(&self, id: &str, pane: Option<&Pane>) -> Option<&str> {
+        self.sessions
+            .iter()
+            .filter(|(other, session)| {
+                *other != id && pane.is_some() && session.pane.as_ref() == pane
+            })
+            .max_by_key(|(_, session)| session.idle_since)
+            .map(|(other, _)| other.as_str())
+    }
+
+    /// A branch `/branch` sent from the chat made goes to a topic of its own where its
+    /// project's conversations are in topics, under the `title` Claude Code gave it, or
+    /// with none, the prompt it carried over.
     pub(super) fn branched(&mut self, id: &str, title: Option<&str>) {
+        let pane = self.sessions[id].pane.clone();
+        let asked = self
+            .branched_from(id, pane.as_ref())
+            .map(str::to_owned)
+            .and_then(|origin| self.sessions.get_mut(&origin))
+            .and_then(|origin| take_typed(&mut origin.asked, BRANCH))
+            .is_some();
         let trail = &self.sessions[id].trail;
         let Some(place) = trail
             .last
             .map(|last| last.place)
-            .filter(|place| place.topic.is_some())
+            .filter(|place| asked && place.topic.is_some())
         else {
             return;
         };

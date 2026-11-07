@@ -2070,38 +2070,166 @@ fn a_split_session_goes_to_a_topic_of_its_own() {
     drop(daemon);
 }
 
-/// A branch `/branch` made goes to a topic of its own under the name Claude Code gave it,
-/// while a new session of its project still takes the topic the project's conversations
-/// are in.
+/// A session in pane `%1`, the one tmux shows the terminal `session` runs on, that last
+/// posted in topic 77 after the prompt `fix the parser`, while another session of its
+/// project, outside tmux, posted in topic 88 since.
+fn branching_in_topic_77(root: &Path, pid: u32) -> &'static str {
+    let id = "0123456789abcdef";
+    let seen = now() * 1000;
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(
+        root.join("run/klaudo/state.json"),
+        json!([
+            {
+                "id": id,
+                "dir": project(root),
+                "pid": pid,
+                "pane": {"server": root.join("tmux.sock"), "id": "%1"},
+                "idle_since": seen - 1000,
+                "trail": {"prompt": "fix the parser", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": seen - 1000}},
+            },
+            {
+                "id": "1111111111111111",
+                "dir": project(root),
+                "pid": std::process::id(),
+                "pane": null,
+                "idle_since": seen,
+                "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 88}, "message": 6, "at": seen}},
+            },
+        ])
+        .to_string(),
+    )
+    .expect("the state");
+    id
+}
+
+/// Reports `event` from pane `%1`.
+fn hook_in_pane(root: &Path, event: &serde_json::Value) {
+    let mut command = klaudo(root);
+    command
+        .env("TMUX", format!("{},1,0", root.join("tmux.sock").display()))
+        .env("TMUX_PANE", "%1");
+    report(command, event);
+}
+
+/// Reports that branch `branch` started in pane `%1`, as `/branch` does, with no title.
+fn branched_in_pane(root: &Path, branch: &str) {
+    hook_in_pane(
+        root,
+        &json!({"hook_event_name": "SessionStart", "session_id": branch,
+            "cwd": project(root), "source": "fork"}),
+    );
+}
+
+/// Sends `texts` in topic 77 one by one, each once the one before it was typed.
+fn typed_in_topic_77(root: &Path, chat: &Chat, texts: &[&str]) {
+    let log = root.join("tmux.log");
+    for (sent, text) in texts.iter().enumerate() {
+        chat.says_in(GROUP, 77, OWNER, text);
+        wait_for(
+            || {
+                std::fs::read_to_string(&log)
+                    .is_ok_and(|log| log.matches("Enter").count() == sent + 1)
+            },
+            "a message was never typed",
+        );
+    }
+}
+
+/// A branch `/branch` sent from the chat made goes to a topic of its own, named after the
+/// latest prompt it carried over, while the session it branched from stays where it was. A
+/// prompt sent ahead of `/branch` and submitted while it waits leaves it waiting.
 #[test]
-fn a_branch_goes_to_a_topic_of_its_own() {
-    let (port, calls, _chat) = recorder();
+fn a_branch_sent_from_the_chat_goes_to_a_topic_of_its_own() {
+    let (port, calls, chat) = recorder();
     let temporary = prepare("branch", port);
     let root = temporary.path();
-    in_topic_77(root);
+    let (session, pid) = terminal(root);
+    let original = branching_in_topic_77(root, pid);
     let daemon = daemon(root);
 
-    let branch = "fedcba9876543210";
-    hook(
+    typed_in_topic_77(root, &chat, &["carry on", "/branch"]);
+    hook_in_pane(
         root,
-        &json!({"hook_event_name": "SessionStart", "session_id": branch, "cwd": project(root),
-            "source": "fork", "session_title": "fix the parser (Branch)"}),
+        &json!({"hook_event_name": "UserPromptSubmit", "session_id": original,
+            "cwd": project(root), "prompt": "carry on"}),
     );
-    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let branch = "fedcba9876543210";
+    branched_in_pane(root, branch);
+    let made = collect(&calls, |call| call.label == "createForumTopic");
     let opened = made
         .iter()
         .find(|call| call.label == "createForumTopic")
         .expect("the topic");
     assert_eq!(
         opened.body,
-        json!({"chat_id": GROUP, "name": "fix the parser (Branch)"})
+        json!({"chat_id": GROUP, "name": "carry on (Branch)"})
     );
 
     assert_eq!(
-        prompted_in(root, &calls, &[branch, "5555555555555555"]),
+        prompted_in(root, &calls, &[branch, original]),
         [json!(opened.id), json!(77)]
     );
     drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
+/// A `/branch` sent from the chat that a prompt sent after it passed, as one Claude Code
+/// refused does, opens no topic for a branch made later in the terminal.
+#[test]
+fn a_branch_sent_from_the_chat_is_forgotten_once_a_later_prompt_runs() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("branch-refused", port);
+    let root = temporary.path();
+    let (session, pid) = terminal(root);
+    let original = branching_in_topic_77(root, pid);
+    let daemon = daemon(root);
+
+    typed_in_topic_77(root, &chat, &["/branch", "carry on"]);
+    hook_in_pane(
+        root,
+        &json!({"hook_event_name": "UserPromptSubmit", "session_id": original,
+            "cwd": project(root), "prompt": "carry on"}),
+    );
+    let branch = "fedcba9876543210";
+    branched_in_pane(root, branch);
+    assert_eq!(prompted_in(root, &calls, &[branch]), [json!(77)]);
+    assert!(
+        drained(&calls)
+            .iter()
+            .all(|call| call.label != "createForumTopic")
+    );
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
+/// A branch `/branch` typed in the terminal made stays in the topic of the session it
+/// branched from.
+#[test]
+fn a_branch_typed_in_the_terminal_stays_in_its_topic() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("branch-typed", port);
+    let root = temporary.path();
+    let (session, pid) = terminal(root);
+    branching_in_topic_77(root, pid);
+    let daemon = daemon(root);
+
+    let branch = "fedcba9876543210";
+    branched_in_pane(root, branch);
+    assert_eq!(prompted_in(root, &calls, &[branch]), [json!(77)]);
+    assert!(
+        drained(&calls)
+            .iter()
+            .all(|call| call.label != "createForumTopic")
+    );
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
 }
 
 /// A branch of a project whose conversations are outside every topic stays there with
@@ -2132,9 +2260,8 @@ fn a_branch_outside_every_topic_stays_there() {
 }
 
 /// A message to a session outside tmux is answered with a button, whose press by the
-/// message's sender opens a window running a branch of the session, which goes to a topic
-/// of its own named after the prompt it carried over and is typed the message, which goes
-/// along to that topic with the turn answering it.
+/// message's sender opens a window running a branch of the session, which stays in the
+/// session's topic and is typed the message, where the turn answering it replies to it.
 #[test]
 fn a_session_outside_tmux_is_branched_once_confirmed() {
     let (port, calls, chat) = recorder();
@@ -2197,27 +2324,6 @@ fn a_session_outside_tmux_is_branched_once_confirmed() {
         .stdout(Stdio::null())
         .spawn()
         .expect("a branch on a terminal");
-    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
-    let opened = made
-        .iter()
-        .find(|call| call.label == "createForumTopic")
-        .expect("the topic");
-    assert_eq!(
-        opened.body,
-        json!({"chat_id": GROUP, "name": "fix the parser (Branch)"})
-    );
-    // The message goes along to the branch's topic, where its turn replies to it.
-    let prompt = made.last().expect("the prompt");
-    assert_eq!(prompt.body["message_thread_id"], json!(opened.id));
-    assert!(
-        prompt.markdown.ends_with(">try another way"),
-        "{}",
-        prompt.markdown
-    );
-    assert!(
-        prompt.body["reply_markup"].is_null(),
-        "no anchor besides the prompt"
-    );
     let typed = root.join("typed");
     wait_for(
         || std::fs::read_to_string(&typed).is_ok_and(|typed| typed == "try another way"),
@@ -2232,9 +2338,10 @@ fn a_session_outside_tmux_is_branched_once_confirmed() {
         hook(root, &event);
     }
     let made = collect(&calls, |call| call.markdown.ends_with("tried"));
+    assert!(made.iter().all(|call| call.label != "createForumTopic"));
     let answer = made.last().expect("the answer");
-    assert_eq!(answer.body["message_thread_id"], json!(opened.id));
-    assert_eq!(answer.reply, replying_to(prompt.id));
+    assert_eq!(answer.body["message_thread_id"], json!(77));
+    assert_eq!(answer.reply, replying_to(9000));
     let _ = branch.kill();
     let _ = branch.wait();
     drop(daemon);
