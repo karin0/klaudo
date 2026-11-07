@@ -71,13 +71,14 @@ a subject or a summary from, and its arguments and output are usually what a rea
 opens the call for, so its call shows both nearly whole. Printed text goes in a code
 span per line, since a phone scrolls a code block sideways and wraps a span.
 
-The calls from the first one still running to the end stay in view, or else the latest
-call alone, since they are what a reader follows a turn by, and their commands and
-summaries read more than twice as far as the others', which show one line of what a
-command printed or an error said. The calls ahead of them fold into one expandable
-quotation once everything they show together runs past 120 characters, three lines of a
-phone's screen. Markdown isn't parsed inside a block HTML tag, so the folded calls are
-written in HTML, and a blank line keeps the quotation apart from the lines under it.
+While a run is the open segment, the calls from the first one still running to the end
+stay in view, or else the latest call alone, since they are what a reader follows a turn
+by, and their commands and summaries read more than twice as far as the others', which
+show one line of what a command printed or an error said. The calls ahead of them, and
+every call of a run the turn has moved on from, fold into one expandable quotation once
+everything they show together runs past 120 characters, three lines of a phone's screen.
+Markdown isn't parsed inside a block HTML tag, so the folded calls are written in HTML,
+and a blank line keeps the quotation apart from the lines under it.
 
 Telegram's message drafts would do the open segment's job in one call, and Klaŭdo was
 built on them first. A draft expires thirty seconds after its last frame, no method

@@ -244,17 +244,22 @@ pub(super) fn code(subject: &str) -> String {
 }
 
 /// A run of tool calls, a line per call. The oldest are counted rather than listed past
-/// the cap, so what is running now stays in a message Telegram will take. The calls
-/// from the first one still running, or else the latest call, stay in view, and the
-/// calls ahead of them fold into one quotation once they read long.
-pub(super) fn listing(calls: &[Call]) -> String {
+/// the cap, so what is running now stays in a message Telegram will take. While the run
+/// is `live`, the calls from the first one still running, or else the latest call, stay
+/// in view, and the calls ahead of them fold into one quotation once they read long. A
+/// run the turn has moved on from has no calls in view.
+pub(super) fn listing(calls: &[Call], live: bool) -> String {
     let elided = calls.len().saturating_sub(RUN_MAX);
     let shown = &calls[elided..];
-    let first_open = shown
-        .iter()
-        .position(|call| matches!(call.outcome, Outcome::Running))
-        .unwrap_or(shown.len())
-        .min(shown.len().saturating_sub(1));
+    let first_open = if live {
+        shown
+            .iter()
+            .position(|call| matches!(call.outcome, Outcome::Running))
+            .unwrap_or(shown.len())
+            .min(shown.len().saturating_sub(1))
+    } else {
+        shown.len()
+    };
     let (ahead, open) = shown.split_at(first_open);
     let folded = ahead.iter().map(Call::length).sum::<usize>() > FOLD_OVER;
     let markup = if folded { &HTML } else { &MARKDOWN };
@@ -275,7 +280,10 @@ pub(super) fn listing(calls: &[Call]) -> String {
     );
     // A block HTML tag runs to the next blank line, so one keeps the quotation apart
     // from the markdown under it.
-    format!("{quote}\n\n{}", open.join(BREAK))
+    std::iter::once(quote)
+        .chain((!open.is_empty()).then(|| open.join(BREAK)))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// How long a tool call took, in the units a tool call runs in.
@@ -490,14 +498,17 @@ mod tests {
 
     #[test]
     fn a_run_keeps_its_calls_on_lines_of_their_own() {
-        let listed = listing(&[
-            call("Read", "src/listen.rs", Outcome::Running),
-            call(
-                "Bash",
-                "cargo test",
-                Outcome::Summed(Duration::from_secs(1), String::new()),
-            ),
-        ]);
+        let listed = listing(
+            &[
+                call("Read", "src/listen.rs", Outcome::Running),
+                call(
+                    "Bash",
+                    "cargo test",
+                    Outcome::Summed(Duration::from_secs(1), String::new()),
+                ),
+            ],
+            true,
+        );
         assert_eq!(
             listed,
             "○ **Read**  `src/listen.rs`  \n● **Bash**  `cargo test` **1s**"
@@ -514,15 +525,18 @@ mod tests {
             )
         };
         let x = "x".repeat(FOLD_OVER / 2);
-        let listed = listing(&[
-            Call {
-                description: "a < b".to_owned(),
-                ..done(&x)
-            },
-            done(&x),
-            call("Read", "src/listen.rs", Outcome::Running),
-            done("ls"),
-        ]);
+        let listed = listing(
+            &[
+                Call {
+                    description: "a < b".to_owned(),
+                    ..done(&x)
+                },
+                done(&x),
+                call("Read", "src/listen.rs", Outcome::Running),
+                done("ls"),
+            ],
+            true,
+        );
         assert_eq!(
             listed,
             format!(
@@ -536,12 +550,26 @@ mod tests {
         );
         // The latest call stays in view once the run has finished.
         assert!(
-            listing(&[done(&x), done(&x), done("x"), done("ls")])
+            listing(&[done(&x), done(&x), done("x"), done("ls")], true)
                 .ends_with("</blockquote>\n\n● **Bash**  `ls` **1s**")
+        );
+        // A run the turn has moved on from folds whole, and short it reads a line a call.
+        let sealed = listing(&[done(&x), done(&x), done("x"), done("ls")], false);
+        assert!(sealed.starts_with("<blockquote expandable>") && sealed.ends_with("</blockquote>"));
+        let printed = || {
+            call(
+                "Bash",
+                "ls",
+                Outcome::Printed(Duration::from_secs(1), "a\nb".to_owned()),
+            )
+        };
+        assert_eq!(
+            listing(&[printed()], false),
+            "● **Bash**  `ls` **1s**  \n⎿ `b`"
         );
         // Calls ahead that read short stay on their lines.
         assert_eq!(
-            listing(&[done(&x), call("Read", &x, Outcome::Running)]),
+            listing(&[done(&x), call("Read", &x, Outcome::Running)], true),
             format!("● **Bash**  `{x}` **1s**  \n○ **Read**  `{x}`")
         );
     }
@@ -557,7 +585,7 @@ mod tests {
                 Outcome::Summed(Duration::from_secs(1), summary.clone()),
             )
         };
-        let listed = listing(&[done(), done()]);
+        let listed = listing(&[done(), done()], true);
         let (ahead, open) = listed.split_once("\n\n").expect("a folded run");
         assert_eq!(
             ahead,
@@ -575,7 +603,7 @@ mod tests {
         let calls: Vec<Call> = (0..RUN_MAX + 3)
             .map(|index| call("Read", &format!("file{index}"), Outcome::Running))
             .collect();
-        let listed = listing(&calls);
+        let listed = listing(&calls, true);
         assert!(listed.contains("… 3 earlier"), "the run reads {listed}");
         assert!(
             !listed.contains("**Read**  `file2`"),

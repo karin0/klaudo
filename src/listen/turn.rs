@@ -144,8 +144,9 @@ impl Segment {
             || self.calls.iter().any(|call| call.id == id)
     }
 
-    /// The words, then the run they introduce.
-    fn text(&self) -> String {
+    /// The words, then the run they introduce, with the calls a reader follows in view
+    /// while the segment is `live`.
+    fn text(&self, live: bool) -> String {
         let words: String = self
             .said
             .iter()
@@ -153,8 +154,8 @@ impl Segment {
             .collect();
         match (words.as_str(), self.calls.as_slice()) {
             (_, []) => words,
-            ("", calls) => listing(calls),
-            (_, calls) => format!("{words}\n\n{}", listing(calls)),
+            ("", calls) => listing(calls, live),
+            (_, calls) => format!("{words}\n\n{}", listing(calls, live)),
         }
     }
 }
@@ -243,7 +244,7 @@ impl Turn {
         let quiet = segment.heard + SETTLE;
         match &segment.written {
             None => Some((self.started + REWRITE).max(quiet)),
-            Some((written, at)) if *written == segment.text() => Some(*at + REFRESH),
+            Some((written, at)) if *written == segment.text(true) => Some(*at + REFRESH),
             Some((_, at)) => Some((*at + rewrite(self.thread.place.chat)).max(quiet)),
         }
     }
@@ -447,7 +448,7 @@ impl Machine {
             .as_mut()
             .filter(|segment| segment.said.is_some() && !segment.calls.is_empty())
             .filter(|segment| {
-                let text = segment.text();
+                let text = segment.text(true);
                 text.len() + FRAME > MAX_BYTES
                     || telegram::blocks(&text) + FRAME_BLOCKS > MAX_BLOCKS
             })
@@ -574,7 +575,7 @@ impl Machine {
         let Some(mut segment) = turn.segment.take() else {
             return;
         };
-        let text = segment.text();
+        let text = segment.text(false);
         if text.is_empty() {
             return;
         }
@@ -621,7 +622,7 @@ impl Machine {
             return;
         };
         let head = session.head(id, Some(&turn.prompt_id));
-        let post = hook::compose(&head, &took(posted.elapsed), "", &segment.text());
+        let post = hook::compose(&head, &took(posted.elapsed), "", &segment.text(false));
         let thread = turn.thread;
         if posted.filed {
             self.telegram.refile(posted.chat, posted.message, &post);
@@ -792,7 +793,11 @@ impl Machine {
             return;
         }
         let elapsed = turn.started.elapsed();
-        let text = turn.segment.as_ref().expect("a segment falling due").text();
+        let text = turn
+            .segment
+            .as_ref()
+            .expect("a segment falling due")
+            .text(true);
         let head = session.head(id, Some(&turn.prompt_id));
         let live = turn.live;
         let thread = turn.thread;
@@ -1065,7 +1070,7 @@ mod tests {
         chunks.insert(2, "third".to_owned());
         chunks.insert(0, "first ".to_owned());
         chunks.insert(1, "second ".to_owned());
-        assert_eq!(segment.text(), "first second third");
+        assert_eq!(segment.text(true), "first second third");
         // The run the words introduce stands under them.
         segment.calls.push(Call {
             id: "toolu_1".to_owned(),
@@ -1077,7 +1082,7 @@ mod tests {
             outcome: Outcome::Summed(Duration::from_secs(1), String::new()),
         });
         assert_eq!(
-            segment.text(),
+            segment.text(true),
             "first second third\n\n● **Read**  `a` **1s**"
         );
     }
