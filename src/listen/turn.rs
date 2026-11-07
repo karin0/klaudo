@@ -679,10 +679,14 @@ impl Machine {
         session.done = Some(turn.prompt_id.clone());
         let head = session.head(id, Some(&turn.prompt_id));
         let mut message = hook::message(event, &head, &took(turn.started.elapsed()));
-        if event.hook_event_name == "Stop"
-            && let Some(line) = status_line(session.context(), self.limits.as_ref())
-        {
-            message.markdown = format!("{}\n\n{line}", message.markdown);
+        if event.hook_event_name == "Stop" {
+            let hit = session.hit();
+            if let Some(line) = status_line(session.context(), hit, self.limits.as_ref()) {
+                message.markdown = format!("{}\n\n{line}", message.markdown);
+            }
+        }
+        if let Some(transcript) = &mut session.transcript {
+            transcript.ended();
         }
         // The one sound of the turn: the reply is complete and worth coming back to.
         let thread = turn.thread;
@@ -790,7 +794,8 @@ impl Machine {
         let live = turn.live;
         let thread = turn.thread;
         let mut footer = status(elapsed, turn.seed);
-        if let Some(line) = status_line(session.context(), self.limits.as_ref()) {
+        let hit = session.hit();
+        if let Some(line) = status_line(session.context(), hit, self.limits.as_ref()) {
             footer = format!("{footer}\n\n{line}");
         }
         let mut shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));
@@ -921,6 +926,9 @@ impl Machine {
             return;
         };
         session.done = Some(turn.prompt_id.clone());
+        if let Some(transcript) = &mut session.transcript {
+            transcript.ended();
+        }
         let head = session.head(id, Some(&turn.prompt_id));
         let message = hook::compose(
             &head,

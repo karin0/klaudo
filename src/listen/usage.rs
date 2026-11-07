@@ -28,15 +28,31 @@ pub(super) struct Window {
     used_percentage: Option<f64>,
 }
 
-/// The tokens the latest call sent, which is what the context holds.
+/// The tokens a call sent, which is what the context held.
 #[derive(Deserialize, Clone)]
-struct Usage {
+pub(super) struct Usage {
     #[serde(rename = "input_tokens")]
     uncached: u64,
     #[serde(rename = "cache_creation_input_tokens")]
     cache_written: u64,
     #[serde(rename = "cache_read_input_tokens")]
     cache_read: u64,
+}
+
+impl Usage {
+    pub(super) fn total(&self) -> u64 {
+        self.uncached + self.cache_written + self.cache_read
+    }
+
+    /// The whole percentage of the tokens sent that were read from the cache, rounded down
+    /// so that 100% means all of them.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a context of tokens stays far below 2^52"
+    )]
+    pub(super) fn hit(&self) -> f64 {
+        (self.cache_read as f64 * 100.0 / self.total() as f64).floor()
+    }
 }
 
 /// How full a session's context is: what its status line last reported, and when, in
@@ -52,6 +68,12 @@ impl Session {
             Some((window, at)) => Some(Context::Reported(window, *at)),
             None => self.transcript.as_mut()?.tokens().map(Context::Counted),
         }
+    }
+
+    /// The percentage of what the first call of the turn sent that was read from the
+    /// cache, which falls once the cache has expired since the turn before.
+    pub(super) fn hit(&mut self) -> Option<f64> {
+        self.transcript.as_mut()?.hit()
     }
 }
 
@@ -117,7 +139,7 @@ impl Machine {
                         (Some(usage), Some(percentage)) => format!(
                             "{}context {percentage:.0}%, {} of {}",
                             gauge(percentage),
-                            tokens(usage.uncached + usage.cache_written + usage.cache_read),
+                            tokens(usage.total()),
                             tokens(window.context_window_size),
                         ),
                         _ => "context: nothing has been sent yet".to_owned(),
@@ -207,11 +229,12 @@ fn until(left: Duration, gap: &str) -> String {
     }
 }
 
-/// The figures `/usage` answers with, as one line of code under the answer that closes
-/// a turn: how full the context is, then how much of each limit is used and how long
-/// until it resets.
+/// The figures under the answer that closes a turn, as one line of code: how full the
+/// context is and how much of the turn's first call hit the cache, then how much of
+/// each limit is used and how long until it resets.
 pub(super) fn status_line(
     context: Option<Context<'_>>,
+    hit: Option<f64>,
     limits: Option<&(Limits, u64)>,
 ) -> Option<String> {
     let now = now_millis() / 1000;
@@ -221,11 +244,15 @@ pub(super) fn status_line(
             Some(format!(
                 "{:.0}% {}/{}",
                 window.used_percentage?,
-                tokens(usage.uncached + usage.cache_written + usage.cache_read),
+                tokens(usage.total()),
                 tokens(window.context_window_size),
             ))
         }
         Context::Counted(count) => Some(tokens(count)),
+    });
+    let context = context.map(|context| match hit {
+        Some(hit) => format!("{context} {hit:.0}%"),
+        None => context,
     });
     let limits = limits
         .into_iter()

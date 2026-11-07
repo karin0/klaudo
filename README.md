@@ -197,9 +197,12 @@ terminal stay where they were posted, since their turns reply to them.
 reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as
 a dialog that takes every key until dismissed, which is why the daemon answers it. The
 message showing a running turn and the answer closing it end with the same figures, as
-in `5% 45.6k/1m · 1% 3h30m · 56% 2d14h`. A session in the VS Code extension draws no
-status line, so its context shows as the tokens alone, which Claude Code's transcript
-records of each call. The daemon reads them from where the transcript ended when it first
+in `5% 45.6k/1m 99% · 1% 3h30m · 56% 2d14h`, where `99%` is the share of the turn's first
+call that Claude Code's transcript shows read from the prompt cache. Later calls of a
+turn follow within seconds and nearly always hit the cache, while the first one misses it
+once the cache has expired since the turn before. A session in the VS Code extension draws no
+status line, so its context shows as the tokens alone, which the transcript records of
+each call. The daemon reads them from where the transcript ended when it first
 heard of the session, since the transcript of a long conversation runs to tens of
 megabytes.
 
