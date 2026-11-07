@@ -634,7 +634,7 @@ impl Machine {
             "Notification" => self.aside(&id, event, Sound::Ring),
             _ => self.aside(&id, event, Sound::Silent),
         }
-        self.dialog(&id, event.hook_event_name == "Notification");
+        self.dialog(&id, event.dialog());
         // Streamed text and tool calls arrive many times a second and change nothing
         // saved but `idle_since` and the trail, which the next event at a turn's edges
         // saves.
@@ -738,7 +738,7 @@ impl Machine {
                 [
                     turn.pending.first().map(|(at, _)| *at + SETTLE),
                     turn.due(),
-                    turn.typing,
+                    (!turn.dialog).then_some(turn.typing),
                     turn.stop_due(),
                 ]
             })

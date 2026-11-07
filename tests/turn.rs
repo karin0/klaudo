@@ -2819,7 +2819,7 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
     // An interruption of an earlier turn is in the transcript already.
     let transcript = root.join("transcript.jsonl");
     std::fs::write(&transcript, format!("{interruption}\n")).expect("the transcript");
-    let mut session = talking(root, &transcript);
+    let mut session = talking(root, &transcript, &[]);
 
     let made = collect(&calls, |call| call.markdown.contains('✻'));
     let live = made.last().expect("the message showing the turn").clone();
@@ -2890,6 +2890,69 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
         call.markdown == "no turn is running in that conversation"
     });
     assert_eq!(escapes(), 2);
+    let _ = session.kill();
+    let _ = session.wait();
+    drop(daemon);
+}
+
+/// The Enter after a reply would answer a dialog with its default choice, which approves
+/// a tool call, so a session waiting on one is typed nothing until it reports again. A
+/// notification that only reports leaves it open to replies.
+#[test]
+fn a_session_waiting_on_a_dialog_is_typed_nothing() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("dialog", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let transcript = root.join("transcript.jsonl");
+    std::fs::write(&transcript, "").expect("the transcript");
+    let mut session = talking(
+        root,
+        &transcript,
+        &[
+            json!({"hook_event_name": "Notification", "notification_type": "quota_auto_resume_fired",
+                "message": "resuming"}),
+            json!({"hook_event_name": "Notification", "notification_type": "permission_prompt",
+                "message": "Claude needs your permission to use Bash"}),
+            json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+                "tool_input": {"command": "true"}}),
+        ],
+    );
+    let made = collect(&calls, |call| call.markdown.contains('✻'));
+    let place = made.last().expect("the message showing the turn").chat;
+    let reply = |text: &str| chat.says(place.expect("the chat"), OWNER, text);
+    let go = |index: usize| std::fs::write(root.join(format!("go-{index}")), "").expect("a gate");
+    let log = root.join("tmux.log");
+    let entered = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .matches("Enter")
+            .count()
+    };
+
+    go(0);
+    collect(&calls, |call| call.markdown.contains("resuming"));
+    reply("carry on");
+    wait_for(
+        || entered() == 1,
+        "a reply after a quota notice was not typed",
+    );
+
+    go(1);
+    collect(&calls, |call| {
+        call.markdown.contains("needs your permission")
+    });
+    reply("hi");
+    collect(&calls, |call| call.markdown.contains("waits on a dialog"));
+    assert_eq!(entered(), 1, "a reply was typed into the dialog");
+
+    go(2);
+    std::thread::sleep(GRACE);
+    reply("and then");
+    wait_for(
+        || entered() == 2,
+        "a reply after the dialog was answered was not typed",
+    );
     let _ = session.kill();
     let _ = session.wait();
     drop(daemon);
@@ -3172,8 +3235,9 @@ fn terminal(root: &Path) -> (Child, u32) {
 /// A session in pane `%1`, the shell `script` runs on a terminal of its own, which the
 /// panes of the recording tmux show. Its hooks report from inside the pane that it
 /// submitted a prompt whose transcript is at `transcript` and began answering, and it
-/// stays running for half a minute.
-fn talking(root: &Path, transcript: &Path) -> Child {
+/// stays running for half a minute. It reports each of `later` once a file `go-N` appears
+/// beside the others within half a minute, where `N` is the event's position.
+fn talking(root: &Path, transcript: &Path, later: &[serde_json::Value]) -> Child {
     let event = |event: serde_json::Value| {
         let mut event = event;
         event["session_id"] = json!("0123456789abcdef");
@@ -3192,12 +3256,26 @@ fn talking(root: &Path, transcript: &Path) -> Child {
         event(json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "counting"})),
     )
     .expect("an event");
+    let gated = later
+        .iter()
+        .enumerate()
+        .map(|(index, later)| {
+            std::fs::write(
+                root.join(format!("later-{index}.json")),
+                event(later.clone()),
+            )
+            .expect("an event");
+            format!(
+                "timeout 30 sh -c 'until [ -e go-{index} ]; do sleep 0.1; done' && \"$KLAUDO\" < later-{index}.json; "
+            )
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    let run = format!(
+        "tty > tty; \"$KLAUDO\" < submit.json; \"$KLAUDO\" < delta.json; {gated}exec sleep 30"
+    );
     within(root, "script")
-        .args([
-            "-qc",
-            "tty > tty; \"$KLAUDO\" < submit.json; \"$KLAUDO\" < delta.json; exec sleep 30",
-            "/dev/null",
-        ])
+        .args(["-qc", &run, "/dev/null"])
         .env("KLAUDO", env!("CARGO_BIN_EXE_klaudo"))
         .env("SHELL", "/bin/sh")
         .env("TMUX", format!("{},1,0", root.join("tmux.sock").display()))

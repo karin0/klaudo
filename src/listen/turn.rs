@@ -198,9 +198,11 @@ pub(super) struct Turn {
     /// Tool calls announced but not filed yet, oldest first. A call the turn ended on
     /// is dropped with the turn: the answer is what that message is for.
     pub(super) pending: Vec<(Instant, Call)>,
-    /// When the chat is next shown the session typing. A session waiting on a dialog is
-    /// not typing.
-    pub(super) typing: Option<Instant>,
+    /// When the chat is next shown the session typing, unless it waits on a dialog.
+    pub(super) typing: Instant,
+    /// Whether the session waits on a dialog, which the Enter after a reply would answer
+    /// with its default choice.
+    pub(super) dialog: bool,
     stopping: Option<Stopping>,
 }
 
@@ -222,7 +224,8 @@ impl Turn {
             live: None,
             sealed: Vec::new(),
             pending: Vec::new(),
-            typing: None,
+            typing: Instant::now(),
+            dialog: false,
             stopping: None,
         }
     }
@@ -301,9 +304,9 @@ impl Machine {
                 .send(thread.place, &post.markdown, Sound::Silent, thread.prompt)
         };
         if let Some(turn) = self.turn_mut(id)
-            && turn.typing.is_some()
+            && !turn.dialog
         {
-            turn.typing = Some(Instant::now());
+            turn.typing = Instant::now();
         }
         posted
     }
@@ -737,15 +740,14 @@ impl Machine {
         }
     }
 
-    /// A `Notification` means the session waits on a dialog, and any later event of the
-    /// turn means the dialog was answered.
+    /// A `Notification` of a dialog means the session waits on it, and any later event of
+    /// the turn means it was answered.
     pub(super) fn dialog(&mut self, id: &str, open: bool) {
         if let Some(turn) = self.turn_mut(id) {
-            turn.typing = if open {
-                None
-            } else {
-                turn.typing.or_else(|| Some(Instant::now()))
-            };
+            if turn.dialog && !open {
+                turn.typing = Instant::now();
+            }
+            turn.dialog = open;
         }
     }
 
@@ -754,10 +756,10 @@ impl Machine {
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
-        if turn.typing.is_none_or(|at| at > now) {
+        if turn.dialog || turn.typing > now {
             return;
         }
-        turn.typing = Some(now + TYPING);
+        turn.typing = now + TYPING;
         let place = turn.thread.place;
         self.telegram.typing(place);
     }

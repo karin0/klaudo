@@ -25,6 +25,7 @@ const SPLIT: &str = "split";
 pub(super) const BRANCH: &str = "branch";
 pub(super) const ATTACH: &str = "attach";
 const STOP: &str = "stop";
+
 const CANCEL: &str = "cancel";
 /// What the button confirming a branch of a session outside tmux carries ahead of its id.
 const FORK: &str = "fork";
@@ -75,6 +76,11 @@ pub(super) const NOTHING_RAN: &str = "no session has run here; `/new <directory>
 
 /// What a guest reaching a session outside `CHAT_PROJECTS` is answered with.
 const CLOSED: &str = "that project is not open to guests";
+
+/// What a message to a session waiting on a dialog is answered with.
+const IN_DIALOG: &str = "that conversation waits on a dialog in its terminal, which the \
+    Enter after a reply would answer with its default choice. Answer it with /attach or \
+    cancel it with /stop, then send this again.";
 
 /// How many choices a menu offers, which a phone shows without scrolling.
 const MENU_MAX: usize = 8;
@@ -760,6 +766,9 @@ impl Machine {
         }
         if session.pane.is_none() {
             return self.confirm(&id, &ask);
+        }
+        if session.turn.as_ref().is_some_and(|turn| turn.dialog) {
+            return self.say(place, IN_DIALOG);
         }
         // `/compact` is a command only at the start of the prompt, and compacting is
         // routine work. Instructions would write the summary every later turn reads.

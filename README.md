@@ -147,6 +147,13 @@ Claude Code folds a longer paste into a `[Pasted text #N]` placeholder and submi
 wrapped as text the user did not write. A message whose text reached an input box gets
 a 👀 reaction once Claude Code reports the prompt.
 
+A dialog in the terminal drops pasted text and takes the Enter after it as its default
+choice, which approves a permission prompt's tool call. So while a session waits on a
+dialog, from its `Notification` to the next event it reports, a message to it is typed
+nothing and answered with `/attach` and `/stop`, which reach the dialog. A dialog
+cancelled by Escape in the terminal reports nothing, so the session takes no message
+from the chat until it next reports.
+
 A reply to a session that has exited opens a window running `claude --resume` in the
 directory it ran in and types the reply once it is ready. The daemon remembers the
 directories of the last thousand exited sessions.

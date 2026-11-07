@@ -80,6 +80,8 @@ pub struct Event {
     pub error: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    notification_type: Option<String>,
     /// What started a compaction: `manual` for `/compact`, `auto` for a full context.
     #[serde(default)]
     pub trigger: Option<String>,
@@ -232,6 +234,16 @@ impl Event {
             "PostCompact" => compaction(self.compact_summary.as_deref().unwrap_or_default(), room),
             _ => prose(&self.residue()),
         }
+    }
+
+    /// Whether the event is a `Notification` of a dialog the session waits on, which every
+    /// notification the settings pass on is but the quota ones.
+    pub fn dialog(&self) -> bool {
+        self.hook_event_name == "Notification"
+            && !self
+                .notification_type
+                .as_deref()
+                .is_some_and(|kind| kind.starts_with("quota_"))
     }
 
     pub fn manual(&self) -> bool {
