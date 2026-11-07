@@ -149,7 +149,10 @@ branch works on the same files as the original.
 there with the reply as its first prompt. `/new` alone offers a menu of the chat's
 projects, led by the project of the session the message would reach. The windows live
 in the tmux session `klaudo`, so `tmux attach -t klaudo` reaches a conversation that
-began on the phone. A window there whose session has been unheard from for `IDLE_HOURS`
+began on the phone. The first window starts a tmux server when none is running, and
+that server stays in the daemon's cgroup, where a restart of the daemon kills it with
+every session it holds, so a machine should start its server under a unit of its own
+ordered before the daemon. A window there whose session has been unheard from for `IDLE_HOURS`
 between turns is closed, to free its memory, unless a process the session started is
 still running, and a reply resumes the session like any other that exited. An anchor carries `ForceReply`, which Telegram attaches only to a
 message being sent, so an anchor is always a message of its own.
