@@ -242,8 +242,7 @@ pub(super) fn status_line(
         Context::Reported(window, _) => {
             let usage = window.current_usage.as_ref()?;
             Some(format!(
-                "{:.0}% {}/{}",
-                window.used_percentage?,
+                "{}/{}",
                 tokens(usage.total()),
                 tokens(window.context_window_size),
             ))

@@ -493,7 +493,7 @@ fn a_running_turn_shows_the_status_line_figures() {
     let made = collect(&calls, |call| call.markdown.ends_with('`'));
     let live = &made.last().expect("a live message").markdown;
     let shown = live
-        .strip_suffix("\n\n`5% 45.6k/1m`")
+        .strip_suffix("\n\n`45.6k/1m`")
         .expect("the figures under the status line");
     showing(shown, "");
     drop(daemon);
@@ -3990,7 +3990,7 @@ fn a_turn_ends_with_a_status_line() {
         }),
     );
     // Limits a later status line leaves out are still the ones reported last.
-    turn("p3", "done\n\n`5% 45.6k/1m · 1% 3h30m · 56% 2d14h`");
+    turn("p3", "done\n\n`45.6k/1m · 1% 3h30m · 56% 2d14h`");
     drop(daemon);
 }
 
