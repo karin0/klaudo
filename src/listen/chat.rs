@@ -778,10 +778,11 @@ impl Machine {
         if session.turn.as_ref().is_some_and(|turn| turn.dialog) {
             return self.say(place, IN_DIALOG);
         }
-        // `/compact` is a command only at the start of the prompt, and compacting is
-        // routine work. Instructions would write the summary every later turn reads.
+        // A command runs only from the start of the prompt, and compacting and branching
+        // are routine work. Instructions to `/compact` would write the summary every
+        // later turn reads.
         if let Some(guest) = &ask.guest
-            && !matches!(command(&ask.text), Some(("compact", "")))
+            && !matches!(command(&ask.text), Some(("compact" | BRANCH, "")))
         {
             ask.text = reminded(guest, &dir, self.guest_push, &ask.text);
         }

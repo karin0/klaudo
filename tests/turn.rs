@@ -3111,7 +3111,7 @@ fn a_message_after_a_reply_follows_it() {
 }
 
 /// A guest is answered in the group alone, and what they ask is typed behind a reminder
-/// that names them and the session's directory, except `/compact`.
+/// that names them and the session's directory, except `/compact` and `/branch`.
 #[test]
 fn a_guest_is_typed_for_behind_a_reminder() {
     let (port, calls, chat) = recorder();
@@ -3160,6 +3160,11 @@ fn a_guest_is_typed_for_behind_a_reminder() {
     wait_for(
         || typed().ends_with(&instructed),
         "the guest's /compact with instructions was never typed behind the reminder",
+    );
+    chat.replies(GROUP, GUEST, "/branch", &shared);
+    wait_for(
+        || typed().ends_with(&format!("{instructed}/branch")),
+        "the guest's /branch was never typed as it was sent",
     );
     chat.replies(GROUP, OWNER, "and then", &shared);
     wait_for(
@@ -3902,6 +3907,12 @@ fn the_commands_are_listed_for_the_user_in_both_chats_and_for_each_guest_in_the_
         !call.body["commands"]
             .to_string()
             .contains(r#""command":"attach""#)
+    }));
+    // A guest branches a conversation as the user does.
+    assert!(registered.iter().all(|call| {
+        call.body["commands"]
+            .to_string()
+            .contains(r#""command":"branch""#)
     }));
     let scopes: Vec<_> = registered.iter().map(|call| &call.body["scope"]).collect();
     assert_eq!(

@@ -247,13 +247,13 @@ projects, is the boundary. Within it, the daemon types each guest's text inside
 and limits Claude to routine development in the session's directory, away from the files
 outside it other than the toolchain's, the system's state and the local network. Each
 `@` a guest writes reaches the terminal as `&#64;`, since Claude Code would attach the
-file it names before Claude reads the reminder. A guest's `/compact` is typed as it was
-sent, and one with instructions follows the reminder, since the instructions would write
-the summary every later turn reads. Their other slash commands follow the reminder, so
-Claude Code reads them as text, which keeps `/model`, `/permissions` and the like out of
-a guest's reach. `/attach` would hand over the terminal itself, so a guest's menu leaves
-it out and the daemon refuses it to them. A guest's menu also leaves out `/branch`, which
-reaches Claude as text like their other slash commands.
+file it names before Claude reads the reminder. A guest's `/compact` and `/branch` are
+typed as they were sent, since compacting and branching are routine work. Either with
+arguments follows the reminder, since instructions to `/compact` would write the summary
+every later turn reads. Their other slash commands follow the reminder, so Claude Code
+reads them as text, which keeps `/model`, `/permissions` and the like out of a guest's
+reach. `/attach` would hand over the terminal itself, so a guest's menu leaves it out and
+the daemon refuses it to them.
 
 A turn a message started is posted where the message came from. A turn started in the
 terminal goes to `CHAT_ID` when its project is in `CHAT_PROJECTS`, and to the private

@@ -29,7 +29,7 @@ use crate::hook::{self, Event};
 use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::{self, Pane, Start};
 
-use chat::{ATTACH, BRANCH, COMMANDS, tilde};
+use chat::{ATTACH, COMMANDS, tilde};
 use render::{code, took};
 use transcript::Transcript;
 use turn::{Ask, SETTLE, Thread, Turn};
@@ -138,7 +138,7 @@ pub fn run() {
     let guests: Vec<_> = commands
         .iter()
         .copied()
-        .filter(|&(command, _)| command != ATTACH && command != BRANCH)
+        .filter(|&(command, _)| command != ATTACH)
         .collect();
     let poller = Arc::clone(&telegram);
     let updates = landed.clone();
