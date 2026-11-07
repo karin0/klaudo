@@ -10,7 +10,7 @@ use crate::telegram::{Admitted, Place, Sound};
 use crate::tmux::{self, Pane, Start};
 
 use super::render::code;
-use super::turn::{Ask, STOP, Thread, take_typed};
+use super::turn::{Ask, Thread, take_typed};
 use super::{Awaiting, Last, Machine, Opening, Own, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
@@ -24,6 +24,7 @@ const SPLIT: &str = "split";
 /// Claude Code's own command, which the daemon types into the terminal like any prompt.
 pub(super) const BRANCH: &str = "branch";
 pub(super) const ATTACH: &str = "attach";
+const STOP: &str = "stop";
 const CANCEL: &str = "cancel";
 /// What the button confirming a branch of a session outside tmux carries ahead of its id.
 const FORK: &str = "fork";
@@ -41,6 +42,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
         "Open a conversation in the project of the one it replies to",
     ),
     (RESUME, "Resume a recent conversation"),
+    (STOP, "Interrupt the turn of the conversation it replies to"),
     (
         SPLIT,
         "Move the conversation it replies to into a topic of its own",
@@ -165,6 +167,9 @@ impl Machine {
             }
             Some((DIFF, _)) => {
                 self.diff(from, carrier, replied);
+            }
+            Some((STOP, _)) => {
+                self.stop(from, replied);
             }
             Some((SPLIT, _)) => {
                 self.split_off(from, replied);
@@ -311,10 +316,6 @@ impl Machine {
         let Some(label) = label(message, data) else {
             return;
         };
-        if data == STOP {
-            self.stop(&from, menu);
-            return;
-        }
         if data == PROJECTS {
             if let Some(buttons) = self.choices(place, RESUME, None) {
                 self.telegram.remenu(place.chat, menu, RESUMING, &buttons);

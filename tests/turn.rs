@@ -2803,10 +2803,9 @@ fn a_window_just_typed_into_is_not_closed_for_idling() {
     assert!(!typed.contains("kill-pane"), "tmux was called with {typed}");
 }
 
-/// The stop button on the message showing a running turn sends its session Escape, and
-/// the turn ends once its transcript shows it interrupted, keeping what it said. Until
-/// then a second press sends nothing, a press the transcript never answers is reported,
-/// and the button stays for another.
+/// `/stop` sends the session a message reaches Escape while it runs a turn, and the turn
+/// ends once its transcript shows it interrupted, keeping what it said. Until then a
+/// second `/stop` sends nothing, and one the transcript never answers is reported.
 #[test]
 fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
     let (port, calls, chat) = recorder();
@@ -2824,10 +2823,8 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
 
     let made = collect(&calls, |call| call.markdown.contains('✻'));
     let live = made.last().expect("the message showing the turn").clone();
-    assert_eq!(
-        live.body["reply_markup"]["inline_keyboard"],
-        json!([[{"text": "Stop", "callback_data": "stop"}]])
-    );
+    assert_eq!(live.body["reply_markup"], json!(null));
+    let stop = || chat.says(live.chat.expect("the chat"), OWNER, "/stop");
     let log = root.join("tmux.log");
     let escapes = || {
         std::fs::read_to_string(&log)
@@ -2835,8 +2832,8 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
             .matches("send-keys -t %1 Escape")
             .count()
     };
-    chat.presses(OWNER, &live, "stop");
-    chat.presses(OWNER, &live, "stop");
+    stop();
+    stop();
     let made = collect(&calls, |call| {
         call.markdown == "the turn did not stop within 5s of Escape"
     });
@@ -2850,24 +2847,21 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
         replying_to(live.reply["message_id"].as_i64().expect("the prompt"))
     );
 
-    chat.presses(OWNER, &live, "stop");
+    stop();
     wait_for(|| escapes() == 2, "the second press sent no Escape");
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(&transcript)
         .expect("the transcript");
     writeln!(file, "{interruption}").expect("the interruption");
-    let made: Vec<Call> = collect(&calls, |call| call.markdown.ends_with("\n\nInterrupted"))
-        .into_iter()
-        .filter(|call| call.label != "answerCallbackQuery")
-        .collect();
+    let made = collect(&calls, |call| call.markdown.ends_with("\n\nInterrupted"));
     let [sealed, answer] = &made[..] else {
         panic!(
             "the turn ended with {:?}",
             made.iter().map(|call| &call.label).collect::<Vec<_>>()
         );
     };
-    // What the turn said stays in the message that showed it, without the button.
+    // What the turn said stays in the message that showed it.
     assert_eq!(sealed.label, "editMessageText");
     assert_eq!(sealed.target, Some(live.id));
     assert!(
@@ -2891,9 +2885,9 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
     );
     assert_eq!(answer.reply, live.reply);
 
-    chat.presses(OWNER, &live, "stop");
+    stop();
     collect(&calls, |call| {
-        call.markdown == "that turn is no longer running"
+        call.markdown == "no turn is running in that conversation"
     });
     assert_eq!(escapes(), 2);
     let _ = session.kill();

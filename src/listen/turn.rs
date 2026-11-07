@@ -8,10 +8,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::hook::{self, Event, Produced};
+use kuriero::Message;
+
 use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound};
 
 use super::Machine;
-use super::chat::unreminded;
+use super::chat::{NEW, unreminded};
 use super::render::{
     ARGUMENTS_MAX, Call, Outcome, RESULT_MAX, SUMMARY_MAX, first_line, listing, took,
 };
@@ -37,8 +39,8 @@ const TYPING: Duration = Duration::from_secs(4);
 /// showing it is rewritten, so a `Stop` arriving milliseconds behind its answer takes
 /// over and the answer does not stand in the chat twice.
 pub(super) const SETTLE: Duration = Duration::from_millis(100);
-/// What the stop button carries.
-pub(super) const STOP: &str = "stop";
+/// What `/stop` reaching a session without a running turn is answered with.
+const NOTHING_RUNS: &str = "no turn is running in that conversation";
 /// How long a turn sent Escape has to show up interrupted in its transcript before the
 /// chat hears that it did not stop.
 const STOP_WAIT: Duration = Duration::from_secs(5);
@@ -269,7 +271,7 @@ impl Machine {
         self.sessions.get_mut(id)?.turn.as_mut()
     }
 
-    /// Writes `post` and `buttons` into a turn's live message, or posts them in the
+    /// Writes `post` into a turn's live message, or posts it in the
     /// turn's thread while there is none. A post past a rich message is a complete
     /// segment, which goes as a markdown file in place of the live message. A message
     /// the bot posts clears its typing, which is shown again at once.
@@ -279,7 +281,6 @@ impl Machine {
         thread: Thread,
         live: Option<i64>,
         post: &Post,
-        buttons: &[(String, String)],
     ) -> Option<i64> {
         let posted = if !telegram::fits(&post.markdown) {
             let filed = self
@@ -293,11 +294,11 @@ impl Machine {
             filed
         } else if let Some(message) = live {
             self.telegram
-                .edit(thread.place.chat, message, &post.markdown, buttons);
+                .edit(thread.place.chat, message, &post.markdown);
             return Some(message);
         } else {
             self.telegram
-                .buttoned(thread.place, &post.markdown, thread.prompt, buttons)
+                .send(thread.place, &post.markdown, Sound::Silent, thread.prompt)
         };
         if let Some(turn) = self.turn_mut(id)
             && turn.typing.is_some()
@@ -587,7 +588,7 @@ impl Machine {
         // The tag marks a finished turn, and this segment is the middle of one.
         let done = hook::compose(&head, &took(elapsed), "", &text);
         // A segment that ran its course inside one rewrite has no message yet.
-        let message = self.post_live(id, thread, live, &done, &[]);
+        let message = self.post_live(id, thread, live, &done);
         segment.posted = message.map(|message| Posted {
             chat: thread.place.chat,
             message,
@@ -630,7 +631,7 @@ impl Machine {
         }
         if telegram::fits(&post.markdown) {
             self.telegram
-                .edit(posted.chat, posted.message, &post.markdown, &[]);
+                .edit(posted.chat, posted.message, &post.markdown);
             return;
         }
         // A rich message cannot become a file, so the file takes its place.
@@ -819,8 +820,7 @@ impl Machine {
             }
             shown = hook::compose(&head, &took(elapsed), "", &footer);
         }
-        let stop = [("Stop".to_owned(), STOP.to_owned())];
-        let message = self.post_live(id, thread, live, &shown, &stop);
+        let message = self.post_live(id, thread, live, &shown);
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
@@ -832,36 +832,27 @@ impl Machine {
         }
     }
 
-    /// The stop button of the message showing a turn's open segment sends its session
-    /// Escape, once until the transcript says whether the turn stopped, since a second
-    /// Escape on an idle prompt opens the `/rewind` picker. The button goes with that
-    /// message, so a press finding no turn showing it is on a message a restarted daemon
-    /// lost track of.
-    pub(super) fn stop(&mut self, from: &Admitted, message: i64) {
+    /// `/stop` sends Escape to the session a message would reach while it runs a turn,
+    /// once until the transcript says whether the turn stopped, since a second Escape on
+    /// an idle prompt opens the `/rewind` picker.
+    pub(super) fn stop(&mut self, from: &Admitted, replied: Option<&Message>) {
         let place = from.place;
-        let Some(id) = self
-            .sessions
-            .iter()
-            .find(|(_, session)| {
-                session.turn.as_ref().is_some_and(|turn| {
-                    turn.live == Some(message) && turn.thread.place.chat == place.chat
-                })
-            })
-            .map(|(id, _)| id.clone())
-        else {
-            self.say(place, "that turn is no longer running");
-            return;
+        let address = match self.addressee(place, replied) {
+            Ok(address) => address.filter(|address| address != NEW),
+            Err(error) => return self.say(place, error),
         };
-        let dir = self.sessions[&id].dir.clone();
+        let Some((id, session)) = address.and_then(|address| self.addressed(&address)) else {
+            return self.say(place, NOTHING_RUNS);
+        };
+        let (id, dir) = (id.clone(), session.dir.clone());
         if !self.reaches(from.guest.as_deref(), place, &dir) {
             return;
         }
         let session = &self.sessions[&id];
-        if session
-            .turn
-            .as_ref()
-            .is_some_and(|turn| turn.stopping.is_some())
-        {
+        let Some(turn) = &session.turn else {
+            return self.say(place, NOTHING_RUNS);
+        };
+        if turn.stopping.is_some() {
             return;
         }
         let Some(path) = session

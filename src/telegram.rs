@@ -316,13 +316,13 @@ impl Telegram {
     }
 
     /// Rewrites a message the daemon posted, for a segment that received more after it
-    /// went out. Telegram takes off the buttons a rewrite leaves out.
-    pub fn edit(&self, chat: i64, message_id: i64, markdown: &str, buttons: &[(String, String)]) {
+    /// went out.
+    pub fn edit(&self, chat: i64, message_id: i64, markdown: &str) {
         self.call(&EditMessageText {
             chat_id: chat,
             message_id,
             content: Content::Rich(RichInput::Markdown(markdown)),
-            reply_markup: (!buttons.is_empty()).then(|| keyboard(buttons)),
+            reply_markup: None,
         });
     }
 
