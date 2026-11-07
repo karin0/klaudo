@@ -22,10 +22,10 @@ const SUBJECT: [&str; 7] = [
     "path",
     "prompt",
 ];
-/// How far a field of a tool's input reads, past which the rest says nothing at a
-/// glance. Three lines of a phone's screen, which a command fills before a reader has
-/// stopped taking it in.
-const SUBJECT_MAX: usize = 120;
+/// How far a field of a tool's input is kept, past which the rest says nothing at a
+/// glance: seven lines of a phone's screen, which the call a reader is following may
+/// fill.
+pub const SUBJECT_MAX: usize = 300;
 
 /// How many bytes of the reasoning a compaction's model writes ahead of its summary the
 /// message carries, since that reasoning is the part of the message a reader skips.

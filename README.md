@@ -69,11 +69,13 @@ matched. An MCP tool follows no schema Klaŭdo could read a subject or a summary
 and its arguments and output are usually what a reader opens the call for, so its call
 shows both nearly whole in code blocks.
 
-The calls that finished ahead of the first one still running fold into one expandable
-quotation once everything they show together runs past 120 characters, three
-lines of a phone's screen. The running calls stay under it in view. Markdown isn't
-parsed inside a block HTML tag, so the folded calls are written in HTML, and a blank
-line keeps the quotation apart from the lines under it.
+The calls from the first one still running to the end stay in view, or else the latest
+call alone, since they are what a reader follows a turn by, and their commands and
+summaries read more than twice as far as the others'. The calls ahead of them fold into
+one expandable quotation once everything they show together runs past 120 characters,
+three lines of a phone's screen. Markdown isn't parsed inside a block HTML tag, so the
+folded calls are written in HTML, and a blank line keeps the quotation apart from the
+lines under it.
 
 Telegram's message drafts would do the open segment's job in one call, and Klaŭdo was
 built on them first. A draft expires thirty seconds after its last frame, no method

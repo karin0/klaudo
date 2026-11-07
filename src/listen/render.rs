@@ -19,9 +19,28 @@ const BREAK: &str = "  \n";
 /// lines of a phone's screen, which is what a folded quotation still shows.
 const FOLD_OVER: usize = 120;
 
-/// How far a line summing up what a call produced or why it failed reads, past which
+/// How far a line summing up what a call produced or why it failed is kept, past which
 /// it stops reading at a glance.
-pub(super) const SUMMARY_MAX: usize = 60;
+pub(super) const SUMMARY_MAX: usize = 160;
+
+/// How far a call's description, subject and summary read.
+struct Room {
+    subject: usize,
+    summary: usize,
+}
+
+/// The calls in view under a folded run are what a reader follows a turn by, so they
+/// read as far as they are kept.
+const OPEN: Room = Room {
+    subject: hook::SUBJECT_MAX,
+    summary: SUMMARY_MAX,
+};
+/// The calls ahead of them read three lines of a phone's screen for a command and one
+/// for a summary.
+const AHEAD: Room = Room {
+    subject: 120,
+    summary: 60,
+};
 /// How far an MCP call's arguments and its result read. They are what a reader opens
 /// such a call for, and the measured calls fit these at the arguments' maximum and the
 /// result's ninetieth percentile, images aside.
@@ -57,7 +76,7 @@ impl Call {
     /// where the eye finds them and a long command wraps without pushing the time away.
     /// The tool and the time are bold, so the eye finds a call and its cost down a run
     /// of lines whose middles are of every length.
-    fn line(&self, markup: &Markup) -> String {
+    fn line(&self, markup: &Markup, room: &Room) -> String {
         let (mark, took, result) = match &self.outcome {
             Outcome::Running => (RUNNING, String::new(), ""),
             Outcome::Done(took, result) => (
@@ -79,7 +98,8 @@ impl Call {
             ),
             None => (
                 None,
-                shown(result).map(|text| format!("⎿ {}", (markup.text)(&text))),
+                shown(result)
+                    .map(|text| format!("⎿ {}", (markup.text)(&first_line(&text, room.summary)))),
             ),
         };
         let agent = match &self.agent {
@@ -89,7 +109,9 @@ impl Call {
         // A description is prose, while what the call works on is a path or a command
         // and keeps the span that carries it verbatim. Two spaces after the tool, which
         // is what holds its name apart from the words that follow it.
-        let (said, under) = match (self.description.as_str(), self.subject.as_str()) {
+        let description = first_line(&self.description, room.subject);
+        let subject = first_line(&self.subject, room.subject);
+        let (said, under) = match (description.as_str(), subject.as_str()) {
             ("", "") => (String::new(), None),
             ("", subject) => (format!("  {}", (markup.code)(subject)), None),
             (description, "") => (format!("  {}", (markup.text)(description)), None),
@@ -111,21 +133,29 @@ impl Call {
         .join(markup.newline)
     }
 
-    /// How long the call reads, by the words that wrap on a phone.
+    /// How long the call reads ahead of the calls in view, by the words that wrap on a
+    /// phone.
     fn length(&self) -> usize {
         let result = match &self.outcome {
             Outcome::Running => "",
             Outcome::Done(_, text) | Outcome::Failed(_, text) => text,
         };
-        [
-            self.description.as_str(),
-            &self.subject,
-            self.arguments.as_deref().unwrap_or_default(),
-            result,
-        ]
-        .iter()
-        .map(|text| text.chars().count())
-        .sum()
+        let result = match self.arguments {
+            Some(_) => result.chars().count(),
+            None => first_line(result, AHEAD.summary).chars().count(),
+        };
+        [&self.description, &self.subject]
+            .iter()
+            .map(|text| first_line(text, AHEAD.subject).chars().count())
+            .chain([
+                self.arguments
+                    .as_deref()
+                    .unwrap_or_default()
+                    .chars()
+                    .count(),
+                result,
+            ])
+            .sum()
     }
 }
 
@@ -187,36 +217,37 @@ pub(super) fn code(subject: &str) -> String {
 
 /// A run of tool calls, a line per call. The oldest are counted rather than listed past
 /// the cap, so what is running now stays in a message Telegram will take. The calls
-/// that finished ahead of the first one still running fold into one quotation once
-/// they read long, leaving what a reader is waiting on in view.
+/// from the first one still running, or else the latest call, stay in view, and the
+/// calls ahead of them fold into one quotation once they read long.
 pub(super) fn listing(calls: &[Call]) -> String {
     let elided = calls.len().saturating_sub(RUN_MAX);
     let shown = &calls[elided..];
-    let running = shown
+    let first_open = shown
         .iter()
         .position(|call| matches!(call.outcome, Outcome::Running))
-        .unwrap_or(shown.len());
-    let (finished, open) = shown.split_at(running);
-    let folded = finished.iter().map(Call::length).sum::<usize>() > FOLD_OVER;
+        .unwrap_or(shown.len())
+        .min(shown.len().saturating_sub(1));
+    let (ahead, open) = shown.split_at(first_open);
+    let folded = ahead.iter().map(Call::length).sum::<usize>() > FOLD_OVER;
     let markup = if folded { &HTML } else { &MARKDOWN };
-    let early = (elided > 0)
+    let ahead = (elided > 0)
         .then(|| format!("… {elided} earlier"))
         .into_iter()
-        .chain(finished.iter().map(|call| call.line(markup)));
-    let open: Vec<String> = open.iter().map(|call| call.line(&MARKDOWN)).collect();
+        .chain(ahead.iter().map(|call| call.line(markup, &AHEAD)));
+    let open: Vec<String> = open
+        .iter()
+        .map(|call| call.line(&MARKDOWN, &OPEN))
+        .collect();
     if !folded {
-        return early.chain(open).collect::<Vec<_>>().join(BREAK);
+        return ahead.chain(open).collect::<Vec<_>>().join(BREAK);
     }
     let quote = format!(
         "<blockquote expandable>{}</blockquote>",
-        early.collect::<Vec<_>>().join(HTML.newline)
+        ahead.collect::<Vec<_>>().join(HTML.newline)
     );
     // A block HTML tag runs to the next blank line, so one keeps the quotation apart
     // from the markdown under it.
-    std::iter::once(quote)
-        .chain((!open.is_empty()).then(|| open.join(BREAK)))
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    format!("{quote}\n\n{}", open.join(BREAK))
 }
 
 /// How long a tool call took, in the units a tool call runs in.
@@ -288,7 +319,7 @@ mod tests {
     #[test]
     fn a_call_reads_as_its_tool_its_subject_and_how_it_went() {
         assert_eq!(
-            call("Read", "src/listen.rs", Outcome::Running).line(&MARKDOWN),
+            call("Read", "src/listen.rs", Outcome::Running).line(&MARKDOWN, &OPEN),
             "○ **Read**  `src/listen.rs`"
         );
         assert_eq!(
@@ -297,7 +328,7 @@ mod tests {
                 "cargo test",
                 Outcome::Done(Duration::from_millis(1400), String::new())
             )
-            .line(&MARKDOWN),
+            .line(&MARKDOWN, &OPEN),
             "● **Bash**  `cargo test` **1s**"
         );
         assert_eq!(
@@ -306,7 +337,7 @@ mod tests {
                 "cargo test",
                 Outcome::Done(Duration::from_millis(12), String::new())
             )
-            .line(&MARKDOWN),
+            .line(&MARKDOWN, &OPEN),
             "● **Bash**  `cargo test` **12ms**"
         );
         // What a failure reported reads on a line of its own.
@@ -316,7 +347,7 @@ mod tests {
                 "cargo test",
                 Outcome::Failed(Duration::from_secs(4), "Exit code 1".to_owned())
             )
-            .line(&MARKDOWN),
+            .line(&MARKDOWN, &OPEN),
             "× **Bash**  `cargo test` **4s**  \n⎿ Exit code 1"
         );
         // A tool that describes its calls says that first and shows the command under it.
@@ -329,7 +360,7 @@ mod tests {
             )
         };
         assert_eq!(
-            described.line(&MARKDOWN),
+            described.line(&MARKDOWN, &OPEN),
             "× **Bash**  run the tests **4s**  \n⎿ `cargo test`  \n⎿ Exit code 1"
         );
         let markup = Call {
@@ -337,17 +368,20 @@ mod tests {
             ..call("Grep", "fn seal", Outcome::Running)
         };
         assert_eq!(
-            markup.line(&MARKDOWN),
+            markup.line(&MARKDOWN, &OPEN),
             "○ **Grep**  find \\*\\.rs in \\_src\\_  \n⎿ `fn seal`"
         );
         let subagent = Call {
             agent: Some("Explore".to_owned()),
             ..call("Grep", "fn seal", Outcome::Running)
         };
-        assert_eq!(subagent.line(&MARKDOWN), "○ [Explore] **Grep**  `fn seal`");
+        assert_eq!(
+            subagent.line(&MARKDOWN, &OPEN),
+            "○ [Explore] **Grep**  `fn seal`"
+        );
         // An MCP tool's name is written in the markdown it would otherwise be read as.
         assert_eq!(
-            call("mcp__telegram__send", "", Outcome::Running).line(&MARKDOWN),
+            call("mcp__telegram__send", "", Outcome::Running).line(&MARKDOWN, &OPEN),
             "○ **mcp\\_\\_telegram\\_\\_send**"
         );
     }
@@ -360,7 +394,7 @@ mod tests {
             Outcome::Done(Duration::from_millis(12), "120 lines".to_owned()),
         );
         assert_eq!(
-            done.line(&MARKDOWN),
+            done.line(&MARKDOWN, &OPEN),
             "● **Read**  `src/listen.rs` **12ms**  \n⎿ 120 lines"
         );
     }
@@ -372,7 +406,7 @@ mod tests {
             ..call("mcp__telegram__history", "", outcome)
         };
         assert_eq!(
-            mcp(Outcome::Running).line(&MARKDOWN),
+            mcp(Outcome::Running).line(&MARKDOWN, &OPEN),
             "○ **mcp\\_\\_telegram\\_\\_history**  \n```\n{\"chat\":\"x\"}\n```"
         );
         let done = mcp(Outcome::Done(
@@ -380,12 +414,12 @@ mod tests {
             "a < b\n```".to_owned(),
         ));
         assert_eq!(
-            done.line(&MARKDOWN),
+            done.line(&MARKDOWN, &OPEN),
             "● **mcp\\_\\_telegram\\_\\_history** **1s**  \n```\n{\"chat\":\"x\"}\n```  \n\
              ````\na < b\n```\n````"
         );
         assert_eq!(
-            done.line(&HTML),
+            done.line(&HTML, &OPEN),
             "● <b>mcp__telegram__history</b> <b>1s</b><br>\
              <pre>{\"chat\":\"x\"}</pre><br><pre>a &lt; b\n```</pre>"
         );
@@ -398,7 +432,7 @@ mod tests {
                 Outcome::Done(Duration::from_secs(1), String::new()),
             )
         };
-        assert_eq!(bare.line(&HTML), "● <b>mcp__x__y</b> <b>1s</b>");
+        assert_eq!(bare.line(&HTML, &OPEN), "● <b>mcp__x__y</b> <b>1s</b>");
     }
 
     #[test]
@@ -424,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn finished_calls_fold_once_they_read_long_together() {
+    fn calls_ahead_of_the_running_or_the_latest_fold_once_they_read_long() {
         let done = |subject: &str| {
             call(
                 "Bash",
@@ -453,14 +487,40 @@ mod tests {
                  ● **Bash**  `ls` **1s**"
             )
         );
-        // A run that has all finished folds whole.
-        let whole = listing(&[done(&x), done(&x), done("ls")]);
-        assert!(whole.starts_with("<blockquote expandable>") && whole.ends_with("</blockquote>"));
-        // Finished calls that read short stay on their lines.
+        // The latest call stays in view once the run has finished.
+        assert!(
+            listing(&[done(&x), done(&x), done("x"), done("ls")])
+                .ends_with("</blockquote>\n\n● **Bash**  `ls` **1s**")
+        );
+        // Calls ahead that read short stay on their lines.
         assert_eq!(
             listing(&[done(&x), call("Read", &x, Outcome::Running)]),
             format!("● **Bash**  `{x}` **1s**  \n○ **Read**  `{x}`")
         );
+    }
+
+    #[test]
+    fn the_calls_in_view_read_further_than_those_behind() {
+        let long = "y".repeat(hook::SUBJECT_MAX);
+        let summary = "z".repeat(SUMMARY_MAX);
+        let done = || {
+            call(
+                "Bash",
+                &long,
+                Outcome::Done(Duration::from_secs(1), summary.clone()),
+            )
+        };
+        let listed = listing(&[done(), done()]);
+        let (ahead, open) = listed.split_once("\n\n").expect("a folded run");
+        assert_eq!(
+            ahead,
+            format!(
+                "<blockquote expandable>● <b>Bash</b>  <code>{}…</code> <b>1s</b><br>⎿ {}…</blockquote>",
+                &long[..AHEAD.subject],
+                &summary[..AHEAD.summary],
+            )
+        );
+        assert_eq!(open, format!("● **Bash**  `{long}` **1s**  \n⎿ {summary}"));
     }
 
     #[test]
