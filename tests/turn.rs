@@ -2895,27 +2895,35 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
     drop(daemon);
 }
 
-/// `/rewind` copies an exited session's conversation as it stood after its latest
-/// compaction into a session of its own, whose head a reply resumes it from.
+/// `/rewind` copies an exited session's conversation up to the start of the turn the
+/// message it replies to belongs to, or else of the first turn after its latest
+/// compaction, into a session of its own, whose head quotes that turn's prompt and a reply
+/// resumes the copy from.
 #[test]
-fn a_rewound_copy_resumes_from_its_latest_compaction() {
+fn a_rewound_copy_resumes_from_before_a_turn() {
     let (port, calls, chat) = recorder();
     let temporary = prepare("rewind", port);
     let root = temporary.path();
     let daemon = daemon(root);
-    let transcript = root.join("0123456789abcdef.jsonl");
+    let id = "0123456789abcdef";
+    let transcript = root.join(format!("{id}.jsonl"));
+    let said = |uuid: &str, prompt: &str| {
+        json!({"type": "user", "uuid": uuid, "promptId": prompt, "sessionId": id,
+            "message": {"content": format!("{uuid} *said*")}})
+    };
     let lines = [
-        json!({"type": "user", "uuid": "u1", "promptId": "p1", "sessionId": "0123456789abcdef"}),
-        json!({"type": "system", "subtype": "compact_boundary", "uuid": "b", "sessionId": "0123456789abcdef"}),
-        json!({"type": "user", "uuid": "summary", "promptId": "c", "sessionId": "0123456789abcdef"}),
-        json!({"type": "user", "uuid": "u2", "promptId": "p2", "sessionId": "0123456789abcdef"}),
+        said("u1", "p1aaaaaa-1"),
+        json!({"type": "system", "subtype": "compact_boundary", "uuid": "b", "sessionId": id}),
+        said("summary", "c"),
+        said("u2", "p2aaaaaa-2"),
+        said("u3", "p3aaaaaa-3"),
     ];
     let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
     std::fs::write(&transcript, text).expect("the transcript");
     for event in ["SessionStart", "SessionEnd"] {
         hook(
             root,
-            &json!({"hook_event_name": event, "session_id": "0123456789abcdef",
+            &json!({"hook_event_name": event, "session_id": id,
                 "cwd": root, "transcript_path": transcript}),
         );
     }
@@ -2924,32 +2932,42 @@ fn a_rewound_copy_resumes_from_its_latest_compaction() {
             {"type": "bold", "text": "project"}, " ", {"type": "code", "text": address},
         ]}]}})
     };
-    chat.replies(OWNER, OWNER, "/rewind", &head("01234567"));
-    let made = collect(&calls, |call| call.markdown.contains("rewound"));
-    let said = &made.last().expect("the copy's head").markdown;
-    let copies: Vec<_> = std::fs::read_dir(root)
-        .expect("the root")
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| {
-            Path::new(name)
-                .extension()
-                .is_some_and(|extension| extension == "jsonl")
-                && name.as_str() != "0123456789abcdef.jsonl"
-        })
-        .collect();
-    let [copy] = &copies[..] else {
-        panic!("copies {copies:?}");
+    let mut seen = vec![format!("{id}.jsonl")];
+    let mut rewind = |address: &str| {
+        chat.replies(OWNER, OWNER, "/rewind", &head(address));
+        let made = collect(&calls, |call| call.markdown.contains("rewound"));
+        let said = made.last().expect("the copy's head").markdown.clone();
+        let copies: Vec<_> = std::fs::read_dir(root)
+            .expect("the root")
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| {
+                Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension == "jsonl")
+                    && !seen.contains(name)
+            })
+            .collect();
+        let [copy] = &copies[..] else {
+            panic!("copies {copies:?}");
+        };
+        seen.push(copy.clone());
+        let copy = copy.trim_end_matches(".jsonl").to_owned();
+        let kept = std::fs::read_to_string(root.join(format!("{copy}.jsonl"))).expect("the copy");
+        (copy, said, kept.lines().count())
     };
-    let copy = copy.trim_end_matches(".jsonl");
+
+    let (copy, said, kept) = rewind("01234567");
     assert!(
         said.ends_with(&format!(
-            "** `{}`\nrewound `01234567` to its latest compaction",
+            "** `{}`\n\nrewound `01234567` to before\n\n>u2 \\*said\\*",
             &copy[..8]
         )),
         "{said}"
     );
-    let kept = std::fs::read_to_string(root.join(format!("{copy}.jsonl"))).expect("the copy");
-    assert_eq!(kept.lines().count(), 3, "{kept}");
+    assert_eq!(kept, 3);
+    let (_, said, kept) = rewind("01234567/p3aaaaaa");
+    assert!(said.ends_with(">u3 \\*said\\*"), "{said}");
+    assert_eq!(kept, 4);
 
     chat.replies(OWNER, OWNER, "carry on", &head(&copy[..8]));
     wait_for(

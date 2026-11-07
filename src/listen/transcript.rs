@@ -93,46 +93,60 @@ pub(super) fn entries(path: &Path, from: u64) -> (Vec<serde_json::Value>, u64) {
     (entries, from + end as u64)
 }
 
-/// Copies the conversation in the transcript at `path` as it stood after its latest
-/// compaction, up to the first prompt after it, into the transcript of a new session
-/// beside it, and returns the new session's id, or nothing when no prompt follows a
-/// compaction. Claude Code resumes a session from the file named after its id in the
-/// directory of its project, and every entry names its session.
-pub(super) fn rewind(path: &Path) -> io::Result<Option<String>> {
+/// A conversation copied up to the turn it was rewound to: the copy's session, and the
+/// prompt that opened the turn.
+pub(super) struct Rewound {
+    pub(super) id: String,
+    pub(super) prompt: String,
+}
+
+/// Copies the conversation in the transcript at `path` up to the start of a turn, as
+/// Claude Code's `/rewind` restores it, into the transcript of a new session beside it.
+/// The turn is the one whose prompt id starts with `turn`, or else the first after the
+/// latest compaction. Nothing is copied when there is no such turn or nothing precedes
+/// it. Claude Code resumes a session from the file named after its id in the directory of
+/// its project, and every entry names its session.
+pub(super) fn rewind(path: &Path, turn: Option<&str>) -> io::Result<Option<Rewound>> {
     let text = fs::read_to_string(path)?;
     let lines: Vec<&str> = text.lines().collect();
     let entries: Vec<Value> = lines
         .iter()
         .map(|line| serde_json::from_str(line).unwrap_or_default())
         .collect();
-    let Some(boundary) = entries
-        .iter()
-        .rposition(|entry| entry["type"] == "system" && entry["subtype"] == "compact_boundary")
-    else {
+    let prompts = || {
+        entries.iter().enumerate().filter_map(|(at, entry)| {
+            let prompt = entry["promptId"].as_str()?;
+            (entry["type"] == "user").then_some((at, prompt))
+        })
+    };
+    let opening = match turn {
+        Some(turn) => prompts().find(|(_, prompt)| prompt.starts_with(turn)),
+        None => entries
+            .iter()
+            .rposition(|entry| entry["type"] == "system" && entry["subtype"] == "compact_boundary")
+            .and_then(|boundary| {
+                // The summary and what Claude Code adds with it carry the prompt of the
+                // compaction.
+                let mut after = prompts().skip_while(|&(at, _)| at < boundary);
+                let (_, compaction) = after.next()?;
+                after.find(|&(_, prompt)| prompt != compaction)
+            }),
+    };
+    let Some((opening, _)) = opening else {
         return Ok(None);
     };
-    // The summary and what Claude Code adds with it carry the prompt of the compaction,
-    // and the entries after the last of them up to the next prompt are its bookkeeping.
-    let mut prompts = entries
-        .iter()
-        .enumerate()
-        .skip(boundary)
-        .filter_map(|(at, entry)| Some((at, entry["promptId"].as_str()?, entry)));
-    let Some((_, compaction, _)) = prompts.next() else {
-        return Ok(None);
-    };
-    let Some((next, _, _)) =
-        prompts.find(|(_, prompt, entry)| *prompt != compaction && entry["type"] == "user")
-    else {
-        return Ok(None);
-    };
-    let kept = entries[..next]
+    // What Claude Code writes ahead of a prompt belongs to its turn.
+    let Some(kept) = entries[..opening]
         .iter()
         .rposition(|entry| entry.get("uuid").is_some())
-        .map_or(0, |last| last + 1);
+        .map(|last| last + 1)
+    else {
+        return Ok(None);
+    };
     let id = fs::read_to_string("/proc/sys/kernel/random/uuid")?
         .trim()
         .to_owned();
+    let prompt = said(&entries[opening]);
     let mut copy = String::new();
     for (line, entry) in lines.iter().zip(entries).take(kept) {
         match entry {
@@ -154,7 +168,20 @@ pub(super) fn rewind(path: &Path) -> io::Result<Option<String>> {
         .mode(0o600)
         .open(path.with_file_name(format!("{id}.jsonl")))?
         .write_all(copy.as_bytes())?;
-    Ok(Some(id))
+    Ok(Some(Rewound { id, prompt }))
+}
+
+/// The text of a user entry, which is a string or a list of blocks.
+fn said(entry: &Value) -> String {
+    let content = &entry["message"]["content"];
+    match content.as_array() {
+        Some(blocks) => blocks
+            .iter()
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => content.as_str().unwrap_or_default().to_owned(),
+    }
 }
 
 /// The tokens an assistant entry of the main conversation sent, for an entry the API
@@ -258,25 +285,35 @@ mod tests {
         assert_eq!(transcript.tokens(), Some(2));
     }
 
-    fn rewound(lines: &[serde_json::Value]) -> (tempfile::TempDir, Option<Vec<serde_json::Value>>) {
+    /// The entries of the copy rewinding `lines` to `turn` makes, by their uuids, and the
+    /// prompt of the turn.
+    fn rewound(
+        lines: &[serde_json::Value],
+        turn: Option<&str>,
+    ) -> Option<(Vec<serde_json::Value>, String)> {
         let directory = tempfile::tempdir().expect("a directory");
         let path = directory.path().join("s.jsonl");
         let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
         fs::write(&path, text).expect("a transcript");
-        let copy = rewind(&path).expect("a rewind").map(|id| {
-            let copy = directory.path().join(format!("{id}.jsonl"));
-            let mode = fs::metadata(&copy).expect("the copy").permissions();
-            assert_eq!(
-                std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
-                0o600
-            );
-            fs::read_to_string(copy)
-                .expect("the copy")
-                .lines()
-                .map(|line| serde_json::from_str(line).expect("an entry"))
-                .collect()
-        });
-        (directory, copy)
+        let rewound = rewind(&path, turn).expect("a rewind")?;
+        let copy = directory.path().join(format!("{}.jsonl", rewound.id));
+        let mode = fs::metadata(&copy).expect("the copy").permissions();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+            0o600
+        );
+        let entries = fs::read_to_string(copy)
+            .expect("the copy")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("an entry"))
+            .collect();
+        Some((entries, rewound.prompt))
+    }
+
+    fn uuids(copy: &[serde_json::Value]) -> Vec<&str> {
+        copy.iter()
+            .map(|entry| entry["uuid"].as_str().unwrap_or_default())
+            .collect()
     }
 
     fn prompt(uuid: &str, prompt: &str) -> serde_json::Value {
@@ -284,49 +321,64 @@ mod tests {
             "message": {"content": uuid}})
     }
 
-    #[test]
-    fn a_rewind_keeps_the_latest_compaction_up_to_the_next_prompt() {
-        let boundary = json!({"type": "system", "subtype": "compact_boundary", "uuid": "b2",
-            "sessionId": "s"});
+    fn compacted() -> Vec<serde_json::Value> {
         let mut summary = prompt("summary", "c2");
         summary["session_id"] = json!("s");
-        let lines = [
+        vec![
             prompt("first", "p1"),
             json!({"type": "system", "subtype": "compact_boundary", "uuid": "b1", "sessionId": "s"}),
             prompt("between", "p2"),
-            boundary,
+            json!({"type": "assistant", "uuid": "answer", "sessionId": "s"}),
+            json!({"type": "system", "subtype": "compact_boundary", "uuid": "b2", "sessionId": "s"}),
             summary,
             prompt("echo", "c2"),
             json!({"type": "attachment", "uuid": "file", "sessionId": "s"}),
             json!({"type": "last-prompt", "sessionId": "s", "lastPrompt": "after"}),
             prompt("after", "p3"),
-            prompt("later", "p4"),
-        ];
-        let (_directory, copy) = rewound(&lines);
-        let copy = copy.expect("a copy");
-        let kept: Vec<&str> = copy
-            .iter()
-            .map(|entry| entry["uuid"].as_str().unwrap_or_default())
-            .collect();
-        assert_eq!(
-            kept,
-            ["first", "b1", "between", "b2", "summary", "echo", "file"]
-        );
-        let id = copy[0]["sessionId"].as_str().expect("a session");
-        assert_ne!(id, "s");
-        assert!(copy.iter().all(|entry| entry["sessionId"] == id));
-        assert_eq!(copy[4]["session_id"], id);
+            json!({"type": "user", "uuid": "blocks", "promptId": "p4", "sessionId": "s",
+                "message": {"content": [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]}}),
+        ]
     }
 
     #[test]
-    fn a_conversation_with_no_prompt_after_a_compaction_has_nothing_to_rewind() {
-        let boundary = json!({"type": "system", "subtype": "compact_boundary", "uuid": "b"});
-        assert!(rewound(&[prompt("first", "p1")]).1.is_none());
-        assert!(
-            rewound(&[prompt("first", "p1"), boundary, prompt("summary", "c")])
-                .1
-                .is_none()
+    fn a_rewind_goes_back_to_before_the_first_prompt_after_the_latest_compaction() {
+        let (copy, prompt) = rewound(&compacted(), None).expect("a copy");
+        assert_eq!(
+            uuids(&copy),
+            [
+                "first", "b1", "between", "answer", "b2", "summary", "echo", "file"
+            ]
         );
+        assert_eq!(prompt, "after");
+        let id = copy[0]["sessionId"].as_str().expect("a session");
+        assert_ne!(id, "s");
+        assert!(copy.iter().all(|entry| entry["sessionId"] == id));
+        assert_eq!(copy[5]["session_id"], id);
+    }
+
+    #[test]
+    fn a_rewind_to_a_turn_goes_back_to_before_its_prompt() {
+        let (copy, prompt) = rewound(&compacted(), Some("p2")).expect("a copy");
+        assert_eq!(uuids(&copy), ["first", "b1"]);
+        assert_eq!(prompt, "between");
+        let (copy, prompt) = rewound(&compacted(), Some("p4")).expect("a copy");
+        assert_eq!(uuids(&copy).last(), Some(&"after"));
+        assert_eq!(prompt, "one\ntwo");
+    }
+
+    #[test]
+    fn a_rewind_with_nothing_to_go_back_to_copies_nothing() {
+        let boundary = json!({"type": "system", "subtype": "compact_boundary", "uuid": "b"});
+        assert!(rewound(&[prompt("first", "p1")], None).is_none());
+        assert!(
+            rewound(
+                &[prompt("first", "p1"), boundary, prompt("summary", "c")],
+                None
+            )
+            .is_none()
+        );
+        assert!(rewound(&compacted(), Some("p1")).is_none());
+        assert!(rewound(&compacted(), Some("p9")).is_none());
     }
 
     #[test]

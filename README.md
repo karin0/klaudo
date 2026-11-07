@@ -286,14 +286,18 @@ topic opened for it still counts toward the topic it left, so a new session of i
 project goes there, and each topic keeps one conversation. In a group, Telegram lets the
 bot open a topic only with the `can_manage_topics` right.
 
-`/rewind` copies the conversation of the session a message would reach, as it stood
-after its latest compaction, into a new session, and posts the copy's head where the
-message was sent, so a reply resumes the copy there and the original stays as it was. A
-copy wanting a topic of its own takes `/split`. Claude Code's own `/rewind` is a picker
-that only arrow keys drive, and `--resume-session-at` truncates a resumed conversation
-only in print mode, so the daemon writes the copy's transcript itself: the original's
-entries up to the first prompt after the compaction, each naming the new session, in the
-file beside the original's, where `claude --resume` looks for it. Only the conversation
+`/rewind` copies the conversation of the session a message would reach into a new
+session, back to before the turn of the message it replies to, as Claude Code's own
+`/rewind` restores one. A message that names no turn, such as one replying to nothing,
+goes back to before the first turn after the latest compaction. The copy's head is posted
+where the message was sent, over the prompt of that turn, as the picker hands the prompt
+back, so a reply resumes the copy there and the original stays as it was. A copy wanting
+a topic of its own takes `/split`. The picker takes only arrow keys, and
+`--resume-session-at` truncates a resumed conversation only in print mode, so the daemon
+writes the copy's transcript itself: the original's entries up to that prompt, each
+naming the new session, in the file beside the original's, where `claude --resume` looks
+for it. The turn is found by the prompt id that a message's head shortens, which the
+transcript records on every prompt. Only the conversation
 goes back, so the copy works on the files as they are. The daemon keeps the transcript
 path each session's hooks named, since a session that has exited reports none.
 

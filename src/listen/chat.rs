@@ -55,7 +55,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         REWIND,
-        "Copy the conversation it replies to as it stood after its latest compaction",
+        "Copy the conversation back to before the turn it replies to",
     ),
     (
         USAGE,
@@ -940,11 +940,22 @@ pub(super) fn unseen(address: &str) -> String {
 /// The address in the head of a message Klaŭdo posted, which is the session it belongs
 /// to or the anchor of a conversation that has not started.
 fn address(message: &Message) -> Option<String> {
-    let code = headed(message)
-        .or_else(|| coded(message.caption.as_deref(), &message.caption_entities))
-        .or_else(|| coded(message.text.as_deref(), &message.entities))?;
+    let code = head_code(message)?;
     let session = code.split('/').next()?;
     (!session.is_empty()).then(|| session.to_owned())
+}
+
+/// The start of the prompt id of the turn a message of Klaŭdo's belongs to.
+pub(super) fn turn(message: &Message) -> Option<String> {
+    let code = head_code(message)?;
+    let prompt = code.split('/').nth(1)?;
+    (!prompt.is_empty()).then(|| prompt.to_owned())
+}
+
+fn head_code(message: &Message) -> Option<String> {
+    headed(message)
+        .or_else(|| coded(message.caption.as_deref(), &message.caption_entities))
+        .or_else(|| coded(message.text.as_deref(), &message.entities))
 }
 
 fn headed(message: &Message) -> Option<String> {
