@@ -2895,6 +2895,73 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
     drop(daemon);
 }
 
+/// `/rewind` copies an exited session's conversation as it stood after its latest
+/// compaction into a session of its own, whose head a reply resumes it from.
+#[test]
+fn a_rewound_copy_resumes_from_its_latest_compaction() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("rewind", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let transcript = root.join("0123456789abcdef.jsonl");
+    let lines = [
+        json!({"type": "user", "uuid": "u1", "promptId": "p1", "sessionId": "0123456789abcdef"}),
+        json!({"type": "system", "subtype": "compact_boundary", "uuid": "b", "sessionId": "0123456789abcdef"}),
+        json!({"type": "user", "uuid": "summary", "promptId": "c", "sessionId": "0123456789abcdef"}),
+        json!({"type": "user", "uuid": "u2", "promptId": "p2", "sessionId": "0123456789abcdef"}),
+    ];
+    let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+    std::fs::write(&transcript, text).expect("the transcript");
+    for event in ["SessionStart", "SessionEnd"] {
+        hook(
+            root,
+            &json!({"hook_event_name": event, "session_id": "0123456789abcdef",
+                "cwd": root, "transcript_path": transcript}),
+        );
+    }
+    let head = |address: &str| {
+        json!({"rich_message": {"blocks": [{"type": "paragraph", "text": [
+            {"type": "bold", "text": "project"}, " ", {"type": "code", "text": address},
+        ]}]}})
+    };
+    chat.replies(OWNER, OWNER, "/rewind", &head("01234567"));
+    let made = collect(&calls, |call| call.markdown.contains("rewound"));
+    let said = &made.last().expect("the copy's head").markdown;
+    let copies: Vec<_> = std::fs::read_dir(root)
+        .expect("the root")
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+                && name.as_str() != "0123456789abcdef.jsonl"
+        })
+        .collect();
+    let [copy] = &copies[..] else {
+        panic!("copies {copies:?}");
+    };
+    let copy = copy.trim_end_matches(".jsonl");
+    assert!(
+        said.ends_with(&format!(
+            "** `{}`\nrewound `01234567` to its latest compaction",
+            &copy[..8]
+        )),
+        "{said}"
+    );
+    let kept = std::fs::read_to_string(root.join(format!("{copy}.jsonl"))).expect("the copy");
+    assert_eq!(kept.lines().count(), 3, "{kept}");
+
+    chat.replies(OWNER, OWNER, "carry on", &head(&copy[..8]));
+    wait_for(
+        || {
+            std::fs::read_to_string(root.join("commands"))
+                .is_ok_and(|commands| commands.contains(&format!("claude --resume '{copy}'")))
+        },
+        "a reply did not resume the copy",
+    );
+    drop(daemon);
+}
+
 /// The Enter after a reply would answer a dialog with its default choice, which approves
 /// a tool call, so a session waiting on one is typed nothing until it reports again. A
 /// notification that only reports leaves it open to replies.

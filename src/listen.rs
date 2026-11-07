@@ -6,6 +6,7 @@ mod attach;
 mod chat;
 mod diff;
 mod render;
+mod rewind;
 mod transcript;
 mod turn;
 mod usage;
@@ -170,6 +171,7 @@ pub fn run() {
                 } = running;
                 let mut session = Session::new(known.dir, pid, pane, idle_since);
                 session.trail = known.trail;
+                session.transcript = known.transcript.map(Transcript::new);
                 (known.id, session)
             })
             .collect(),
@@ -422,6 +424,12 @@ impl Session {
         self.trail.home(telegram.chat(&self.dir))
     }
 
+    fn transcript_path(&self) -> Option<PathBuf> {
+        self.transcript
+            .as_ref()
+            .map(|transcript| transcript.path.clone())
+    }
+
     fn head(&self, id: &str, prompt: Option<&str>) -> hook::Head {
         hook::Head::new(&self.dir, id, prompt)
     }
@@ -456,6 +464,9 @@ struct Known {
     id: String,
     dir: PathBuf,
     trail: Trail,
+    /// The transcript its hooks named, which only a running session reports.
+    #[serde(default)]
+    transcript: Option<PathBuf>,
 }
 
 /// A running session, with the process and the pane a message from the chat is typed
@@ -655,6 +666,7 @@ impl Machine {
                     id: id.clone(),
                     dir: session.dir.clone(),
                     trail: session.trail.clone(),
+                    transcript: session.transcript_path(),
                 },
                 pid: session.pid,
                 pane: session.pane.clone(),
@@ -825,11 +837,17 @@ impl Machine {
             self.telegram.delete(chat, message);
         }
         let session = self.sessions.remove(id).expect("a session that ended");
-        self.ended.push_back(Known {
+        self.exited(Known {
             id: id.to_owned(),
+            transcript: session.transcript_path(),
             dir: session.dir,
             trail: session.trail,
         });
+    }
+
+    /// Remembers a session that is not running, which a reply resumes.
+    fn exited(&mut self, known: Known) {
+        self.ended.push_back(known);
         if self.ended.len() > ENDED_MAX {
             self.ended.pop_front();
         }

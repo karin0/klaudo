@@ -25,6 +25,7 @@ const SPLIT: &str = "split";
 pub(super) const BRANCH: &str = "branch";
 pub(super) const ATTACH: &str = "attach";
 const STOP: &str = "stop";
+const REWIND: &str = "rewind";
 
 const CANCEL: &str = "cancel";
 /// What the button confirming a branch of a session outside tmux carries ahead of its id.
@@ -51,6 +52,10 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     (
         BRANCH,
         "Branch the conversation it replies to into a topic of its own",
+    ),
+    (
+        REWIND,
+        "Copy the conversation it replies to as it stood after its latest compaction",
     ),
     (
         USAGE,
@@ -176,6 +181,9 @@ impl Machine {
             }
             Some((STOP, _)) => {
                 self.stop(from, replied);
+            }
+            Some((REWIND, _)) => {
+                self.rewind(from, carrier, replied);
             }
             Some((SPLIT, _)) => {
                 self.split_off(from, replied);

@@ -286,6 +286,17 @@ topic opened for it still counts toward the topic it left, so a new session of i
 project goes there, and each topic keeps one conversation. In a group, Telegram lets the
 bot open a topic only with the `can_manage_topics` right.
 
+`/rewind` copies the conversation of the session a message would reach, as it stood
+after its latest compaction, into a new session, and posts the copy's head where the
+message was sent, so a reply resumes the copy there and the original stays as it was. A
+copy wanting a topic of its own takes `/split`. Claude Code's own `/rewind` is a picker
+that only arrow keys drive, and `--resume-session-at` truncates a resumed conversation
+only in print mode, so the daemon writes the copy's transcript itself: the original's
+entries up to the first prompt after the compaction, each naming the new session, in the
+file beside the original's, where `claude --resume` looks for it. Only the conversation
+goes back, so the copy works on the files as they are. The daemon keeps the transcript
+path each session's hooks named, since a session that has exited reports none.
+
 Topic mode slows the whole private chat. A reply to `/new` shows several seconds later
 where topic mode is on than where it is off.
 
