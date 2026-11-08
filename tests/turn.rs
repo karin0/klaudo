@@ -4232,7 +4232,7 @@ fn a_turn_ends_with_a_status_line() {
 /// A session that draws no status line has its context counted from the latest call its
 /// transcript shows, from where the transcript ended when the daemon first heard of it,
 /// and the answer shows how much of the turn's first call came from the cache and what
-/// the turn's calls cost at list prices, once the transcript records the turn's end.
+/// the session's calls cost at list prices, once the transcript records the turn's end.
 #[test]
 fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
     let (port, calls, chat) = recorder();
@@ -4372,7 +4372,7 @@ fn an_answer_goes_up_without_the_end_of_its_turn_in_time() {
 
     let stopped = stop("p2");
     let answer = answered();
-    assert!(answer.ends_with("done\n\n999.1k"), "{answer}");
+    assert!(answer.ends_with("done\n\n999.1k · $0.21"), "{answer}");
     assert!(
         stopped.elapsed() >= Duration::from_secs(2),
         "{:?}",

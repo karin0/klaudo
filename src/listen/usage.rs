@@ -76,7 +76,7 @@ impl Session {
         self.transcript.as_mut()?.hit()
     }
 
-    /// What the calls of the turn cost at list prices.
+    /// What the calls made since the daemon heard of the session cost at list prices.
     pub(super) fn spent(&mut self) -> Option<f64> {
         self.transcript.as_mut()?.spent()
     }
@@ -234,9 +234,10 @@ fn until(left: Duration, gap: &str) -> String {
     }
 }
 
-/// The figures under the answer that closes a turn: how full the
-/// context is and how much of the turn's first call hit the cache, what the turn cost at
-/// list prices, then how much of each limit is used and how long until it resets.
+/// The figures under the answer that closes a turn: how full the context is and how much
+/// of the turn's first call hit the cache, what the session has cost at list prices since
+/// the daemon heard of it, then how much of each limit is used and how long until it
+/// resets.
 pub(super) fn status_line(
     context: Option<Context<'_>>,
     hit: Option<f64>,

@@ -214,11 +214,13 @@ message showing a running turn and the answer closing it end with the same figur
 in `45.6k/1m 99% · $1.23 · 1% 3h30m · 56% 2d14h`, where `99%` is the share of the turn's
 first call that Claude Code's transcript shows read from the prompt cache. Later calls of a
 turn follow within seconds and nearly always hit the cache, while the first one misses it
-once the cache has expired since the turn before. `$1.23` is what the turn's calls, its
-subagents' included, would cost at the API's list prices. Anthropic does not publish how a
-plan's limits are spent, so the figure only compares turns with each other. The prices are
-written in the code, since the few models Claude Code runs change seldom, and a turn that
-called a model missing from them shows no cost. When Claude Code resumes a session it
+once the cache has expired since the turn before. `$1.23` is what the session's calls, its
+subagents' included, would cost at the API's list prices, counted in memory from when the
+daemon first heard of the session, so it starts over when the daemon restarts or the session
+is resumed. Anthropic does not publish how a plan's limits are spent, so the figure only
+compares turns and sessions with each other. The prices are written in the code, since the
+few models Claude Code runs change seldom, and a session that called a model missing from
+them shows no cost from then on. When Claude Code resumes a session it
 writes the earlier entries of the transcript again, and the cost leaves them out by their
 timestamps. Claude Code writes a turn's last call to the transcript only after the Stop
 hooks have run, so the answer closing a turn waits up to two seconds for the transcript to

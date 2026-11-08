@@ -29,7 +29,7 @@ pub(super) struct Transcript {
     opening: bool,
     /// When the turn began to be counted, in Unix milliseconds.
     since: u64,
-    /// What the calls of the turn read so far cost.
+    /// What the calls read since the daemon heard of the session cost.
     spent: Spent,
     /// Whether the end of the turn has been read, which Claude Code writes once the Stop
     /// hooks have run, together with the turn's last call.
@@ -89,8 +89,9 @@ impl Transcript {
         self.hit
     }
 
-    /// What the calls of the turn, its subagents' included, cost at list prices, once
-    /// one has been read and every one ran on a model with a known price.
+    /// What the calls made since the daemon heard of the session, its subagents' included,
+    /// cost at list prices, once one has been read and every one ran on a model with a
+    /// known price.
     pub(super) fn spent(&mut self) -> Option<f64> {
         self.read();
         match self.spent {
@@ -111,7 +112,6 @@ impl Transcript {
         self.hit = None;
         self.opening = true;
         self.since = now_millis();
-        self.spent = Spent::Nothing;
         self.closed = false;
     }
 
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_costs_each_of_its_calls_once() {
+    fn a_session_costs_each_of_its_calls_once() {
         let directory = tempfile::tempdir().expect("a directory");
         let path = directory.path().join("s.jsonl");
         let mut file = File::create(&path).expect("a transcript");
@@ -579,18 +579,19 @@ mod tests {
         assert_eq!(cents(&mut transcript), Some(800.0));
 
         transcript.ended();
-        assert_eq!(transcript.spent(), None);
-        let mut unknown = billed("m3", NOW);
+        writeln!(file, "{}", billed("m3", NOW)).expect("a call");
+        assert_eq!(cents(&mut transcript), Some(1200.0));
+        let mut unknown = billed("m4", NOW);
         unknown["message"]["model"] = json!("claude-opus-9");
-        writeln!(file, "{unknown}\n{}", billed("m4", NOW)).expect("calls");
+        writeln!(file, "{unknown}\n{}", billed("m5", NOW)).expect("calls");
         assert_eq!(transcript.spent(), None);
         transcript.ended();
-        writeln!(file, "{}", billed("m5", NOW)).expect("a call");
-        assert_eq!(cents(&mut transcript), Some(400.0));
+        writeln!(file, "{}", billed("m6", NOW)).expect("a call");
+        assert_eq!(transcript.spent(), None);
     }
 
     #[test]
-    fn a_turn_costs_what_its_subagents_called_since_it_was_heard_of() {
+    fn a_session_costs_what_its_subagents_called_since_it_was_heard_of() {
         let directory = tempfile::tempdir().expect("a directory");
         let path = directory.path().join("s.jsonl");
         File::create(&path).expect("a transcript");
