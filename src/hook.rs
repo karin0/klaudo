@@ -236,7 +236,15 @@ impl Event {
             "UserPromptSubmit" => quote(self.prompt.as_deref().unwrap_or_default()),
             // What Claude Code answered is markdown, and reads as the markdown it is.
             "Stop" => self.last_assistant_message.clone().unwrap_or_default(),
-            "StopFailure" => prose(&self.error.clone().unwrap_or_else(|| self.residue())),
+            // `error` is only the error's type, such as `rate_limit`, while the message
+            // the conversation shows says more, such as when a usage limit resets.
+            "StopFailure" => prose(
+                &self
+                    .last_assistant_message
+                    .clone()
+                    .or_else(|| self.error.clone())
+                    .unwrap_or_else(|| self.residue()),
+            ),
             "Notification" => prose(&self.message.clone().unwrap_or_else(|| self.residue())),
             "PostCompact" => compaction(self.compact_summary.as_deref().unwrap_or_default(), room),
             _ => prose(&self.residue()),
@@ -836,6 +844,20 @@ mod tests {
             &format!("<summary>{}</summary>", "字".repeat(MAX_BYTES)),
         );
         assert!((MAX_BYTES - 3..=MAX_BYTES).contains(&wide.len()));
+    }
+
+    #[test]
+    fn a_failure_reports_the_error_as_the_conversation_shows_it() {
+        let failed = event(serde_json::json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s",
+            "error": "rate_limit",
+            "last_assistant_message": "You've hit your session limit · resets 12:10am (Asia/Tokyo)",
+        }));
+        assert_eq!(
+            message(&failed, &p(), "").markdown,
+            "**p** `s`  #claude #failed\n\nYou've hit your session limit · resets 12:10am \\(Asia/Tokyo\\)"
+        );
     }
 
     #[test]
