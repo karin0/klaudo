@@ -125,6 +125,10 @@ pub fn run() {
         return;
     }
 
+    // A message from before the daemon started is a backlog, and one sent since is meant
+    // for this daemon, however long registering its commands takes.
+    let started =
+        i64::try_from(now_millis() / 1000).expect("any u64 of milliseconds fits an i64 in seconds");
     let path = directory.join("listen.sock");
     let _ = fs::remove_file(&path);
     let listener = UnixListener::bind(&path).expect("bind");
@@ -143,7 +147,7 @@ pub fn run() {
         .collect();
     let poller = Arc::clone(&telegram);
     let updates = landed.clone();
-    std::thread::spawn(move || poll(&poller, &updates, &commands, &guests));
+    std::thread::spawn(move || poll(&poller, &updates, &commands, &guests, started));
     std::thread::spawn(move || read(&listener, &landed));
 
     let running_file = directory.join("state.json");
@@ -259,10 +263,9 @@ fn poll(
     landed: &Sender<Arrival>,
     commands: &[(&str, &str)],
     guests: &[(&str, &str)],
+    started: i64,
 ) {
     telegram.register(commands, guests);
-    let started =
-        i64::try_from(now_millis() / 1000).expect("any u64 of milliseconds fits an i64 in seconds");
     let mut offset = 0;
     loop {
         let Some(updates) = telegram.updates(offset) else {

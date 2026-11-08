@@ -1161,6 +1161,22 @@ fn a_new_session_takes_the_topic_of_its_project() {
     drop(daemon);
 }
 
+/// A message sent while the daemon registers its commands is meant for that daemon, so
+/// it is answered however long registering takes.
+#[test]
+fn a_message_sent_while_the_daemon_starts_is_answered() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("starting", port);
+    let root = temporary.path();
+    // The three lists of commands take longer than the second a message's date counts in.
+    chat.hold_commands(Duration::from_millis(400));
+    let daemon = daemon(root);
+
+    chat.says(OWNER, OWNER, "/usage");
+    collect(&calls, |call| call.label == "sendMessage");
+    drop(daemon);
+}
+
 /// A conversation opened from a topic belongs to that topic from its first event, even
 /// where another session of its project posted elsewhere.
 #[test]
@@ -3660,6 +3676,8 @@ struct Chat {
     /// Every chat action the daemon sent, with when it arrived. An action leaves nothing
     /// a later call acts on, so it stays out of the calls a turn made.
     actions: Arc<Mutex<Vec<(Instant, serde_json::Value)>>>,
+    /// How long each `setMyCommands` is held before it is answered.
+    commands_held: Arc<Mutex<Duration>>,
 }
 
 impl Chat {
@@ -3716,6 +3734,10 @@ impl Chat {
                 chat,
             ),
         }));
+    }
+
+    fn hold_commands(&self, held: Duration) {
+        *self.commands_held.lock().expect("the hold") = held;
     }
 
     fn push(&self, mut message: serde_json::Value) {
@@ -3859,6 +3881,9 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         None => serde_json::from_slice(&body).expect("a JSON body"),
     };
 
+    if method == "setMyCommands" {
+        std::thread::sleep(*chat.commands_held.lock().expect("the hold"));
+    }
     // The poll that asks what the chat said is not a call the turn made.
     let sent = if method == "getUpdates" {
         let offset = body["offset"].as_i64().expect("an offset");
