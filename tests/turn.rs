@@ -2128,8 +2128,14 @@ fn hook_in_pane(root: &Path, event: &serde_json::Value) {
     report(command, event);
 }
 
-/// Reports that branch `branch` started in pane `%1`, as `/branch` does, with no title.
+/// Reports that branch `branch` started in pane `%1`, as `/branch` does, with no title:
+/// the session there ends ahead of the branch's start.
 fn branched_in_pane(root: &Path, branch: &str) {
+    hook_in_pane(
+        root,
+        &json!({"hook_event_name": "SessionEnd", "session_id": "0123456789abcdef",
+            "cwd": project(root), "reason": "resume"}),
+    );
     hook_in_pane(
         root,
         &json!({"hook_event_name": "SessionStart", "session_id": branch,
@@ -2277,19 +2283,21 @@ fn a_branch_sent_from_the_chat_is_forgotten_once_a_later_prompt_runs() {
 }
 
 /// A branch `/branch` typed in the terminal made stays in the topic of the session it
-/// branched from.
+/// branched from, which leaves the pane to it.
 #[test]
 fn a_branch_typed_in_the_terminal_stays_in_its_topic() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("branch-typed", port);
     let root = temporary.path();
     let (session, pid) = terminal(root);
-    branching_in_topic_77(root, pid);
+    let original = branching_in_topic_77(root, pid);
     let daemon = daemon(root);
 
     let branch = "fedcba9876543210";
     branched_in_pane(root, branch);
     assert_eq!(prompted_in(root, &calls, &[branch]), [json!(77)]);
+    let running = std::fs::read_to_string(root.join("run/klaudo/state.json")).expect("the state");
+    assert!(!running.contains(original), "{running}");
     assert!(
         drained(&calls)
             .iter()

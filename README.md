@@ -436,7 +436,10 @@ daemon keeps that record itself, since the transcripts under `~/.claude/projects
 a format Claude Code has not published. A turn in flight is lost.
 
 A session is forgotten at its `SessionEnd`, or once `/proc/<pid>` is gone for one that
-was killed first.
+was killed first. Where `/branch` or `/resume` switches the conversation of a process,
+Claude Code ends the old session before the new one starts, and the daemon forgets the
+old one only at that start, since a branch finds its origin and the `/branch` typed into
+it by its pane.
 
 A call Telegram rejects with a rate limit or its own failure is retried up to three
 times, so a message can arrive late, or twice when the answer to an attempt was lost. A

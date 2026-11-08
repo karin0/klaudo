@@ -112,6 +112,13 @@ impl Event {
             .map(Path::to_path_buf)
     }
 
+    /// Whether the session ended for its process to go on with another conversation, as
+    /// `/branch` and `/resume` make it. `reason` stays among the unread fields, which a
+    /// failure report shows whole.
+    pub fn switched(&self) -> bool {
+        self.rest.get("reason").and_then(Value::as_str) == Some("resume")
+    }
+
     /// What a tool call says it is doing, in one line, empty where its tool describes
     /// no call of itself.
     pub fn description(&self) -> String {

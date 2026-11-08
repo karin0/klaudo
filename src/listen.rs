@@ -561,8 +561,11 @@ impl Machine {
         let id = event.session_id.clone();
         // An ending changes nothing the session is remembered by, and a session the
         // daemon never heard from before its end has nothing to remember.
+        // A process going on with another conversation ends the session ahead of the next
+        // one's start, which still needs it in the pane to tell a branch's origin, so that
+        // start ends it.
         if event.hook_event_name == "SessionEnd" {
-            if self.sessions.contains_key(&id) {
+            if !event.switched() && self.sessions.contains_key(&id) {
                 self.end(&id);
                 self.save();
             }
@@ -632,6 +635,7 @@ impl Machine {
                     self.branched(&id, event.session_title.as_deref());
                 }
                 self.started(&id);
+                self.replaced(&id);
             }
             "UserPromptSubmit" => self.submitted(&id, event),
             "MessageDisplay" => self.delta(&id, event),
@@ -843,6 +847,25 @@ impl Machine {
             dir: session.dir,
             trail: session.trail,
         });
+    }
+
+    /// Ends every other session of the pane session `id` started in, since a pane runs
+    /// one conversation at a time.
+    fn replaced(&mut self, id: &str) {
+        let pane = self.sessions[id].pane.clone();
+        let left: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(other, session)| *other != id && pane.is_some() && session.pane == pane)
+            .map(|(other, _)| other.clone())
+            .collect();
+        if left.is_empty() {
+            return;
+        }
+        for other in left {
+            self.end(&other);
+        }
+        self.save();
     }
 
     /// Remembers a session that is not running, which a reply resumes.

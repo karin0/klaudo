@@ -527,8 +527,8 @@ impl Machine {
         }
     }
 
-    /// The session branch `id` in `pane` was made from by `/branch`, which keeps running
-    /// there until the process exits: the one there to report last.
+    /// The session branch `id` in `pane` was made from by `/branch`, which stays there
+    /// until the branch has started: the one there to report last.
     pub(super) fn branched_from(&self, id: &str, pane: Option<&Pane>) -> Option<&str> {
         self.sessions
             .iter()
