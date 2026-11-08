@@ -97,6 +97,9 @@ thinking block in the transcript, fires no `MessageDisplay`, and stays out of th
 `/compact` runs no turn, so its `PostCompact` is the answer to it, tagged
 `#claude #compact`. A compaction Claude Code starts itself is a silent `#compact` message
 in its turn's thread. Both quote the summary and the reasoning ahead of it, folded.
+The transcript keeps only the summary, so the hook also appends each compaction's whole
+output, with its time in Unix milliseconds and its trigger, as a line of JSON to
+`$XDG_STATE_HOME/klaudo/compactions/<session_id>.jsonl`.
 
 Every message opens with the directory Claude Code files the session's transcript under,
 then `session/prompt` shortened to eight characters each. That line is the address a

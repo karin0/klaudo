@@ -154,7 +154,7 @@ pub fn run() {
         Vec::new()
     });
     // The next save would overwrite a record that does not parse.
-    let kept = crate::xdg_home("XDG_STATE_HOME", ".local/state").join("klaudo");
+    let kept = crate::state_home();
     fs::create_dir_all(&kept).expect("state directory");
     let ended_file = kept.join("ended.json");
     let ended =
@@ -505,7 +505,7 @@ fn store(path: &Path, value: &impl Serialize) {
 }
 
 /// The time now in Unix milliseconds.
-fn now_millis() -> u64 {
+pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {

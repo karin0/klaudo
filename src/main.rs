@@ -5,6 +5,7 @@ mod process;
 mod telegram;
 mod tmux;
 
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -107,6 +108,31 @@ fn xdg_home(variable: &str, fallback: &str) -> PathBuf {
     }
 }
 
+/// Where this program keeps what must outlive a reboot.
+fn state_home() -> PathBuf {
+    xdg_home("XDG_STATE_HOME", ".local/state").join("klaudo")
+}
+
+/// Appends a compaction's whole output to the session's file under `compactions`, since
+/// the transcript keeps only its summary and the chat only part of its reasoning.
+fn keep_compaction(event: &Event) {
+    let directory = state_home().join("compactions");
+    let path = directory.join(format!("{}.jsonl", event.session_id));
+    let mut line = serde_json::json!({
+        "time": listen::now_millis(),
+        "trigger": event.trigger,
+        "compact_summary": event.compact_summary,
+    })
+    .to_string();
+    line.push('\n');
+    let kept = fs::create_dir_all(&directory)
+        .and_then(|()| OpenOptions::new().create(true).append(true).open(&path))
+        .and_then(|mut file| file.write_all(line.as_bytes()));
+    if let Err(error) = kept {
+        eprintln!("klaudo: {}: {error}", path.display());
+    }
+}
+
 fn hook(event: &Event, raw: &[u8]) {
     match event.hook_event_name.as_str() {
         // A subagent's text stays out of the chat.
@@ -122,30 +148,35 @@ fn hook(event: &Event, raw: &[u8]) {
         | "PostToolUseFailure" | "PreCompact" => {
             forward(raw);
         }
-        // Every other event ends up in the chat either way: through the daemon, which
-        // orders it against the draft, or from here when nothing is listening.
-        _ => {
-            if !forward(raw) {
-                let directory = event
-                    .directory()
-                    .unwrap_or_else(|| std::path::PathBuf::from(&event.cwd));
-                let head =
-                    hook::Head::new(&directory, &event.session_id, event.prompt_id.as_deref());
-                // No daemon reported this turn, so this message is all of it, and
-                // there is no prompt of its own in the chat for it to reply to.
-                let telegram = telegram::Telegram::new();
-                let place = telegram::Place {
-                    chat: telegram.chat(&directory),
-                    topic: None,
-                };
-                telegram.post(
-                    place,
-                    &hook::message(event, &head, ""),
-                    telegram::Sound::Ring,
-                    None,
-                );
-            }
+        "PostCompact" => {
+            keep_compaction(event);
+            deliver(event, raw);
         }
+        _ => deliver(event, raw),
+    }
+}
+
+/// Every other event ends up in the chat either way: through the daemon, which orders it
+/// against the draft, or from here when nothing is listening.
+fn deliver(event: &Event, raw: &[u8]) {
+    if !forward(raw) {
+        let directory = event
+            .directory()
+            .unwrap_or_else(|| std::path::PathBuf::from(&event.cwd));
+        let head = hook::Head::new(&directory, &event.session_id, event.prompt_id.as_deref());
+        // No daemon reported this turn, so this message is all of it, and
+        // there is no prompt of its own in the chat for it to reply to.
+        let telegram = telegram::Telegram::new();
+        let place = telegram::Place {
+            chat: telegram.chat(&directory),
+            topic: None,
+        };
+        telegram.post(
+            place,
+            &hook::message(event, &head, ""),
+            telegram::Sound::Ring,
+            None,
+        );
     }
 }
 

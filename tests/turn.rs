@@ -598,7 +598,8 @@ fn an_answer_arriving_with_its_stop_is_shown_once() {
 }
 
 /// A compaction Claude Code started mid-turn is a quiet note in that turn, and a
-/// `/compact` rings as the answer to it, both quoting the summary and its reasoning.
+/// `/compact` rings as the answer to it, both quoting the summary and its reasoning, and
+/// each is kept whole in the session's file of compactions.
 #[test]
 fn a_compaction_reports_its_summary() {
     let (port, calls, _chat) = recorder();
@@ -635,6 +636,27 @@ fn a_compaction_reports_its_summary() {
         ]
     );
     drop(daemon);
+    let kept =
+        std::fs::read_to_string(root.join("state/klaudo/compactions/0123456789abcdef.jsonl"))
+            .expect("the kept compactions");
+    let kept: Vec<_> = kept
+        .lines()
+        .map(|line| {
+            let compaction: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+            assert!(compaction["time"].is_u64(), "{compaction}");
+            (
+                compaction["trigger"].clone(),
+                compaction["compact_summary"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            (json!("auto"), json!(summary)),
+            (json!("manual"), json!(summary))
+        ]
+    );
 }
 
 /// A run of tool calls stands under the words that introduce it, so a turn that talked,
