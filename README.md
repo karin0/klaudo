@@ -215,7 +215,8 @@ in `45.6k/1m 99% · $1.23 · 1% 3h30m · 56% 2d14h`, where `99%` is the share of
 first call that Claude Code's transcript shows read from the prompt cache. Later calls of a
 turn follow within seconds and nearly always hit the cache, while the first one misses it
 once the cache has expired since the turn before. `$1.23` is what the session's calls, its
-subagents' included, would cost at the API's list prices, counted in memory from when the
+subagents' included, would cost at the API's list prices, except the call that compacts the
+conversation, which the transcript does not record. It is counted in memory from when the
 daemon first heard of the session, so it starts over when the daemon restarts or the session
 is resumed. Anthropic does not publish how a plan's limits are spent, so the figure only
 compares turns and sessions with each other. The prices are written in the code, since the
