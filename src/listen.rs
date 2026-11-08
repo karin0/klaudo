@@ -5,6 +5,7 @@
 mod attach;
 mod chat;
 mod diff;
+mod price;
 mod render;
 mod rewind;
 mod transcript;

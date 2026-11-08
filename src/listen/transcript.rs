@@ -1,7 +1,8 @@
-//! The transcript Claude Code writes of a session, the one record of an interruption and
-//! of the context of a session that draws no status line, and the conversation a rewound
-//! copy starts from.
+//! The transcript Claude Code writes of a session, the one record of an interruption, of
+//! the context of a session that draws no status line and of the tokens each call spent,
+//! and the conversation a rewound copy starts from.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -10,30 +11,64 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::now_millis;
+use super::price::Billed;
 use super::usage::Usage;
 
 pub(super) struct Transcript {
     pub(super) path: PathBuf,
-    /// How far it has been read for the context.
-    read: u64,
+    main: Tail,
+    /// The transcripts of the session's subagents, which Claude Code writes in a
+    /// directory beside it.
+    subagents: HashMap<PathBuf, Tail>,
     /// The tokens the latest call of the main conversation read so far sent.
     tokens: Option<u64>,
     /// The cache hit of the turn's first call, once it has been read.
     hit: Option<f64>,
     /// Whether the next call read starts a turn.
     opening: bool,
+    /// When the turn began to be counted, in Unix milliseconds.
+    since: u64,
+    /// What the calls of the turn read so far cost.
+    spent: Spent,
+}
+
+/// How far a transcript has been read, and the call it last counted the cost of.
+#[derive(Default)]
+struct Tail {
+    read: u64,
+    call: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum Spent {
+    Nothing,
+    Dollars(f64),
+    /// A call ran on a model with no known price.
+    Unpriced,
 }
 
 impl Transcript {
-    /// Read from where it ends when first heard of.
+    /// Read from where it and the transcripts of its subagents end when first heard of.
     pub(super) fn new(path: PathBuf) -> Self {
-        let read = fs::metadata(&path).map_or(0, |metadata| metadata.len());
+        let subagents = subagents(&path)
+            .map(|subagent| {
+                let read = length(&subagent);
+                (subagent, Tail { read, call: None })
+            })
+            .collect();
         Self {
+            main: Tail {
+                read: length(&path),
+                call: None,
+            },
             path,
-            read,
+            subagents,
             tokens: None,
             hit: None,
             opening: true,
+            since: now_millis(),
+            spent: Spent::Nothing,
         }
     }
 
@@ -50,24 +85,113 @@ impl Transcript {
         self.hit
     }
 
+    /// What the calls of the turn, its subagents' included, cost at list prices, once
+    /// one has been read and every one ran on a model with a known price.
+    pub(super) fn spent(&mut self) -> Option<f64> {
+        self.read();
+        match self.spent {
+            Spent::Dollars(dollars) => Some(dollars),
+            Spent::Nothing | Spent::Unpriced => None,
+        }
+    }
+
     /// The turn has ended, so the next call starts another.
     pub(super) fn ended(&mut self) {
         self.read();
         self.hit = None;
         self.opening = true;
+        self.since = now_millis();
+        self.spent = Spent::Nothing;
     }
 
     fn read(&mut self) {
-        let (entries, read) = entries(&self.path, self.read);
-        self.read = read;
-        for usage in entries.iter().filter_map(sent) {
+        let (appended, read) = entries(&self.path, self.main.read);
+        self.main.read = read;
+        for usage in appended.iter().filter_map(sent) {
             if self.opening {
                 self.hit = Some(usage.hit());
                 self.opening = false;
             }
             self.tokens = Some(usage.total());
         }
+        self.spent = charge(self.spent, &mut self.main.call, &appended, self.since);
+        for subagent in subagents(&self.path) {
+            let tail = self.subagents.entry(subagent.clone()).or_default();
+            let (appended, read) = entries(&subagent, tail.read);
+            tail.read = read;
+            self.spent = charge(self.spent, &mut tail.call, &appended, self.since);
+        }
     }
+}
+
+/// The transcripts of the subagents of the session whose transcript is at `path`.
+fn subagents(path: &Path) -> impl Iterator<Item = PathBuf> {
+    fs::read_dir(path.with_extension("").join("subagents"))
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+}
+
+fn length(path: &Path) -> u64 {
+    fs::metadata(path).map_or(0, |metadata| metadata.len())
+}
+
+/// Adds to `spent` what the calls in `entries` cost, each once though Claude Code writes
+/// an entry for each block of its answer, and none made before `since`, which Claude Code
+/// writes again when it resumes a session.
+fn charge(mut spent: Spent, call: &mut Option<String>, entries: &[Value], since: u64) -> Spent {
+    for entry in entries {
+        let message = &entry["message"];
+        let Some(model) = message["model"].as_str() else {
+            continue;
+        };
+        if entry["type"] != "assistant"
+            || entry["isUnmetered"] == true
+            || model == "<synthetic>"
+            || entry["timestamp"]
+                .as_str()
+                .and_then(unix_millis)
+                .is_some_and(|at| at < since)
+        {
+            continue;
+        }
+        let id = message["id"].as_str();
+        if id.is_some() && id == call.as_deref() {
+            continue;
+        }
+        *call = id.map(str::to_owned);
+        let Ok(billed) = Billed::deserialize(&message["usage"]) else {
+            continue;
+        };
+        spent = match (spent, billed.cost(model)) {
+            (Spent::Unpriced, _) => Spent::Unpriced,
+            (_, None) => {
+                eprintln!("no price for {model}");
+                Spent::Unpriced
+            }
+            (Spent::Nothing, Some(cost)) => Spent::Dollars(cost),
+            (Spent::Dollars(dollars), Some(cost)) => Spent::Dollars(dollars + cost),
+        };
+    }
+    spent
+}
+
+/// The Unix milliseconds of a timestamp as Claude Code writes it, `2026-10-23T10:08:53.339Z`.
+fn unix_millis(timestamp: &str) -> Option<u64> {
+    let number = |at: usize, digits: usize| timestamp.get(at..at + digits)?.parse::<u64>().ok();
+    let (year, month, day) = (number(0, 4)?, number(5, 2)?, number(8, 2)?);
+    // Days since 1970 by the proleptic Gregorian calendar, in years that start in March
+    // so that a leap day ends them.
+    let year = if month <= 2 { year - 1 } else { year };
+    let (era, of_era) = (year / 400, year % 400);
+    let of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let days = era * 146_097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719_468;
+    let seconds = ((days * 24 + number(11, 2)?) * 60 + number(14, 2)?) * 60 + number(17, 2)?;
+    Some(seconds * 1000 + number(20, 3)?)
 }
 
 /// The entries written to the transcript at `path` past byte `from`, and the byte after
@@ -397,5 +521,84 @@ mod tests {
         writeln!(file, "{}", said(&usage(1, 0, 99))).expect("the second call");
         assert_eq!(transcript.hit(), Some(0.0));
         assert_eq!(transcript.tokens(), Some(100));
+    }
+
+    /// A call of `id` that cost $4 on Claude Opus 5.5, as one entry of its answer written
+    /// at `timestamp`.
+    fn billed(id: &str, timestamp: &str) -> serde_json::Value {
+        let mut entry = said(&usage(1_000_000, 0, 0));
+        entry["message"]["usage"]["output_tokens"] = json!(0);
+        entry["message"]["id"] = json!(id);
+        entry["timestamp"] = json!(timestamp);
+        entry
+    }
+
+    const NOW: &str = "2999-01-01T00:00:00.000Z";
+
+    fn cents(transcript: &mut Transcript) -> Option<f64> {
+        transcript.spent().map(|dollars| (dollars * 100.0).round())
+    }
+
+    #[test]
+    fn a_turn_costs_each_of_its_calls_once() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let path = directory.path().join("s.jsonl");
+        let mut file = File::create(&path).expect("a transcript");
+        writeln!(file, "{}", billed("old", NOW)).expect("a call before");
+        let mut transcript = Transcript::new(path);
+        assert_eq!(transcript.spent(), None);
+
+        for line in [
+            billed("m1", NOW),
+            billed("m1", NOW),
+            billed("m2", NOW),
+            // What Claude Code writes again when it resumes the session.
+            billed("m1", "2000-01-01T00:00:00.000Z"),
+        ] {
+            writeln!(file, "{line}").expect("a call");
+        }
+        assert_eq!(cents(&mut transcript), Some(800.0));
+
+        transcript.ended();
+        assert_eq!(transcript.spent(), None);
+        let mut unknown = billed("m3", NOW);
+        unknown["message"]["model"] = json!("claude-opus-9");
+        writeln!(file, "{unknown}\n{}", billed("m4", NOW)).expect("calls");
+        assert_eq!(transcript.spent(), None);
+        transcript.ended();
+        writeln!(file, "{}", billed("m5", NOW)).expect("a call");
+        assert_eq!(cents(&mut transcript), Some(400.0));
+    }
+
+    #[test]
+    fn a_turn_costs_what_its_subagents_called_since_it_was_heard_of() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let path = directory.path().join("s.jsonl");
+        File::create(&path).expect("a transcript");
+        let subagents = directory.path().join("s").join("subagents");
+        fs::create_dir_all(&subagents).expect("a directory of subagents");
+        let mut earlier = File::create(subagents.join("agent-a.jsonl")).expect("a subagent");
+        writeln!(earlier, "{}", billed("a1", NOW)).expect("a call before");
+        let mut transcript = Transcript::new(path);
+
+        writeln!(earlier, "{}", billed("a2", NOW)).expect("a call");
+        let mut later = File::create(subagents.join("agent-b.jsonl")).expect("a subagent");
+        writeln!(later, "{}", billed("b1", NOW)).expect("a call");
+        File::create(subagents.join("agent-b.meta.json")).expect("its metadata");
+        assert_eq!(cents(&mut transcript), Some(800.0));
+    }
+
+    #[test]
+    fn a_timestamp_reads_as_unix_milliseconds() {
+        assert_eq!(unix_millis("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(
+            unix_millis("2000-02-29T23:59:59.999Z"),
+            Some(951_868_799_999)
+        );
+        assert_eq!(
+            unix_millis("2026-10-23T10:08:53.339Z"),
+            Some(1_792_750_133_339)
+        );
+        assert_eq!(unix_millis("yesterday"), None);
     }
 }

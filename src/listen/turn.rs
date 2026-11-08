@@ -688,8 +688,8 @@ impl Machine {
         let head = session.head(id, Some(&turn.prompt_id));
         let mut message = hook::message(event, &head, &took(turn.started.elapsed()));
         if event.hook_event_name == "Stop" {
-            let hit = session.hit();
-            if let Some(line) = status_line(session.context(), hit, self.limits.as_ref()) {
+            let (hit, spent) = (session.hit(), session.spent());
+            if let Some(line) = status_line(session.context(), hit, spent, self.limits.as_ref()) {
                 message.markdown = format!("{}\n\n{line}", message.markdown);
             }
         }
@@ -805,8 +805,8 @@ impl Machine {
         let live = turn.live;
         let thread = turn.thread;
         let mut footer = status(elapsed, turn.seed);
-        let hit = session.hit();
-        if let Some(line) = status_line(session.context(), hit, self.limits.as_ref()) {
+        let (hit, spent) = (session.hit(), session.spent());
+        if let Some(line) = status_line(session.context(), hit, spent, self.limits.as_ref()) {
             footer = format!("{footer}\n\n{line}");
         }
         let mut shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));

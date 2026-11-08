@@ -75,6 +75,11 @@ impl Session {
     pub(super) fn hit(&mut self) -> Option<f64> {
         self.transcript.as_mut()?.hit()
     }
+
+    /// What the calls of the turn cost at list prices.
+    pub(super) fn spent(&mut self) -> Option<f64> {
+        self.transcript.as_mut()?.spent()
+    }
 }
 
 /// The plan's limits, which every session of the account reports alike.
@@ -230,11 +235,12 @@ fn until(left: Duration, gap: &str) -> String {
 }
 
 /// The figures under the answer that closes a turn, as one line of code: how full the
-/// context is and how much of the turn's first call hit the cache, then how much of
-/// each limit is used and how long until it resets.
+/// context is and how much of the turn's first call hit the cache, what the turn cost at
+/// list prices, then how much of each limit is used and how long until it resets.
 pub(super) fn status_line(
     context: Option<Context<'_>>,
     hit: Option<f64>,
+    spent: Option<f64>,
     limits: Option<&(Limits, u64)>,
 ) -> Option<String> {
     let now = now_millis() / 1000;
@@ -261,7 +267,8 @@ pub(super) fn status_line(
             let left = Duration::from_secs(limit.resets_at.saturating_sub(now));
             format!("{:.0}% {}", limit.used_percentage, until(left, ""))
         });
-    let figures: Vec<String> = context.into_iter().chain(limits).collect();
+    let spent = spent.map(|dollars| format!("${dollars:.2}"));
+    let figures: Vec<String> = context.into_iter().chain(spent).chain(limits).collect();
     (!figures.is_empty()).then(|| format!("`{}`", figures.join(" · ")))
 }
 

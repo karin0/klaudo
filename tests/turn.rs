@@ -4231,7 +4231,8 @@ fn a_turn_ends_with_a_status_line() {
 
 /// A session that draws no status line has its context counted from the latest call its
 /// transcript shows, from where the transcript ended when the daemon first heard of it,
-/// and the answer shows how much of the turn's first call came from the cache.
+/// and the answer shows how much of the turn's first call came from the cache and what
+/// the turn's calls cost at list prices.
 #[test]
 fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
     let (port, calls, chat) = recorder();
@@ -4279,7 +4280,7 @@ fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
     );
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let answer = &made.last().expect("the answer").markdown;
-    assert!(answer.ends_with("done\n\n`167.1k 99%`"), "{answer}");
+    assert!(answer.ends_with("done\n\n`167.1k 99% · $0.04`"), "{answer}");
 
     chat.says(OWNER, OWNER, "/usage");
     let made = collect(&calls, |call| call.label == "sendMessage");
