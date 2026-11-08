@@ -3515,7 +3515,18 @@ impl Drop for Daemon {
 }
 
 fn daemon(root: &Path) -> Daemon {
-    let child = klaudo(root).arg("listen").spawn().expect("run the daemon");
+    run_daemon(root, klaudo(root))
+}
+
+/// The daemon, writing its log to `log.txt` under `root`.
+fn logging_daemon(root: &Path) -> Daemon {
+    let mut command = klaudo(root);
+    command.stderr(std::fs::File::create(root.join("log.txt")).expect("the log"));
+    run_daemon(root, command)
+}
+
+fn run_daemon(root: &Path, mut command: Command) -> Daemon {
+    let child = command.arg("listen").spawn().expect("run the daemon");
     let socket = root.join("run/klaudo/listen.sock");
     wait_for(|| socket.exists(), "the daemon never bound its socket");
     Daemon(child)
@@ -4169,13 +4180,14 @@ fn diff_draws_the_unstaged_changes_of_a_session() {
 }
 
 /// The answer that closes a turn ends with what `/usage` answers, in one line of the
-/// figures the status lines reported so far, whichever session reported the limits.
+/// figures the status lines reported so far, whichever session reported the limits. The
+/// log records the limits and the size of a context window whenever they change.
 #[test]
 fn a_turn_ends_with_a_status_line() {
     let (port, calls, _chat) = recorder();
     let temporary = prepare("line", port);
     let root = temporary.path();
-    let daemon = daemon(root);
+    let daemon = logging_daemon(root);
     let turn = |prompt: &str, line: &str| {
         for mut event in [
             json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
@@ -4222,11 +4234,42 @@ fn a_turn_ends_with_a_status_line() {
                 },
                 "used_percentage": 5,
             },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 1.2, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
+                "seven_day": {"used_percentage": 56.3, "resets_at": now + 62 * 3600 + 30},
+            },
+        }),
+    );
+    turn("p3", "done\n\n45.6k/1m · 1% 3h30m · 56% 2d14h");
+    status(
+        root,
+        &json!({
+            "session_id": "aaaaaaaa",
+            "context_window": {"context_window_size": 1_000_000},
+            "rate_limits": {
+                "five_hour": {"used_percentage": 1.2, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
+                "seven_day": {"used_percentage": 57, "resets_at": now + 62 * 3600 + 30},
+            },
         }),
     );
     // Limits a later status line leaves out are still the ones reported last.
-    turn("p3", "done\n\n45.6k/1m · 1% 3h30m · 56% 2d14h");
+    status(root, &json!({"session_id": "aaaaaaaa"}));
+    turn("p4", "done\n\n1% 3h30m · 57% 2d14h");
     drop(daemon);
+    let log = std::fs::read_to_string(root.join("log.txt")).expect("the log");
+    let logged: Vec<&str> = log
+        .lines()
+        .filter(|line| line.starts_with("limits: ") || line.starts_with("context "))
+        .collect();
+    let (five, seven) = (now + 3 * 3600 + 29 * 60 + 30, now + 62 * 3600 + 30);
+    assert_eq!(
+        logged,
+        [
+            format!("limits: 5-hour 1% until {five}, 7-day 56% until {seven}"),
+            "context aaaaaaaa: 1000000".to_owned(),
+            format!("limits: 5-hour 1% until {five}, 7-day 57% until {seven}"),
+        ]
+    );
 }
 
 /// A session that draws no status line has its context counted from the latest call its

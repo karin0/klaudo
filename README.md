@@ -357,6 +357,8 @@ with `$TMUX`, `$TMUX_PANE` and its parent's pid, and exits. `PostToolUse` carrie
 tool's whole output, which can pass the size limit of a datagram. Because of `exec`, that
 parent is the session itself. The status line is the one place Claude Code reports the
 context window and the plan's limits, so `klaudo status` forwards it and prints nothing.
+Transcripts record neither, so the daemon logs the limits whenever a whole percentage or
+a reset time changes, and the size of a session's context window whenever it changes.
 A session of the Agent SDK or the VS Code extension draws no status line, so a program
 that learns the limits some other way, such as from the SDK's rate limit events, can
 pipe them to `klaudo status` itself. Only `session_id` is required, and the limits count

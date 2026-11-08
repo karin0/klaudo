@@ -96,18 +96,57 @@ struct Limit {
     resets_at: u64,
 }
 
+impl Limits {
+    fn windows(&self) -> [(&'static str, Option<&Limit>); 2] {
+        [
+            ("5-hour", self.five_hour.as_ref()),
+            ("7-day", self.seven_day.as_ref()),
+        ]
+    }
+
+    /// The whole percentages and reset times, which the log records whenever they change.
+    fn logged(&self) -> String {
+        let windows = self.windows().into_iter().filter_map(|(name, limit)| {
+            limit.map(|limit| {
+                format!(
+                    "{name} {:.0}% until {}",
+                    limit.used_percentage, limit.resets_at
+                )
+            })
+        });
+        windows.collect::<Vec<_>>().join(", ")
+    }
+}
+
 impl Machine {
     /// A status line reports whenever the session redraws it, which is too often for the
-    /// state file and cheap to wait for again after a restart.
+    /// state file and cheap to wait for again after a restart. Transcripts record neither
+    /// the limits nor the size of the context window, so the log does whenever they change.
     pub(super) fn status(&mut self, status: Status) {
         let now = now_millis() / 1000;
         if let Some(limits) = status.rate_limits {
+            let logged = limits.logged();
+            if self
+                .limits
+                .as_ref()
+                .is_none_or(|(old, _)| old.logged() != logged)
+            {
+                eprintln!("limits: {logged}");
+            }
             self.limits = Some((limits, now));
         }
         if let (Some(window), Some(session)) = (
             status.context_window,
             self.sessions.get_mut(&status.session_id),
         ) {
+            let size = window.context_window_size;
+            if session
+                .window
+                .as_ref()
+                .is_none_or(|(old, _)| old.context_window_size != size)
+            {
+                eprintln!("context {}: {size}", status.session_id);
+            }
             session.window = Some((window, now));
         }
     }
@@ -158,7 +197,7 @@ impl Machine {
         }
         match &self.limits {
             Some((limits, at)) => {
-                for (name, limit) in [("5-hour", &limits.five_hour), ("7-day", &limits.seven_day)] {
+                for (name, limit) in limits.windows() {
                     if let Some(limit) = limit {
                         let left = Duration::from_secs(limit.resets_at.saturating_sub(now));
                         rows.push(format!(
@@ -262,8 +301,8 @@ pub(super) fn status_line(
     });
     let limits = limits
         .into_iter()
-        .flat_map(|(limits, _)| [&limits.five_hour, &limits.seven_day])
-        .flatten()
+        .flat_map(|(limits, _)| limits.windows())
+        .filter_map(|(_, limit)| limit)
         .map(|limit| {
             let left = Duration::from_secs(limit.resets_at.saturating_sub(now));
             format!("{:.0}% {}", limit.used_percentage, until(left, ""))
