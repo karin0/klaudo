@@ -220,7 +220,9 @@ plan's limits are spent, so the figure only compares turns with each other. The 
 written in the code, since the few models Claude Code runs change seldom, and a turn that
 called a model missing from them shows no cost. When Claude Code resumes a session it
 writes the earlier entries of the transcript again, and the cost leaves them out by their
-timestamps. A session in the VS Code extension draws no
+timestamps. Claude Code writes a turn's last call to the transcript only after the Stop
+hooks have run, so the answer closing a turn waits up to two seconds for the transcript to
+record the turn's end. A session in the VS Code extension draws no
 status line, so its context shows as the tokens alone, which the transcript records of
 each call. The daemon reads them from where the transcript ended when it first
 heard of the session, since the transcript of a long conversation runs to tens of

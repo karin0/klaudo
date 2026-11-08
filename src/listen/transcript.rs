@@ -31,6 +31,9 @@ pub(super) struct Transcript {
     since: u64,
     /// What the calls of the turn read so far cost.
     spent: Spent,
+    /// Whether the end of the turn has been read, which Claude Code writes once the Stop
+    /// hooks have run, together with the turn's last call.
+    closed: bool,
 }
 
 /// How far a transcript has been read, and the call it last counted the cost of.
@@ -69,6 +72,7 @@ impl Transcript {
             opening: true,
             since: now_millis(),
             spent: Spent::Nothing,
+            closed: false,
         }
     }
 
@@ -95,6 +99,12 @@ impl Transcript {
         }
     }
 
+    /// Whether the transcript records the end of the turn, and with it every call.
+    pub(super) fn closed(&mut self) -> bool {
+        self.read();
+        self.closed
+    }
+
     /// The turn has ended, so the next call starts another.
     pub(super) fn ended(&mut self) {
         self.read();
@@ -102,6 +112,7 @@ impl Transcript {
         self.opening = true;
         self.since = now_millis();
         self.spent = Spent::Nothing;
+        self.closed = false;
     }
 
     fn read(&mut self) {
@@ -115,6 +126,9 @@ impl Transcript {
             self.tokens = Some(usage.total());
         }
         self.spent = charge(self.spent, &mut self.main.call, &appended, self.since);
+        self.closed |= appended
+            .iter()
+            .any(|entry| entry["subtype"] == "stop_hook_summary" && !before(entry, self.since));
         for subagent in subagents(&self.path) {
             let tail = self.subagents.entry(subagent.clone()).or_default();
             let (appended, read) = entries(&subagent, tail.read);
@@ -152,10 +166,7 @@ fn charge(mut spent: Spent, call: &mut Option<String>, entries: &[Value], since:
         if entry["type"] != "assistant"
             || entry["isUnmetered"] == true
             || model == "<synthetic>"
-            || entry["timestamp"]
-                .as_str()
-                .and_then(unix_millis)
-                .is_some_and(|at| at < since)
+            || before(entry, since)
         {
             continue;
         }
@@ -178,6 +189,14 @@ fn charge(mut spent: Spent, call: &mut Option<String>, entries: &[Value], since:
         };
     }
     spent
+}
+
+/// Whether `entry` was written before `since`, in Unix milliseconds.
+fn before(entry: &Value, since: u64) -> bool {
+    entry["timestamp"]
+        .as_str()
+        .and_then(unix_millis)
+        .is_some_and(|at| at < since)
 }
 
 /// The Unix milliseconds of a timestamp as Claude Code writes it, `2026-10-23T10:08:53.339Z`.

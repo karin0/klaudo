@@ -17,7 +17,7 @@ use super::chat::{NEW, unreminded};
 use super::render::{
     ARGUMENTS_MAX, Call, Outcome, RESULT_MAX, SUMMARY_MAX, first_line, listing, took,
 };
-use super::transcript;
+use super::transcript::{self, Transcript};
 use super::usage::status_line;
 
 /// The longest the message showing an open segment goes without its clock advancing,
@@ -44,8 +44,12 @@ const NOTHING_RUNS: &str = "no turn is running in that conversation";
 /// How long a turn sent Escape has to show up interrupted in its transcript before the
 /// chat hears that it did not stop.
 const STOP_WAIT: Duration = Duration::from_secs(5);
-/// How often the transcript is read meanwhile.
-const STOP_POLL: Duration = Duration::from_millis(200);
+/// How long the answer closing a turn waits for the transcript to record the turn's end,
+/// since Claude Code writes the turn's last call only along with it, after the Stop hooks
+/// have run. The figures under the answer leave that call out otherwise.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
+/// How often a transcript is read while a turn waits on it.
+pub(super) const POLL: Duration = Duration::from_millis(50);
 /// What Claude Code appends to the transcript as a user message when a turn is
 /// interrupted, ending in ` for tool use]` when it cut a tool call short. No hook reports
 /// an interruption, and the text is Claude Code's internal format.
@@ -171,6 +175,15 @@ pub(super) struct Thread {
     pub(super) prompt: Option<i64>,
 }
 
+/// The answer that closes a turn, waiting for the transcript to record the turn's end.
+pub(super) struct Closing {
+    answer: Post,
+    thread: Thread,
+    /// The message showing the turn running, which the answer replaces.
+    live: Option<i64>,
+    until: Instant,
+}
+
 /// Text from the chat and the message that carried it, which is the thread the turn it
 /// becomes replies into.
 pub(super) struct Ask {
@@ -256,7 +269,7 @@ impl Turn {
 
     /// When the transcript of a turn sent Escape is next read.
     pub(super) fn stop_due(&self) -> Option<Instant> {
-        self.stopping.as_ref().map(|_| Instant::now() + STOP_POLL)
+        self.stopping.as_ref().map(|_| Instant::now() + POLL)
     }
 
     /// The run a tool call belongs to, which is the open one until the turn moves past
@@ -312,6 +325,8 @@ impl Machine {
     }
 
     pub(super) fn submitted(&mut self, id: &str, event: &Event) {
+        // The answer to the turn before stands above the prompt.
+        self.close(id, true);
         let Some(session) = self.sessions.get_mut(id) else {
             return;
         };
@@ -384,7 +399,7 @@ impl Machine {
         match &session.turn {
             Some(open) if open.prompt_id == named => return true,
             Some(_) => self.seal(id),
-            None => {}
+            None => self.close(id, true),
         }
         let Some(session) = self.sessions.get_mut(id) else {
             return false;
@@ -686,25 +701,59 @@ impl Machine {
         };
         session.done = Some(turn.prompt_id.clone());
         let head = session.head(id, Some(&turn.prompt_id));
-        let mut message = hook::message(event, &head, &took(turn.started.elapsed()));
+        let closing = Closing {
+            answer: hook::message(event, &head, &took(turn.started.elapsed())),
+            thread: turn.thread,
+            live: turn.live,
+            until: Instant::now() + CLOSE_WAIT,
+        };
+        // Only Stop is answered with figures, and only it has a turn's end written.
         if event.hook_event_name == "Stop" {
-            let (hit, spent) = (session.hit(), session.spent());
-            if let Some(line) = status_line(session.context(), hit, spent, self.limits.as_ref()) {
-                message.markdown = format!("{}\n\n{line}", message.markdown);
-            }
+            session.closing = Some(closing);
+            self.close(id, false);
+        } else {
+            self.answer(id, &closing);
         }
+    }
+
+    /// Posts the answer waiting to close a turn of session `id`, under the figures of the
+    /// turn, once the transcript records its end, `CLOSE_WAIT` has passed, or `now` asks
+    /// for it because the session moved on.
+    pub(super) fn close(&mut self, id: &str, now: bool) {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        let Some(closing) = &session.closing else {
+            return;
+        };
+        let written = session.transcript.as_mut().is_none_or(Transcript::closed);
+        if !now && !written && closing.until > Instant::now() {
+            return;
+        }
+        let mut closing = session.closing.take().expect("an answer waiting");
+        let (hit, spent) = (session.hit(), session.spent());
+        if let Some(line) = status_line(session.context(), hit, spent, self.limits.as_ref()) {
+            closing.answer.markdown = format!("{}\n\n{line}", closing.answer.markdown);
+        }
+        self.answer(id, &closing);
+    }
+
+    fn answer(&mut self, id: &str, closing: &Closing) {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
         if let Some(transcript) = &mut session.transcript {
             transcript.ended();
         }
         // The one sound of the turn: the reply is complete and worth coming back to.
-        let thread = turn.thread;
+        let thread = closing.thread;
         let answer = self
             .telegram
-            .post(thread.place, &message, Sound::Ring, thread.prompt);
+            .post(thread.place, &closing.answer, Sound::Ring, thread.prompt);
         session.left(thread.place, answer);
         // This event carries the last segment's text, so the message that was showing
         // it goes rather than standing above the one that repeats it.
-        if let Some(live) = turn.live {
+        if let Some(live) = closing.live {
             self.telegram.delete(thread.place.chat, live);
         }
     }

@@ -33,7 +33,7 @@ use crate::tmux::{self, Pane, Start};
 use chat::{ATTACH, COMMANDS, tilde};
 use render::{code, took};
 use transcript::Transcript;
-use turn::{Ask, SETTLE, Thread, Turn};
+use turn::{Ask, Closing, POLL, SETTLE, Thread, Turn};
 use usage::{Limits, Status, Window};
 
 /// How long a session killed mid-turn keeps its message showing the turn as running.
@@ -308,6 +308,7 @@ struct Session {
     /// The context its status line last reported, and when, in Unix seconds.
     window: Option<(Window, u64)>,
     transcript: Option<Transcript>,
+    closing: Option<Closing>,
 }
 
 /// What a `/resume` menu shows of a session and leads back to: the start of its latest
@@ -406,6 +407,7 @@ impl Session {
             trail: Trail::default(),
             window: None,
             transcript: None,
+            closing: None,
         }
     }
 
@@ -733,10 +735,9 @@ impl Machine {
     }
 
     /// The next moment `tick` has work: a tool call settling, a message falling due, a
-    /// turn due to show its session typing or sent Escape and not seen stopping, a
-    /// session idle long enough to close, or
-    /// the sweep for a session killed mid-turn or a window closed before its session
-    /// started. With none, only an arrival wakes it.
+    /// turn due to show its session typing or sent Escape and not seen stopping, an answer
+    /// waiting for its transcript, a session idle long enough to close, or the sweep for a
+    /// session killed mid-turn or a window closed before its session started. With none, only an arrival wakes it.
     fn due(&self) -> Option<Instant> {
         let now = now_millis();
         let idle = self.sessions.values().filter_map(|session| {
@@ -762,6 +763,12 @@ impl Machine {
             .flatten()
             .chain(sweep)
             .chain(idle)
+            .chain(
+                self.sessions
+                    .values()
+                    .filter_map(|session| session.closing.as_ref())
+                    .map(|_| Instant::now() + POLL),
+            )
             .min()
     }
 
@@ -771,6 +778,7 @@ impl Machine {
         }
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         for id in ids {
+            self.close(&id, false);
             self.stopped(&id);
             self.place(&id);
             self.show(&id);
@@ -832,6 +840,7 @@ impl Machine {
     /// Its process may linger after `SessionEnd`, or it may have been killed before
     /// saying anything, so both that event and the sweep end a session here.
     fn end(&mut self, id: &str) {
+        self.close(id, true);
         self.seal(id);
         let live = self
             .sessions

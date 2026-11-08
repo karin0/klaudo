@@ -4232,7 +4232,7 @@ fn a_turn_ends_with_a_status_line() {
 /// A session that draws no status line has its context counted from the latest call its
 /// transcript shows, from where the transcript ended when the daemon first heard of it,
 /// and the answer shows how much of the turn's first call came from the cache and what
-/// the turn's calls cost at list prices.
+/// the turn's calls cost at list prices, once the transcript records the turn's end.
 #[test]
 fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
     let (port, calls, chat) = recorder();
@@ -4269,15 +4269,23 @@ fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
         "{answer}"
     );
 
+    // Claude Code writes the turn's last call only once the Stop hooks have run, along
+    // with the end of the turn.
+    hook(
+        root,
+        &event(json!({"hook_event_name": "Stop", "last_assistant_message": "done"})),
+    );
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(&transcript)
         .expect("the transcript");
     writeln!(file, "{}", said(167_000)).expect("a call");
-    hook(
-        root,
-        &event(json!({"hook_event_name": "Stop", "last_assistant_message": "done"})),
-    );
+    writeln!(
+        file,
+        "{}",
+        json!({"type": "system", "subtype": "stop_hook_summary"})
+    )
+    .expect("the end of the turn");
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let answer = &made.last().expect("the answer").markdown;
     assert!(answer.ends_with("done\n\n167.1k 99% · $0.04"), "{answer}");
@@ -4288,6 +4296,87 @@ fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
     assert!(
         answer.ends_with("\ncontext: 167.1k, from the transcript\nlimits: not reported yet"),
         "{answer}"
+    );
+    drop(daemon);
+}
+
+/// The answer closing a turn waits for the transcript to record the turn's end, and goes
+/// up without it once the session starts another turn or the wait runs out.
+#[test]
+fn an_answer_goes_up_without_the_end_of_its_turn_in_time() {
+    let (port, calls, _chat) = recorder();
+    let temporary = prepare("unclosed", port);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    std::fs::create_dir(root.join("a")).expect("a project");
+    let transcript = root.join("transcript.jsonl");
+    std::fs::write(&transcript, "").expect("the transcript");
+    let event = |prompt: &str, event: serde_json::Value| {
+        let mut event = event;
+        event["session_id"] = json!("aaaaaaaa");
+        event["cwd"] = json!(root.join("a"));
+        event["prompt_id"] = json!(prompt);
+        event["transcript_path"] = json!(transcript);
+        event
+    };
+    let stop = |prompt| {
+        hook(
+            root,
+            &event(
+                prompt,
+                json!({"hook_event_name": "Stop", "last_assistant_message": "done"}),
+            ),
+        );
+        Instant::now()
+    };
+    let answered = || {
+        let ring = |call: &Call| call.label == "sendRichMessage ring";
+        let made = collect(&calls, ring);
+        made.into_iter().rfind(ring).expect("the answer").markdown
+    };
+
+    hook(
+        root,
+        &event(
+            "p1",
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+        ),
+    );
+    // The daemon reads a transcript from where it ended when the daemon heard of the
+    // session, which it has once it posts the prompt.
+    collect(&calls, |call| call.label == "sendRichMessage silent");
+    let call = json!({"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": {
+        "input_tokens": 2, "cache_creation_input_tokens": 98,
+        "cache_read_input_tokens": 999_000, "output_tokens": 459,
+    }}});
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .expect("the transcript");
+    writeln!(file, "{call}").expect("a call");
+    let stopped = stop("p1");
+    hook(
+        root,
+        &event(
+            "p2",
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "on"}),
+        ),
+    );
+    let answer = answered();
+    assert!(answer.ends_with("done\n\n999.1k 99% · $0.21"), "{answer}");
+    assert!(
+        stopped.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        stopped.elapsed()
+    );
+
+    let stopped = stop("p2");
+    let answer = answered();
+    assert!(answer.ends_with("done\n\n999.1k"), "{answer}");
+    assert!(
+        stopped.elapsed() >= Duration::from_secs(2),
+        "{:?}",
+        stopped.elapsed()
     );
     drop(daemon);
 }
