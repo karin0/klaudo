@@ -357,6 +357,20 @@ with `$TMUX`, `$TMUX_PANE` and its parent's pid, and exits. `PostToolUse` carrie
 tool's whole output, which can pass the size limit of a datagram. Because of `exec`, that
 parent is the session itself. The status line is the one place Claude Code reports the
 context window and the plan's limits, so `klaudo status` forwards it and prints nothing.
+A session of the Agent SDK or the VS Code extension draws no status line, so a program
+that learns the limits some other way, such as from the SDK's rate limit events, can
+pipe them to `klaudo status` itself. Only `session_id` is required, and the limits count
+for every session of the machine, whichever session reports them:
+
+```json
+{"session_id": "…", "rate_limits": {
+  "five_hour": {"used_percentage": 12.5, "resets_at": 1789071000},
+  "seven_day": {"used_percentage": 56, "resets_at": 1789500000}}}
+```
+
+`used_percentage` runs from 0 to 100 and `resets_at` is in Unix seconds. Either window
+may be left out, and the daemon ignores every other field. Without a daemon,
+`klaudo status` writes `klaudo: no daemon is listening` to stderr and still exits with 0.
 
 `SessionStart` fires once the session is ready for input, after the trust dialog, which
 is how a window opened from the chat knows when to type its first prompt.

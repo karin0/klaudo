@@ -4169,7 +4169,7 @@ fn diff_draws_the_unstaged_changes_of_a_session() {
 }
 
 /// The answer that closes a turn ends with what `/usage` answers, in one line of the
-/// figures the status lines reported so far.
+/// figures the status lines reported so far, whichever session reported the limits.
 #[test]
 fn a_turn_ends_with_a_status_line() {
     let (port, calls, _chat) = recorder();
@@ -4196,11 +4196,11 @@ fn a_turn_ends_with_a_status_line() {
         .duration_since(UNIX_EPOCH)
         .expect("a clock after 1970")
         .as_secs();
+    // A program of its own reports the limits of a session the daemon never heard of.
     status(
         root,
         &json!({
-            "session_id": "aaaaaaaa",
-            "context_window": {"context_window_size": 200_000, "current_usage": null, "used_percentage": null},
+            "session_id": "bbbbbbbb",
             "rate_limits": {
                 "five_hour": {"used_percentage": 1, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
                 "seven_day": {"used_percentage": 56.4, "resets_at": now + 62 * 3600 + 30},
