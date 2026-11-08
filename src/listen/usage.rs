@@ -234,7 +234,7 @@ fn until(left: Duration, gap: &str) -> String {
     }
 }
 
-/// The figures under the answer that closes a turn, as one line of code: how full the
+/// The figures under the answer that closes a turn: how full the
 /// context is and how much of the turn's first call hit the cache, what the turn cost at
 /// list prices, then how much of each limit is used and how long until it resets.
 pub(super) fn status_line(
@@ -269,7 +269,7 @@ pub(super) fn status_line(
         });
     let spent = spent.map(|dollars| format!("${dollars:.2}"));
     let figures: Vec<String> = context.into_iter().chain(spent).chain(limits).collect();
-    (!figures.is_empty()).then(|| format!("`{}`", figures.join(" · ")))
+    (!figures.is_empty()).then(|| figures.join(" · "))
 }
 
 /// A token count the way Claude Code writes one, as `45.6k` or `1m`.

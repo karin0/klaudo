@@ -490,10 +490,10 @@ fn a_running_turn_shows_the_status_line_figures() {
             },
         }),
     );
-    let made = collect(&calls, |call| call.markdown.ends_with('`'));
+    let made = collect(&calls, |call| call.markdown.ends_with("45.6k/1m"));
     let live = &made.last().expect("a live message").markdown;
     let shown = live
-        .strip_suffix("\n\n`45.6k/1m`")
+        .strip_suffix("\n\n45.6k/1m")
         .expect("the figures under the status line");
     showing(shown, "");
     drop(daemon);
@@ -4207,7 +4207,7 @@ fn a_turn_ends_with_a_status_line() {
             },
         }),
     );
-    turn("p2", "done\n\n`1% 3h30m · 56% 2d14h`");
+    turn("p2", "done\n\n1% 3h30m · 56% 2d14h");
     status(
         root,
         &json!({
@@ -4225,7 +4225,7 @@ fn a_turn_ends_with_a_status_line() {
         }),
     );
     // Limits a later status line leaves out are still the ones reported last.
-    turn("p3", "done\n\n`45.6k/1m · 1% 3h30m · 56% 2d14h`");
+    turn("p3", "done\n\n45.6k/1m · 1% 3h30m · 56% 2d14h");
     drop(daemon);
 }
 
@@ -4280,7 +4280,7 @@ fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
     );
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let answer = &made.last().expect("the answer").markdown;
-    assert!(answer.ends_with("done\n\n`167.1k 99% · $0.04`"), "{answer}");
+    assert!(answer.ends_with("done\n\n167.1k 99% · $0.04"), "{answer}");
 
     chat.says(OWNER, OWNER, "/usage");
     let made = collect(&calls, |call| call.label == "sendMessage");
