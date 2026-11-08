@@ -278,13 +278,14 @@ message sent outside every topic by mistake reaches no session.
 
 `/split` opens a topic for the session a message would reach, named after its latest
 prompt, and moves the session there the way `/resume` does. Claude Code's `/branch` starts
-a new session, the branch. Where `/branch` was sent from the chat and the project's
-conversations are in topics, the daemon opens a topic for the branch under the name Claude
-Code gave it, or else its latest prompt. A branch made in the terminal stays in the topic
-of the session it branched from. A session in a
-topic opened for it still counts toward the topic it left, so a new session of its
-project goes there, and each topic keeps one conversation. In a group, Telegram lets the
-bot open a topic only with the `can_manage_topics` right.
+a new session, the branch. Where `/branch` was sent from a topic, the daemon opens a
+topic for the branch under the name Claude Code gave it, or else its latest prompt, and
+answers `/branch` with a link to that topic. Elsewhere it answers with the branch's head,
+which the next reply reaches. A branch made in the terminal stays in the topic of the
+session it branched from. A session in a topic opened for it still counts toward the
+topic it left, so a new session of its project goes there, and each topic keeps one
+conversation. In a group, Telegram lets the bot open a topic only with the
+`can_manage_topics` right.
 
 `/rewind` copies the conversation of the session a message would reach into a new
 session, up to the end of the turn of the message it replies to. Claude Code's own

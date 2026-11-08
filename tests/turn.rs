@@ -2083,6 +2083,13 @@ fn a_split_session_goes_to_a_topic_of_its_own() {
 /// posted in topic 77 after the prompt `fix the parser`, while another session of its
 /// project, outside tmux, posted in topic 88 since.
 fn branching_in_topic_77(root: &Path, pid: u32) -> &'static str {
+    branching_in(root, pid, &json!({"chat": GROUP, "topic": 77}))
+}
+
+/// A session in pane `%1`, the one tmux shows the terminal `session` runs on, that last
+/// posted at `place` after the prompt `fix the parser`, while another session of its
+/// project, outside tmux, posted in topic 88 since.
+fn branching_in(root: &Path, pid: u32, place: &serde_json::Value) -> &'static str {
     let id = "0123456789abcdef";
     let seen = now() * 1000;
     std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
@@ -2095,7 +2102,7 @@ fn branching_in_topic_77(root: &Path, pid: u32) -> &'static str {
                 "pid": pid,
                 "pane": {"server": root.join("tmux.sock"), "id": "%1"},
                 "idle_since": seen - 1000,
-                "trail": {"prompt": "fix the parser", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": seen - 1000}},
+                "trail": {"prompt": "fix the parser", "last": {"place": place, "message": 5, "at": seen - 1000}},
             },
             {
                 "id": "1111111111111111",
@@ -2132,9 +2139,14 @@ fn branched_in_pane(root: &Path, branch: &str) {
 
 /// Sends `texts` in topic 77 one by one, each once the one before it was typed.
 fn typed_in_topic_77(root: &Path, chat: &Chat, texts: &[&str]) {
+    typed(root, texts, |text| chat.says_in(GROUP, 77, OWNER, text));
+}
+
+/// Sends `texts` one by one with `send`, each once the one before it was typed.
+fn typed(root: &Path, texts: &[&str], send: impl Fn(&str)) {
     let log = root.join("tmux.log");
     for (sent, text) in texts.iter().enumerate() {
-        chat.says_in(GROUP, 77, OWNER, text);
+        send(text);
         wait_for(
             || {
                 std::fs::read_to_string(&log)
@@ -2146,8 +2158,9 @@ fn typed_in_topic_77(root: &Path, chat: &Chat, texts: &[&str]) {
 }
 
 /// A branch `/branch` sent from the chat made goes to a topic of its own, named after the
-/// latest prompt it carried over, while the session it branched from stays where it was. A
-/// prompt sent ahead of `/branch` and submitted while it waits leaves it waiting.
+/// latest prompt it carried over, while the session it branched from stays where it was,
+/// and `/branch` is answered with a link to that topic. A prompt sent ahead of `/branch`
+/// and submitted while it waits leaves it waiting.
 #[test]
 fn a_branch_sent_from_the_chat_goes_to_a_topic_of_its_own() {
     let (port, calls, chat) = recorder();
@@ -2165,7 +2178,7 @@ fn a_branch_sent_from_the_chat_goes_to_a_topic_of_its_own() {
     );
     let branch = "fedcba9876543210";
     branched_in_pane(root, branch);
-    let made = collect(&calls, |call| call.label == "createForumTopic");
+    let made = collect(&calls, |call| call.markdown.starts_with("branched"));
     let opened = made
         .iter()
         .find(|call| call.label == "createForumTopic")
@@ -2174,11 +2187,58 @@ fn a_branch_sent_from_the_chat_goes_to_a_topic_of_its_own() {
         opened.body,
         json!({"chat_id": GROUP, "name": "carry on (Branch)"})
     );
+    let receipt = made.last().expect("the receipt");
+    assert_eq!(
+        receipt.markdown,
+        format!(
+            "branched `01234567` into [a topic of its own](https://t.me/c/1/{})",
+            opened.id
+        )
+    );
+    assert_eq!(receipt.body["message_thread_id"], json!(77));
+    assert_eq!(receipt.reply, replying_to(9000));
 
     assert_eq!(
         prompted_in(root, &calls, &[branch, original]),
         [json!(opened.id), json!(77)]
     );
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
+/// A branch `/branch` sent from the chat made outside every topic stays there, and
+/// `/branch` is answered with the branch's head.
+#[test]
+fn a_branch_sent_outside_every_topic_answers_with_its_head() {
+    let (port, calls, chat) = recorder();
+    let temporary = prepare("branch-headed", port);
+    let root = temporary.path();
+    let (session, pid) = terminal(root);
+    branching_in(root, pid, &json!({"chat": OWNER, "topic": null}));
+    let daemon = daemon(root);
+
+    let head = json!({"rich_message": {"blocks": [{"type": "paragraph", "text": [
+        {"type": "bold", "text": "project"}, " ", {"type": "code", "text": "01234567"},
+    ]}]}});
+    typed(root, &["/branch"], |text| {
+        chat.replies(OWNER, OWNER, text, &head);
+    });
+    let branch = "fedcba9876543210";
+    branched_in_pane(root, branch);
+    let made = collect(&calls, |call| call.markdown.contains("branched"));
+    assert!(made.iter().all(|call| call.label != "createForumTopic"));
+    let receipt = made.last().expect("the receipt");
+    assert!(
+        receipt
+            .markdown
+            .ends_with("** `fedcba98`\n\nbranched `01234567`"),
+        "{}",
+        receipt.markdown
+    );
+    assert_eq!(receipt.body["chat_id"], json!(OWNER));
+    assert_eq!(receipt.reply, replying_to(9000));
     drop(daemon);
     let mut session = session;
     let _ = session.kill();

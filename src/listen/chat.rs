@@ -522,7 +522,7 @@ impl Machine {
             return;
         }
         let (id, name) = (id.to_owned(), trail.prompt.clone());
-        if !self.split(&id, place.chat, &name) {
+        if self.split(&id, place.chat, &name).is_none() {
             self.say(place, "could not move the session to a topic of its own");
         }
     }
@@ -539,53 +539,73 @@ impl Machine {
             .map(|(other, _)| other.as_str())
     }
 
-    /// A branch `/branch` sent from the chat made goes to a topic of its own where its
-    /// project's conversations are in topics, under the `title` Claude Code gave it, or
-    /// with none, the prompt it carried over.
+    /// A branch `/branch` sent from a topic made goes to a topic of its own, under the
+    /// `title` Claude Code gave it, or with none, the prompt it carried over. A receipt
+    /// replies to `/branch`: a link to that topic, or where the branch stays, its head,
+    /// which the next reply reaches.
     pub(super) fn branched(&mut self, id: &str, title: Option<&str>) {
         let pane = self.sessions[id].pane.clone();
-        let asked = self
+        let Some((origin, asked)) = self
             .branched_from(id, pane.as_ref())
             .map(str::to_owned)
-            .and_then(|origin| self.sessions.get_mut(&origin))
-            .and_then(|origin| take_typed(&mut origin.asked, BRANCH))
-            .is_some();
-        let trail = &self.sessions[id].trail;
-        let Some(place) = trail
-            .last
-            .map(|last| last.place)
-            .filter(|place| asked && place.topic.is_some())
+            .and_then(|origin| {
+                let asked = take_typed(&mut self.sessions.get_mut(&origin)?.asked, BRANCH)?;
+                Some((origin, asked))
+            })
         else {
             return;
         };
+        let branched = format!("branched {}", code(&hook::address(&origin, None)));
         let name = match title {
             Some(title) => title.to_owned(),
-            None if trail.prompt.is_empty() => String::new(),
-            None => format!("{} (Branch)", trail.prompt),
+            None if self.sessions[id].trail.prompt.is_empty() => String::new(),
+            None => format!("{} (Branch)", self.sessions[id].trail.prompt),
         };
-        self.split(id, place.chat, &name);
+        let topic = asked
+            .place
+            .topic
+            .and_then(|_| self.split(id, asked.place.chat, &name));
+        if let Some(topic) = topic {
+            let into = "a topic of its own";
+            let into = topic
+                .link()
+                .map_or_else(|| into.to_owned(), |link| format!("[{into}]({link})"));
+            self.telegram.send(
+                asked.place,
+                &format!("{branched} into {into}"),
+                Sound::Silent,
+                asked.prompt,
+            );
+            return;
+        }
+        let session = &self.sessions[id];
+        let head = hook::Head::new(&session.dir, id, None);
+        let post = hook::compose(&head, "", "", &branched);
+        let message = self
+            .telegram
+            .post(asked.place, &post, Sound::Silent, asked.prompt);
+        self.sessions
+            .get_mut(id)
+            .expect("a session just listed")
+            .trail
+            .last = Some(Last::now(asked.place, message));
     }
 
     /// Moves session `id` to a topic of `chat` opened for it alone, under `name`, or its
-    /// address where `name` is empty. Whether the session got there. A prompt still
+    /// address where `name` is empty. The topic, once the session got there. A prompt still
     /// waiting for the session to start goes along: it is posted there in place of the
     /// anchor, and its turn replies to it there.
-    fn split(&mut self, id: &str, chat: i64, name: &str) -> bool {
-        let Some((dir, left)) = self
+    fn split(&mut self, id: &str, chat: i64, name: &str) -> Option<Place> {
+        let (dir, left) = self
             .known()
             .find(|(known, _, _)| *known == id)
-            .and_then(|(_, dir, trail)| Some((dir.to_owned(), trail.standing()?.0)))
-        else {
-            return false;
-        };
+            .and_then(|(_, dir, trail)| Some((dir.to_owned(), trail.standing()?.0)))?;
         let name = if name.is_empty() {
             hook::address(id, None)
         } else {
             name.to_owned()
         };
-        let Some(topic) = self.telegram.topic(chat, &name) else {
-            return false;
-        };
+        let topic = self.telegram.topic(chat, &name)?;
         let place = Place {
             chat,
             topic: Some(topic),
@@ -606,9 +626,7 @@ impl Machine {
             }
             _ => self.beckon(place, id, &dir, None),
         };
-        let Some(anchor) = anchor else {
-            return false;
-        };
+        let anchor = anchor?;
         if let Some(Awaiting::Prompt(ask)) = carried.map(|index| &mut self.opening[index].ask) {
             ask.place = place;
             ask.message = anchor;
@@ -623,7 +641,7 @@ impl Machine {
                 prompt: Some(anchor),
             },
         );
-        true
+        Some(place)
     }
 
     fn trail_mut(&mut self, id: &str) -> Option<&mut Trail> {

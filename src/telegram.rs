@@ -66,6 +66,16 @@ pub struct Place {
 }
 
 impl Place {
+    /// The link opening this topic, which Telegram gives only a group's topics.
+    pub fn link(self) -> Option<String> {
+        let group = self.chat.to_string();
+        Some(format!(
+            "https://t.me/c/{}/{}",
+            group.strip_prefix("-100")?,
+            self.topic?
+        ))
+    }
+
     fn of(message: &Message) -> Self {
         Self {
             chat: message.chat.id,
