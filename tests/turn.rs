@@ -34,8 +34,7 @@ const GUEST: i64 = 9;
 
 #[test]
 fn a_turn_posts_the_prompt_and_replies_to_it_once_per_segment() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("segments", port);
+    let (temporary, calls, _chat) = prepare("segments");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -122,8 +121,7 @@ fn an_answer_of_more_blocks_than_a_rich_message_holds_arrives_whole_as_a_file() 
 }
 
 fn answer_is_filed(name: &str, answer: &str) {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare(name, port);
+    let (temporary, calls, _chat) = prepare(name);
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -162,8 +160,7 @@ fn answer_is_filed(name: &str, answer: &str) {
 /// goes as a markdown file once complete, and takes what arrives late into that file.
 #[test]
 fn a_segment_past_a_rich_message_is_filed_once_complete() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("filed", port);
+    let (temporary, calls, _chat) = prepare("filed");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -246,8 +243,7 @@ fn a_segment_past_a_rich_message_is_filed_once_complete() {
 /// message, and the file it then goes as takes the message's place.
 #[test]
 fn a_late_delta_past_a_rich_message_turns_it_into_a_file() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("outgrown", port);
+    let (temporary, calls, _chat) = prepare("outgrown");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -296,8 +292,7 @@ fn a_late_delta_past_a_rich_message_turns_it_into_a_file() {
 /// first event carrying an id of its own. Each turn must still answer its own prompt.
 #[test]
 fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("queue", port);
+    let (temporary, calls, _chat) = prepare("queue");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "fedcba9876543210";
@@ -367,8 +362,7 @@ fn a_prompt_queued_during_a_turn_gets_a_thread_of_its_own() {
 /// or in tool calls read as the status line's own clock.
 #[test]
 fn a_turn_is_on_screen_before_it_has_said_anything() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("waiting", port);
+    let (temporary, calls, _chat) = prepare("waiting");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -392,8 +386,7 @@ fn a_turn_is_on_screen_before_it_has_said_anything() {
 /// except while a dialog waits on the user, and stops with the turn.
 #[test]
 fn a_running_turn_shows_its_session_typing() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("typing", port);
+    let (temporary, calls, chat) = prepare("typing");
     let root = temporary.path();
     let daemon = daemon(root);
     let send = |mut event: serde_json::Value| {
@@ -458,8 +451,7 @@ fn a_running_turn_shows_its_session_typing() {
 /// the session last reported them.
 #[test]
 fn a_running_turn_shows_the_status_line_figures() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("figures", port);
+    let (temporary, calls, _chat) = prepare("figures");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -504,8 +496,7 @@ fn a_running_turn_shows_the_status_line_figures() {
 /// taken back, so nothing the chat holds is said twice.
 #[test]
 fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("watched", port);
+    let (temporary, calls, _chat) = prepare("watched");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -559,8 +550,7 @@ fn a_segment_watched_while_it_ran_finishes_in_the_message_it_was_watched_in() {
 /// turn keeps its status line until the answer replaces it.
 #[test]
 fn an_answer_arriving_with_its_stop_is_shown_once() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("answered", port);
+    let (temporary, calls, _chat) = prepare("answered");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -602,8 +592,7 @@ fn an_answer_arriving_with_its_stop_is_shown_once() {
 /// each is kept whole in the session's file of compactions.
 #[test]
 fn a_compaction_reports_its_summary() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("compacted", port);
+    let (temporary, calls, _chat) = prepare("compacted");
     let root = temporary.path();
     let daemon = daemon(root);
     let summary = "<analysis>\nwhy\n</analysis>\n\n<summary>\nall of it\n</summary>";
@@ -663,8 +652,7 @@ fn a_compaction_reports_its_summary() {
 /// worked, talked and worked again leaves two messages ahead of its answer.
 #[test]
 fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("tools", port);
+    let (temporary, calls, _chat) = prepare("tools");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -746,8 +734,7 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
 /// call still shows as finished.
 #[test]
 fn a_call_with_a_large_output_still_finishes() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("large", port);
+    let (temporary, calls, _chat) = prepare("large");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -785,8 +772,7 @@ fn a_call_with_a_large_output_still_finishes() {
 /// and goes on in one of its own.
 #[test]
 fn a_run_outgrowing_the_words_it_follows_goes_on_in_its_own_message() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("parted", port);
+    let (temporary, calls, _chat) = prepare("parted");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -833,8 +819,7 @@ fn a_run_outgrowing_the_words_it_follows_goes_on_in_its_own_message() {
 /// They belong above it in the chat all the same.
 #[test]
 fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("settling", port);
+    let (temporary, calls, _chat) = prepare("settling");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -880,8 +865,7 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
 /// something else, and carrying the status line under it.
 #[test]
 fn a_delta_landing_after_its_stop_opens_no_second_turn() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("straggler", port);
+    let (temporary, calls, _chat) = prepare("straggler");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -919,8 +903,7 @@ fn a_delta_landing_after_its_stop_opens_no_second_turn() {
 /// message that names no session goes nowhere.
 #[test]
 fn a_message_replying_to_nothing_goes_to_the_most_recent_session_in_its_chat() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("unaddressed", port);
+    let (temporary, calls, chat) = prepare("unaddressed");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -996,29 +979,22 @@ fn a_message_replying_to_nothing_goes_to_the_most_recent_session_in_its_chat() {
 /// the terminal starts follows the session to the topic it last posted in.
 #[test]
 fn a_topic_holds_its_own_conversations() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("topic", port);
+    let (temporary, calls, chat) = prepare("topic");
     let root = temporary.path();
     let session = "0123456789abcdef";
-    let seen = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_millis();
+    let seen = now_millis();
     // The session last posted in topic 77 of the group, and its process is the test.
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": session,
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
             "idle_since": seen,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": seen}},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     let daemon = daemon(root);
 
     chat.says_in(GROUP, 78, OWNER, "anyone");
@@ -1076,24 +1052,20 @@ fn a_topic_holds_its_own_conversations() {
 /// in before it exited.
 #[test]
 fn a_resumed_session_returns_to_its_topic() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("resumed-topic", port);
+    let (temporary, calls, _chat) = prepare("resumed-topic");
     let root = temporary.path();
     let session = "0123456789abcdef";
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": session,
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     let daemon = daemon(root);
 
     for event in ["SessionEnd", "SessionStart"] {
@@ -1124,23 +1096,19 @@ fn a_resumed_session_returns_to_its_topic() {
 /// project.
 #[test]
 fn a_new_session_takes_the_topic_of_its_project() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("project-topic", port);
+    let (temporary, calls, _chat) = prepare("project-topic");
     let root = temporary.path();
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     let daemon = daemon(root);
 
     hook(
@@ -1165,8 +1133,7 @@ fn a_new_session_takes_the_topic_of_its_project() {
 /// it is answered however long registering takes.
 #[test]
 fn a_message_sent_while_the_daemon_starts_is_answered() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("starting", port);
+    let (temporary, calls, chat) = prepare("starting");
     let root = temporary.path();
     // The three lists of commands take longer than the second a message's date counts in.
     chat.hold_commands(Duration::from_millis(400));
@@ -1181,23 +1148,19 @@ fn a_message_sent_while_the_daemon_starts_is_answered() {
 /// where another session of its project posted elsewhere.
 #[test]
 fn a_new_conversation_belongs_to_the_topic_it_was_asked_from() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("new-topic", port);
+    let (temporary, calls, chat) = prepare("new-topic");
     let root = temporary.path();
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     let daemon = daemon(root);
     let dir = project(root).display().to_string();
 
@@ -1249,28 +1212,21 @@ fn a_new_conversation_belongs_to_the_topic_it_was_asked_from() {
 /// named it or a message outside every topic of a private chat in topic mode opened it.
 #[test]
 fn a_topic_reaches_no_session_outside_it() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("implicit", port);
+    let (temporary, calls, chat) = prepare("implicit");
     let root = temporary.path();
-    let seen = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_millis();
+    let seen = now_millis();
     // The session started in the terminal and has posted nothing yet.
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
             "idle_since": seen,
             "trail": {"prompt": "", "last": null},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     let daemon = daemon(root);
 
     chat.says_in(GROUP, 78, OWNER, "anyone");
@@ -1295,18 +1251,13 @@ fn a_topic_reaches_no_session_outside_it() {
 /// from since.
 #[test]
 fn a_topic_resumes_its_latest_session() {
-    let (port, _calls, chat) = recorder();
-    let temporary = prepare("topic-resume", port);
+    let (temporary, _calls, chat) = prepare("topic-resume");
     let root = temporary.path();
-    let seen = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_millis();
+    let seen = now_millis();
     let (outside, exited) = ("0123456789abcdef", "fedcba9876543210");
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([
+    seed_state(
+        root,
+        &json!([
             {
                 "id": exited,
                 "dir": project(root),
@@ -1323,10 +1274,8 @@ fn a_topic_resumes_its_latest_session() {
                 "idle_since": seen,
                 "trail": {"prompt": "", "last": null},
             },
-        ])
-        .to_string(),
-    )
-    .expect("the state");
+        ]),
+    );
     let daemon = daemon(root);
 
     hook(
@@ -1351,13 +1300,9 @@ fn a_topic_resumes_its_latest_session() {
 /// before either ended stays the latest of its topic.
 #[test]
 fn a_topic_resumes_its_most_recent_session_whichever_ended_last() {
-    let (port, _calls, chat) = recorder();
-    let temporary = prepare("topic-ended-last", port);
+    let (temporary, _calls, chat) = prepare("topic-ended-last");
     let root = temporary.path();
-    let seen = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_millis();
+    let seen = now_millis();
     let (earlier, later) = ("0123456789abcdef", "fedcba9876543210");
     let session = |id: &str, seen: u128| {
         json!({
@@ -1369,12 +1314,10 @@ fn a_topic_resumes_its_most_recent_session_whichever_ended_last() {
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": seen}},
         })
     };
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([session(earlier, seen - 2000), session(later, seen - 1000)]).to_string(),
-    )
-    .expect("the state");
+    seed_state(
+        root,
+        &json!([session(earlier, seen - 2000), session(later, seen - 1000)]),
+    );
     let daemon = daemon(root);
 
     for id in [later, earlier] {
@@ -1398,25 +1341,21 @@ fn a_topic_resumes_its_most_recent_session_whichever_ended_last() {
 /// whose message the topic shows, though it started later.
 #[test]
 fn a_topic_message_passes_a_session_that_has_said_nothing() {
-    let (port, _calls, chat) = recorder();
-    let temporary = prepare("topic-silent", port);
+    let (temporary, _calls, chat) = prepare("topic-silent");
     let root = temporary.path();
     let at = now() * 1000 - 1000;
     let (spoke, silent) = ("0123456789abcdef", "fedcba9876543210");
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": spoke,
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
             "idle_since": at,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": at}},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     let daemon = daemon(root);
     for (event, id) in [("SessionEnd", spoke), ("SessionStart", silent)] {
         hook(
@@ -1441,13 +1380,9 @@ fn a_topic_message_passes_a_session_that_has_said_nothing() {
 /// into a session is the last of its conversation.
 #[test]
 fn a_topic_message_reaches_the_conversation_that_left_its_last_message() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("topic-newest", port);
+    let (temporary, calls, chat) = prepare("topic-newest");
     let root = temporary.path();
-    let seen = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_millis();
+    let seen = now_millis();
     let (quiet, talked) = ("0123456789abcdef", "fedcba9876543210");
     let session = |id: &str, idle_since: u128, message: i64, at: u128| {
         json!({
@@ -1459,16 +1394,13 @@ fn a_topic_message_reaches_the_conversation_that_left_its_last_message() {
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": message, "at": at}},
         })
     };
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([
+    seed_state(
+        root,
+        &json!([
             session(quiet, seen, 10, seen - 2000),
             session(talked, seen - 1000, 20, seen - 1000),
-        ])
-        .to_string(),
-    )
-    .expect("the state");
+        ]),
+    );
     let daemon = daemon(root);
     for id in [quiet, talked] {
         hook(
@@ -1535,8 +1467,7 @@ fn a_topic_message_reaches_the_conversation_that_left_its_last_message() {
 /// the message that showed the turn running is rewritten to what the turn said.
 #[test]
 fn a_turn_whose_session_was_killed_stops_reading_as_running() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("killed", port);
+    let (temporary, calls, _chat) = prepare("killed");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -1583,8 +1514,7 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
 /// too, which clears the runtime directory.
 #[test]
 fn what_the_daemon_knows_outlives_a_restart() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("restart", port);
+    let (temporary, calls, chat) = prepare("restart");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -1652,8 +1582,7 @@ fn what_the_daemon_knows_outlives_a_restart() {
 /// that session starts waits for the same window.
 #[test]
 fn a_reply_to_a_session_that_exited_resumes_it() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("resume", port);
+    let (temporary, calls, chat) = prepare("resume");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -1765,8 +1694,7 @@ fn a_reply_to_a_session_that_exited_resumes_it() {
 /// press on one rewrites the menu into the anchor for it.
 #[test]
 fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("menu", port);
+    let (temporary, calls, chat) = prepare("menu");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -1854,8 +1782,7 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
 /// message would reach, and with none, says so.
 #[test]
 fn a_new_conversation_opens_in_the_project_a_message_would_reach() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("clear", port);
+    let (temporary, calls, chat) = prepare("clear");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -1903,8 +1830,7 @@ fn a_new_conversation_opens_in_the_project_a_message_would_reach() {
 /// menu back.
 #[test]
 fn a_conversation_is_resumed_from_a_menu_of_its_project() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("resume-menu", port);
+    let (temporary, calls, chat) = prepare("resume-menu");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -2008,8 +1934,7 @@ fn summon(chat: &Chat, calls: &Receiver<Call>, session: &str, topic: i64) -> (Ca
 /// so its next turn from the terminal is posted under the anchor's topic.
 #[test]
 fn a_session_goes_where_resume_summons_it() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("summon", port);
+    let (temporary, calls, chat) = prepare("summon");
     let root = temporary.path();
     let daemon = daemon(root);
     let (idle, ended) = ("1111111111111111", "2222222222222222");
@@ -2049,20 +1974,17 @@ fn a_session_goes_where_resume_summons_it() {
 /// prompt `fix the parser`.
 fn in_topic_77(root: &Path) -> &'static str {
     let id = "0123456789abcdef";
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": id,
             "dir": project(root),
             "pid": std::process::id(),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "fix the parser", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     id
 }
 
@@ -2086,8 +2008,7 @@ fn prompted_in(root: &Path, calls: &Receiver<Call>, sessions: &[&str]) -> Vec<se
 /// project's conversations are in, however many times the session was split.
 #[test]
 fn a_split_session_goes_to_a_topic_of_its_own() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("split", port);
+    let (temporary, calls, chat) = prepare("split");
     let root = temporary.path();
     let split = in_topic_77(root);
     let daemon = daemon(root);
@@ -2130,10 +2051,9 @@ fn branching_in_topic_77(root: &Path, pid: u32) -> &'static str {
 fn branching_in(root: &Path, pid: u32, place: &serde_json::Value) -> &'static str {
     let id = "0123456789abcdef";
     let seen = now() * 1000;
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([
+    seed_state(
+        root,
+        &json!([
             {
                 "id": id,
                 "dir": project(root),
@@ -2150,10 +2070,8 @@ fn branching_in(root: &Path, pid: u32, place: &serde_json::Value) -> &'static st
                 "idle_since": seen,
                 "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 88}, "message": 6, "at": seen}},
             },
-        ])
-        .to_string(),
-    )
-    .expect("the state");
+        ]),
+    );
     id
 }
 
@@ -2207,8 +2125,7 @@ fn typed(root: &Path, texts: &[&str], send: impl Fn(&str)) {
 /// and submitted while it waits leaves it waiting.
 #[test]
 fn a_branch_sent_from_the_chat_goes_to_a_topic_of_its_own() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("branch", port);
+    let (temporary, calls, chat) = prepare("branch");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let original = branching_in_topic_77(root, pid);
@@ -2256,8 +2173,7 @@ fn a_branch_sent_from_the_chat_goes_to_a_topic_of_its_own() {
 /// `/branch` is answered with the branch's head.
 #[test]
 fn a_branch_sent_outside_every_topic_answers_with_its_head() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("branch-headed", port);
+    let (temporary, calls, chat) = prepare("branch-headed");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     branching_in(root, pid, &json!({"chat": OWNER, "topic": null}));
@@ -2293,8 +2209,7 @@ fn a_branch_sent_outside_every_topic_answers_with_its_head() {
 /// refused does, opens no topic for a branch made later in the terminal.
 #[test]
 fn a_branch_sent_from_the_chat_is_forgotten_once_a_later_prompt_runs() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("branch-refused", port);
+    let (temporary, calls, chat) = prepare("branch-refused");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let original = branching_in_topic_77(root, pid);
@@ -2324,8 +2239,7 @@ fn a_branch_sent_from_the_chat_is_forgotten_once_a_later_prompt_runs() {
 /// branched from, which leaves the pane to it.
 #[test]
 fn a_branch_typed_in_the_terminal_stays_in_its_topic() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("branch-typed", port);
+    let (temporary, calls, _chat) = prepare("branch-typed");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let original = branching_in_topic_77(root, pid);
@@ -2351,8 +2265,7 @@ fn a_branch_typed_in_the_terminal_stays_in_its_topic() {
 /// them.
 #[test]
 fn a_branch_outside_every_topic_stays_there() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("branch-untopiced", port);
+    let (temporary, calls, _chat) = prepare("branch-untopiced");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -2379,8 +2292,7 @@ fn a_branch_outside_every_topic_stays_there() {
 /// session's topic and is typed the message, where the turn answering it replies to it.
 #[test]
 fn a_session_outside_tmux_is_branched_once_confirmed() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("fork", port);
+    let (temporary, calls, chat) = prepare("fork");
     let root = temporary.path();
     let original = in_topic_77(root);
     let daemon = daemon(root);
@@ -2466,8 +2378,7 @@ fn a_session_outside_tmux_is_branched_once_confirmed() {
 /// there, and the answer replies to the anchor, while the prompt stays where it was.
 #[test]
 fn a_running_turn_goes_on_where_resume_summons_it() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("summon-turn", port);
+    let (temporary, calls, chat) = prepare("summon-turn");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -2664,8 +2575,7 @@ fn showing(markdown: &str, text: &str) {
 /// the next reply to that session opens another window rather than waiting for it.
 #[test]
 fn a_window_closed_before_its_session_started_is_reported() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("closed", port);
+    let (temporary, calls, chat) = prepare("closed");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -2709,8 +2619,7 @@ fn a_window_closed_before_its_session_started_is_reported() {
 /// and answers a program that fails with its complaint.
 #[test]
 fn a_terminal_is_attached_by_the_program_the_env_file_names() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("attach", port);
+    let (temporary, calls, chat) = prepare("attach");
     let root = temporary.path();
     let (attached, refused) = (root.join("attached"), root.join("refused"));
     let program = root.join("attach");
@@ -2800,8 +2709,7 @@ fn a_terminal_is_attached_by_the_program_the_env_file_names() {
 /// has its window closed, unless a command it started is still running.
 #[test]
 fn a_window_idle_for_long_is_closed_unless_a_command_still_runs() {
-    let (port, _calls, _chat) = recorder();
-    let temporary = prepare("idle", port);
+    let (temporary, _calls, _chat) = prepare("idle");
     let root = temporary.path();
     let env = root.join("config/klaudo/env");
     let mut settings = std::fs::read_to_string(&env).expect("the settings");
@@ -2826,16 +2734,13 @@ fn a_window_idle_for_long_is_closed_unless_a_command_still_runs() {
             "trail": {"prompt": "", "last": null},
         })
     };
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([
+    seed_state(
+        root,
+        &json!([
             running("0123456789abcdef", idle.id(), "%1"),
             running("fedcba9876543210", busy.id(), "%2"),
-        ])
-        .to_string(),
-    )
-    .expect("the state");
+        ]),
+    );
     let log = root.join("tmux.log");
     let daemon = daemon(root);
     wait_for(
@@ -2856,8 +2761,7 @@ fn a_window_idle_for_long_is_closed_unless_a_command_still_runs() {
 /// been idle until then and the prompt it submits has not been reported yet.
 #[test]
 fn a_window_just_typed_into_is_not_closed_for_idling() {
-    let (port, _calls, chat) = recorder();
-    let temporary = prepare("typed", port);
+    let (temporary, _calls, chat) = prepare("typed");
     let root = temporary.path();
     let env = root.join("config/klaudo/env");
     let mut settings = std::fs::read_to_string(&env).expect("the settings");
@@ -2867,20 +2771,17 @@ fn a_window_just_typed_into_is_not_closed_for_idling() {
     let (session, pid) = terminal(root);
     // Idle for just short of the hour when the daemon starts.
     let margin = 4000;
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([{
+    seed_state(
+        root,
+        &json!([{
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": pid,
             "pane": {"server": root.join("tmux.sock"), "id": "%1"},
             "idle_since": now() * 1000 - 60 * 60 * 1000 + margin,
             "trail": {"prompt": "", "last": null},
-        }])
-        .to_string(),
-    )
-    .expect("the state");
+        }]),
+    );
     let started = Instant::now();
     let log = root.join("tmux.log");
     let daemon = daemon(root);
@@ -2914,8 +2815,7 @@ fn a_window_just_typed_into_is_not_closed_for_idling() {
 /// second `/stop` sends nothing, and one the transcript never answers is reported.
 #[test]
 fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("stop", port);
+    let (temporary, calls, chat) = prepare("stop");
     let root = temporary.path();
     let daemon = daemon(root);
     let interruption = json!({
@@ -3006,8 +2906,7 @@ fn a_turn_stopped_from_the_chat_ends_once_its_transcript_says_so() {
 /// its own, whose head quotes the first prompt left out and a reply resumes the copy from.
 #[test]
 fn a_rewound_copy_resumes_from_the_end_of_a_turn() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("rewind", port);
+    let (temporary, calls, chat) = prepare("rewind");
     let root = temporary.path();
     let daemon = daemon(root);
     let id = "0123456789abcdef";
@@ -3090,8 +2989,7 @@ fn a_rewound_copy_resumes_from_the_end_of_a_turn() {
 /// notification that only reports leaves it open to replies.
 #[test]
 fn a_session_waiting_on_a_dialog_is_typed_nothing() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("dialog", port);
+    let (temporary, calls, chat) = prepare("dialog");
     let root = temporary.path();
     let daemon = daemon(root);
     let transcript = root.join("transcript.jsonl");
@@ -3153,16 +3051,14 @@ fn a_session_waiting_on_a_dialog_is_typed_nothing() {
 /// and was active later.
 #[test]
 fn a_message_after_a_reply_follows_it() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("follows", port);
+    let (temporary, calls, chat) = prepare("follows");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let seen = now() * 1000;
     let (replied, other) = ("0123456789abcdef", "fedcba9876543210");
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([
+    seed_state(
+        root,
+        &json!([
             {
                 "id": replied,
                 "dir": project(root),
@@ -3179,10 +3075,8 @@ fn a_message_after_a_reply_follows_it() {
                 "idle_since": seen,
                 "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 20, "at": seen}},
             },
-        ])
-        .to_string(),
-    )
-    .expect("the state");
+        ]),
+    );
     let log = root.join("tmux.log");
     let daemon = daemon(root);
     let entered = || {
@@ -3220,8 +3114,7 @@ fn a_message_after_a_reply_follows_it() {
 /// that names them and the session's directory, except `/compact` and `/branch`.
 #[test]
 fn a_guest_is_typed_for_behind_a_reminder() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("guest", port);
+    let (temporary, calls, chat) = prepare("guest");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let daemon = guested(root, pid);
@@ -3302,8 +3195,7 @@ fn a_guest_is_typed_for_behind_a_reminder() {
 /// message names the session or the directory, and never a terminal.
 #[test]
 fn a_guest_is_refused_the_projects_outside_the_group() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("guest-refused", port);
+    let (temporary, calls, chat) = prepare("guest-refused");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let daemon = guested(root, pid);
@@ -3381,16 +3273,13 @@ fn guested(root: &Path, pid: u32) -> Daemon {
             "trail": {"prompt": "", "last": null},
         })
     };
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(
-        root.join("run/klaudo/state.json"),
-        json!([
+    seed_state(
+        root,
+        &json!([
             session("0123456789abcdef", &project(root)),
             session("fedcba9876543210", root),
-        ])
-        .to_string(),
-    )
-    .expect("the state");
+        ]),
+    );
     daemon(root)
 }
 
@@ -3486,7 +3375,8 @@ fn talking(root: &Path, transcript: &Path, later: &[serde_json::Value]) -> Child
 /// the credentials file every `klaudo` process started from it reads, so a machine's
 /// own credentials stay out of the test. It is removed when the test drops it, which a
 /// failing test does too.
-fn prepare(name: &str, port: u16) -> TempDir {
+fn prepare(name: &str) -> (TempDir, Receiver<Call>, Chat) {
+    let (port, calls, chat) = recorder();
     let temporary = tempfile::Builder::new()
         .prefix(&format!("klaudo-{name}-"))
         .tempdir()
@@ -3533,7 +3423,7 @@ case "$1" in new-*) echo "%$(grep -c '^new-' "$log") $dir/tmux.sock" ;; esac
         format!("BOT_TOKEN=111111:secret\nCHAT_ID={GROUP}\nUSER_ID={OWNER}\nGUEST_IDS={GUEST}\nCHAT_PROJECTS={}\nAPI_BASE=http://127.0.0.1:{port}\n", project(root).display()),
     )
     .expect("credentials");
-    temporary
+    (temporary, calls, chat)
 }
 
 /// The directory the sessions of a test run in, listed in `CHAT_PROJECTS`, so their
@@ -3829,11 +3719,23 @@ fn delivered(mut message: serde_json::Value, chat: i64) -> serde_json::Value {
     message
 }
 
+fn seed_state(root: &Path, sessions: &serde_json::Value) {
+    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
+    std::fs::write(root.join("run/klaudo/state.json"), sessions.to_string()).expect("the state");
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("a clock after 1970")
         .as_secs()
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_millis()
 }
 
 fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
@@ -3963,7 +3865,7 @@ fn form(body: &str, boundary: &str) -> serde_json::Value {
 /// panic.
 #[test]
 fn the_command_line_explains_itself() {
-    let temporary = prepare("usage", 0);
+    let (temporary, _calls, _chat) = prepare("usage");
     let root = temporary.path();
     let run = |args: &[&str]| klaudo(root).args(args).output().expect("run klaudo");
 
@@ -4014,8 +3916,7 @@ fn the_command_line_explains_itself() {
 /// user alone.
 #[test]
 fn the_commands_are_listed_for_the_user_in_both_chats_and_for_each_guest_in_the_group() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("commands", port);
+    let (temporary, calls, _chat) = prepare("commands");
     let daemon = daemon(temporary.path());
 
     let made = collect(&calls, |call| call.body["scope"]["user_id"] == GUEST);
@@ -4057,8 +3958,7 @@ fn the_commands_are_listed_for_the_user_in_both_chats_and_for_each_guest_in_the_
 /// head.
 #[test]
 fn usage_is_answered_from_the_status_lines() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("status", port);
+    let (temporary, calls, chat) = prepare("status");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -4077,10 +3977,7 @@ fn usage_is_answered_from_the_status_lines() {
         );
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_secs();
+    let now = now();
     status(
         root,
         &json!({
@@ -4160,8 +4057,7 @@ fn usage_is_answered_from_the_status_lines() {
 /// folded under a line of what changed in it, and lists a file too large to draw.
 #[test]
 fn diff_draws_the_unstaged_changes_of_a_session() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("diff", port);
+    let (temporary, calls, chat) = prepare("diff");
     let root = temporary.path();
     let daemon = daemon(root);
 
@@ -4231,8 +4127,7 @@ fn diff_draws_the_unstaged_changes_of_a_session() {
 /// log records the limits and the size of a context window whenever they change.
 #[test]
 fn a_turn_ends_with_a_status_line() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("line", port);
+    let (temporary, calls, _chat) = prepare("line");
     let root = temporary.path();
     let daemon = logging_daemon(root);
     let turn = |prompt: &str, line: &str| {
@@ -4251,10 +4146,7 @@ fn a_turn_ends_with_a_status_line() {
     };
 
     turn("p1", "done");
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_secs();
+    let now = now();
     // A program of its own reports the limits of a session the daemon never heard of.
     status(
         root,
@@ -4325,8 +4217,7 @@ fn a_turn_ends_with_a_status_line() {
 /// the session's calls cost at list prices, once the transcript records the turn's end.
 #[test]
 fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("counted", port);
+    let (temporary, calls, chat) = prepare("counted");
     let root = temporary.path();
     let daemon = daemon(root);
     std::fs::create_dir(root.join("a")).expect("a project");
@@ -4394,8 +4285,7 @@ fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
 /// up without it once the session starts another turn or the wait runs out.
 #[test]
 fn an_answer_goes_up_without_the_end_of_its_turn_in_time() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("unclosed", port);
+    let (temporary, calls, _chat) = prepare("unclosed");
     let root = temporary.path();
     let daemon = daemon(root);
     std::fs::create_dir(root.join("a")).expect("a project");
@@ -4504,8 +4394,7 @@ fn clock(unix: u64) -> String {
 /// how the uploads went.
 #[test]
 fn a_file_a_turn_sends_lands_in_its_thread() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("file", port);
+    let (temporary, calls, _chat) = prepare("file");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -4594,8 +4483,7 @@ fn a_file_a_turn_sends_lands_in_its_thread() {
 /// it is a message. Both belong in the message their segment became.
 #[test]
 fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
-    let (port, calls, _chat) = recorder();
-    let temporary = prepare("straggling-flush", port);
+    let (temporary, calls, _chat) = prepare("straggling-flush");
     let root = temporary.path();
     let daemon = daemon(root);
     let session = "0123456789abcdef";
@@ -4637,8 +4525,7 @@ fn a_flush_landing_after_its_message_was_posted_rewrites_that_message() {
 /// since the box returns once it is gone, and reaches no session.
 #[test]
 fn cancel_closes_the_reply_box_in_its_topic() {
-    let (port, calls, chat) = recorder();
-    let temporary = prepare("cancel", port);
+    let (temporary, calls, chat) = prepare("cancel");
     let root = temporary.path();
     in_topic_77(root);
     let daemon = daemon(root);
