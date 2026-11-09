@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::telegram::{ELLIPSIS, MAX_BYTES, Post};
+use crate::telegram::{ELLIPSIS, MAX_BYTES, Post, rich_markdown};
 
 /// Fields that identify the invocation rather than describe it, dropped from the
 /// verbatim report an unrecognised event falls back to.
@@ -235,7 +235,7 @@ impl Event {
             // the answers at a glance.
             "UserPromptSubmit" => quote(self.prompt.as_deref().unwrap_or_default()),
             // What Claude Code answered is markdown, and reads as the markdown it is.
-            "Stop" => self.last_assistant_message.clone().unwrap_or_default(),
+            "Stop" => rich_markdown(self.last_assistant_message.as_deref().unwrap_or_default()),
             // `error` is only the error's type, such as `rate_limit`, while the message
             // the conversation shows says more, such as when a usage limit resets.
             "StopFailure" => prose(

@@ -9,7 +9,7 @@ use kuriero::{
     Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction, SendMessage,
     SendRichMessage, Sent, SetMessageReaction, SetMyCommands, Update, User,
 };
-use pulldown_cmark::{Event, Options, Parser};
+use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -18,6 +18,10 @@ use ureq::unversioned::multipart::{Form, Part};
 /// An upload of a file is as large as the 50 MB Telegram accepts from a bot, over
 /// whatever uplink the machine has.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+/// The markdown extensions Telegram's dialect has.
+const OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS);
 /// The most documents Telegram groups into one album.
 pub const ALBUM: usize = 10;
 /// How long Telegram holds a poll open with nothing to report.
@@ -593,11 +597,9 @@ pub fn fits(markdown: &str) -> bool {
 }
 
 pub fn blocks(markdown: &str) -> usize {
-    let options =
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut depth = 0usize;
     let mut blocks = 0;
-    for event in Parser::new_ext(markdown, options) {
+    for event in Parser::new_ext(markdown, OPTIONS) {
         match event {
             Event::Start(_) => {
                 blocks += usize::from(depth == 0);
@@ -609,6 +611,34 @@ pub fn blocks(markdown: &str) -> usize {
         }
     }
     blocks
+}
+
+/// `markdown` from Claude Code, escaped where Telegram reads it differently. Telegram
+/// opens a heading at a `#` that starts a line even with no space after it, so such a `#`
+/// in text is escaped.
+pub fn rich_markdown(markdown: &str) -> String {
+    let mut written = String::with_capacity(markdown.len());
+    let mut copied = 0;
+    let mut line_start = false;
+    for (event, range) in Parser::new_ext(markdown, OPTIONS).into_offset_iter() {
+        if line_start
+            && matches!(event, Event::Text(_))
+            && markdown[range.start..].starts_with('#')
+            && !markdown[..range.start].ends_with('\\')
+        {
+            written.push_str(&markdown[copied..range.start]);
+            written.push('\\');
+            copied = range.start;
+        }
+        line_start = matches!(
+            event,
+            Event::Start(Tag::Paragraph | Tag::Item | Tag::TableCell)
+                | Event::SoftBreak
+                | Event::HardBreak
+        );
+    }
+    written.push_str(&markdown[copied..]);
+    written
 }
 
 /// Where a machine's credentials live. It is the whole of where they come from, so a
@@ -754,6 +784,16 @@ mod tests {
         let quote = "> q\n>\n".repeat(600);
         let code = format!("```\n{}```", "\n\nl".repeat(600));
         assert_eq!(blocks(&[list, table, quote, code].join("\n\n")), 4);
+    }
+
+    #[test]
+    fn a_hash_starting_a_line_of_text_is_kept_from_opening_a_heading() {
+        assert_eq!(
+            rich_markdown("#23 is fixed\nand #10\n#17 too\n\n- #20\n> #22"),
+            "\\#23 is fixed\nand #10\n\\#17 too\n\n- \\#20\n> \\#22"
+        );
+        let kept = "# Title\n\n\\#42 and `#x`\n\n```\n#!/bin/sh\n```\n\n| a |\n|---|\n| #1 |";
+        assert_eq!(rich_markdown(kept), kept.replace("| #1", "| \\#1"));
     }
 
     #[test]

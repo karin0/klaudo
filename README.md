@@ -61,7 +61,8 @@ A run of tool calls is a line per call:
 
 Klaŭdo puts a call's command, path or pattern in a code span, so markdown inside it
 stays literal, and escapes the markdown in every other sentence a person or a tool
-wrote. Claude Code answers in markdown, and Klaŭdo posts that markdown as it is.
+wrote. Claude Code answers in CommonMark, and Klaŭdo posts that markdown with escapes
+only where Telegram's dialect reads it differently.
 
 A finished call sums up its output in a line, as Claude Code's terminal does: the lines
 a file read or an edit changed, or the files a search matched. A command shows the last
@@ -111,7 +112,8 @@ A message is posted with `sendRichMessage` and rewritten with `editMessageText`,
 carrying the body in `rich_message.markdown`. Bot API 10.1 added the method in June
 2026, and its markdown is a dialect of its own, documented at
 <https://core.telegram.org/bots/api#rich-message-formatting-options>. `**text**` is bold
-and `*text*` italic, as in CommonMark. A rich message holds up to 500 top-level blocks,
+and `*text*` italic, as in CommonMark, but a `#` starting a line opens a heading even
+with no space after it, so Klaŭdo escapes such a `#` in Claude Code's answers. A rich message holds up to 500 top-level blocks,
 and text rendering to 32768 characters against the 4096 of `sendMessage`. Telegram
 rejects longer text, but first keeps about 35000 bytes of it in UTF-8 and drops the rest
 unannounced, so text in Chinese is cut near 11700 characters without an error. A body is

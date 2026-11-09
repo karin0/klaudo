@@ -153,11 +153,13 @@ impl Segment {
     /// The words, then the run they introduce, with the calls a reader follows in view
     /// while the segment is `live`.
     fn text(&self, live: bool) -> String {
-        let words: String = self
-            .said
-            .iter()
-            .flat_map(|(_, chunks)| chunks.values().map(String::as_str))
-            .collect();
+        let words = telegram::rich_markdown(
+            &self
+                .said
+                .iter()
+                .flat_map(|(_, chunks)| chunks.values().map(String::as_str))
+                .collect::<String>(),
+        );
         match (words.as_str(), self.calls.as_slice()) {
             (_, []) => words,
             ("", calls) => listing(calls, live),
