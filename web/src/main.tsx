@@ -237,8 +237,6 @@ function Review({ shown }: { shown: Shown }) {
   const [dragged, setDragged] = useState<Range | null>(null);
   const dragging = useRef(false);
   const [draft, setDraft] = useState<Draft>(EMPTY);
-  const [sending, setSending] = useState(false);
-  const [refusal, setRefusal] = useState<string | null>(null);
 
   const lines = useMemo(
     () => shown.content.replace(/\n$/, '').split('\n'),
@@ -335,9 +333,8 @@ function Review({ shown }: { shown: Shown }) {
 
   const selection = dragged ?? editing;
 
-  const send = async () => {
-    setSending(true);
-    setRefusal(null);
+  const send = useStableCallback(async () => {
+    app.MainButton.showProgress();
     try {
       await call(
         'api/review',
@@ -356,17 +353,37 @@ function Review({ shown }: { shown: Shown }) {
       app.disableClosingConfirmation();
       app.close();
     } catch (error) {
-      setRefusal(failure(error));
+      app.showAlert(failure(error));
     } finally {
-      setSending(false);
+      app.MainButton.hideProgress();
     }
-  };
+  });
+
+  useEffect(() => {
+    const clicked = () => {
+      void send();
+    };
+    app.MainButton.onClick(clicked);
+    return () => {
+      app.MainButton.offClick(clicked);
+    };
+  }, [send]);
+
+  useEffect(() => {
+    app.MainButton.setParams({
+      text: `Send review (${String(notes.size)})`,
+      is_visible: notes.size > 0,
+    });
+  }, [notes]);
 
   return (
     <>
       <header>
         {shown.path}
         {shown.from > 0 && <span className="hint"> {span(shown)}</span>}
+        {notes.size === 0 && (
+          <div className="hint">Tap or drag line numbers to comment.</div>
+        )}
       </header>
       <main
         onMouseDown={(event) => {
@@ -439,20 +456,6 @@ function Review({ shown }: { shown: Shown }) {
           }
         />
       </main>
-      <footer>
-        <span className="hint grow">
-          {refusal ?? 'Tap or drag line numbers to comment.'}
-        </span>
-        <button
-          className="primary"
-          disabled={notes.size === 0 || sending}
-          onClick={() => {
-            void send();
-          }}
-        >
-          Send review{notes.size > 0 && ` (${String(notes.size)})`}
-        </button>
-      </footer>
     </>
   );
 }

@@ -12,11 +12,11 @@
   --danger: var(--tg-theme-destructive-text-color, #d14e4e);
   --section: var(--tg-theme-section-header-text-color, #6d6d72);
   --target: rgba(212, 167, 44, 0.25);
-  --safe-bottom: var(--tg-safe-area-inset-bottom, 0px);
 }
 
 body {
   margin: 0;
+  padding-bottom: var(--tg-safe-area-inset-bottom, 0px);
   background: var(--bg);
   color: var(--fg);
   font:
@@ -37,28 +37,11 @@ header {
   overflow-wrap: anywhere;
 }
 
-main {
-  padding-bottom: 64px;
-}
-
-footer {
-  position: fixed;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px calc(8px + var(--safe-bottom));
-  border-top: 1px solid var(--border);
-  background: var(--bg);
-}
-
 .hint {
   color: var(--hint);
-  font-size: 13px;
-  font-weight: normal;
+  font:
+    13px system-ui,
+    sans-serif;
 }
 
 .label {
@@ -105,8 +88,6 @@ footer {
     16px system-ui,
     sans-serif;
   resize: vertical;
-  /* Keeps the field clear of the footer when it scrolls into view. */
-  scroll-margin-bottom: 72px;
 }
 
 .editor textarea.code {

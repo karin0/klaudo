@@ -33,7 +33,8 @@ const THEMES = {
  * The daemon's API and Telegram's launch parameters on the dev server, so the page runs
  * in a browser without either. `/mock` opens the page as Telegram would, and
  * `/mock?dark` in the dark theme. The file shown is the daemon's own `src/telegram.rs`,
- * and a review sent is printed by the dev server.
+ * and a review sent is printed by the dev server. A browser draws no `MainButton`, so
+ * `Telegram.WebView.receiveEvent('main_button_pressed')` in the console presses it.
  */
 function mock(): Plugin {
   return {
