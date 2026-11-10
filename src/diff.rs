@@ -119,7 +119,9 @@ impl Change {
 
 /// The unstaged changes of the working tree holding `dir`, file by file. The prefixes
 /// and quoting are spelled out, so a user's git configuration leaves the output as this
-/// parser reads it.
+/// parser reads it. `git diff` would rewrite the index to refresh its record of a file
+/// whose modification time changed, and a session's own git command fails while the
+/// index is locked for that.
 pub fn changes(dir: &Path) -> Result<Vec<Change>, String> {
     let mut top = Command::new("git");
     top.arg("-C")
@@ -130,7 +132,8 @@ pub fn changes(dir: &Path) -> Result<Vec<Change>, String> {
     git.arg("-C").arg(&root).args([
         "-c",
         "core.quotePath=false",
-        "diff",
+        "diff-files",
+        "--patch",
         "--no-color",
         "--no-ext-diff",
         "-M",

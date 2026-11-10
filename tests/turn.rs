@@ -4106,6 +4106,7 @@ fn diff_draws_the_unstaged_changes_of_a_session() {
     write("a.rs", "fn main() {\n    let x = 1;\n}\n");
     write("big.lock", &"x\n".repeat(300));
     write("gone", "bye\n");
+    write("same", "s\n");
     git(&["add", "."]);
     write("a.rs", "fn main() {\n    let x = 2;\n}\n");
     write("big.lock", &"y\n".repeat(300));
@@ -4117,9 +4118,19 @@ fn diff_draws_the_unstaged_changes_of_a_session() {
         root,
         &json!({"hook_event_name": "SessionStart", "session_id": "aaaaaaaa", "cwd": tree}),
     );
+    // A session's own git command fails while another process holds the index lock,
+    // which a git command refreshing the index's record of `same` takes.
+    std::fs::File::options()
+        .write(true)
+        .open(tree.join("same"))
+        .and_then(|file| file.set_modified(SystemTime::now() - Duration::from_secs(3600)))
+        .expect("an older modification time");
+    let index = || std::fs::read(tree.join(".git/index")).expect("the index");
+    let indexed = index();
 
     chat.says(OWNER, OWNER, "/diff");
     let made = collect(&calls, |call| call.markdown.contains("tg://photo"));
+    assert!(index() == indexed, "/diff rewrote the index");
     let posted = made.last().expect("the pictures");
     assert_eq!(posted.label, "sendRichMessage silent");
     assert_eq!(
