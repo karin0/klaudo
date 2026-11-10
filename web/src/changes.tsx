@@ -22,6 +22,7 @@ import {
   EMPTY,
   Editor,
   NoteView,
+  THEMES,
   keepFocus,
   span,
   useKeyboardReveal,
@@ -424,7 +425,7 @@ export function ChangesReview({
 
   const options = useMemo(
     (): CodeViewReactOptions<Extension, undefined> => ({
-      theme: { dark: 'one-dark-pro', light: 'one-light' },
+      theme: THEMES,
       themeType: scheme,
       diffStyle: 'unified',
       overflow: 'wrap',
@@ -494,6 +495,7 @@ export function ChangesReview({
         renderAnnotation={(...[{ metadata: extension }]) =>
           !('draft' in extension) ? (
             <Editor
+              path={extension.path}
               label={quote === null ? '' : label(quote)}
               original={quote?.original ?? null}
               draft={draft}

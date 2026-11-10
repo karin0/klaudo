@@ -1,4 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  getFiletypeFromFileName,
+  getSharedHighlighter,
+  type DiffsHighlighter,
+} from '@pierre/diffs';
 import { useStableCallback } from '@pierre/diffs/react';
 import { app, call, failure, type Range, type Review } from './api';
 
@@ -9,6 +14,8 @@ export interface Draft {
 }
 
 export const EMPTY: Draft = { text: '', suggestion: null };
+
+export const THEMES = { dark: 'one-dark-pro', light: 'one-light' } as const;
 
 export function span({ from, to }: Range): string {
   return from === to
@@ -111,8 +118,65 @@ export function keepFocus(event: React.MouseEvent) {
   }
 }
 
+/**
+ * A field for code, drawn in the colors the code view gives `path`'s language: the
+ * text typed is transparent over a copy drawn in those colors, laid out the same way.
+ */
+function Code({
+  path,
+  value,
+  onChange,
+}: {
+  path: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const scheme = useScheme();
+  const lang = getFiletypeFromFileName(path);
+  const [highlighter, setHighlighter] = useState<DiffsHighlighter | null>(null);
+  useEffect(() => {
+    void getSharedHighlighter({
+      themes: Object.values(THEMES),
+      langs: [lang],
+    }).then(setHighlighter);
+  }, [lang]);
+  const lines = useMemo(
+    () =>
+      highlighter?.codeToTokens(value, { lang, theme: THEMES[scheme] })
+        .tokens ?? [[{ content: value, offset: 0 }]],
+    [highlighter, lang, scheme, value],
+  );
+  return (
+    <div className="code">
+      <pre aria-hidden>
+        {lines.map((tokens, line) => (
+          <span key={line}>
+            {line > 0 && '\n'}
+            {tokens.map(({ content, offset, color }) => (
+              <span key={offset} style={{ color }}>
+                {content}
+              </span>
+            ))}
+          </span>
+        ))}
+        {/* A text ending in a line break shows one more line in the field. */}{' '}
+      </pre>
+      <textarea
+        value={value}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        onChange={(event) => {
+          onChange(event.target.value);
+        }}
+      />
+    </div>
+  );
+}
+
 export function Editor({
   label,
+  path,
   original,
   draft,
   onDraft,
@@ -120,6 +184,7 @@ export function Editor({
   onCancel,
 }: {
   label: string;
+  path: string;
   /** The lines a suggestion starts from, or `null` for lines it cannot rewrite. */
   original: string | null;
   draft: Draft;
@@ -143,11 +208,11 @@ export function Editor({
     <div ref={box} className="extension editor">
       <div className="label">{label}</div>
       {suggestion !== null && (
-        <textarea
-          className="code"
+        <Code
+          path={path}
           value={suggestion}
-          onChange={(event) => {
-            onDraft({ text, suggestion: event.target.value });
+          onChange={(value) => {
+            onDraft({ text, suggestion: value });
           }}
         />
       )}

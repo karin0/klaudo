@@ -11,6 +11,7 @@ import {
   EMPTY,
   Editor,
   NoteView,
+  THEMES,
   keepFocus,
   span,
   useKeyboardReveal,
@@ -136,7 +137,7 @@ export function FileReview({ shown }: { shown: Shown }) {
 
   const options = useMemo(
     (): FileOptions<Extension, undefined> => ({
-      theme: { dark: 'one-dark-pro', light: 'one-light' },
+      theme: THEMES,
       themeType: scheme,
       overflow: 'wrap',
       disableFileHeader: true,
@@ -183,6 +184,7 @@ export function FileReview({ shown }: { shown: Shown }) {
           renderAnnotation={({ metadata: extension }) =>
             'editor' in extension ? (
               <Editor
+                path={shown.path}
                 label={span(extension.editor)}
                 original={original(extension.editor).join('\n')}
                 draft={draft}

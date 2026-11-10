@@ -72,6 +72,7 @@ header {
   white-space: normal;
 }
 
+/* iOS zooms the page into a field whose text is smaller than 16px. */
 .editor textarea {
   box-sizing: border-box;
   width: 100%;
@@ -87,13 +88,41 @@ header {
   resize: vertical;
 }
 
-.editor textarea.code {
+/* The field and the colored copy under it share one grid cell and every rule that
+   lays out text, so each character of the copy sits under the same one typed. */
+.editor .code {
+  display: grid;
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.editor .code > * {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: none;
   font:
-    14px ui-monospace,
+    16px/1.5 ui-monospace,
     monospace;
+  tab-size: 4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  field-sizing: content;
+}
+
+.editor .code pre {
+  color: var(--fg);
+  pointer-events: none;
+}
+
+.editor .code textarea {
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--fg);
+  resize: none;
 }
 
 .buttons {
