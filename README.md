@@ -410,7 +410,7 @@ guards the files, so the page reaches as
 far as a reply could: the user reads any file the daemon can, and a guest only the
 sessions and the files inside `CHAT_PROJECTS`, with symlinks resolved, and the changes of
 a working tree whose top is inside them. A signature older
-than a day is refused, and opening the link again signs a new one. A file past 1 MiB or
+than six hours is refused, and opening the link again signs a new one. A file past 1 MiB or
 not in UTF-8 is refused.
 
 The page is a React app in `web/`, which pnpm builds into `web/dist` for the binary to

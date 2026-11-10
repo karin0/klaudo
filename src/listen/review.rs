@@ -47,7 +47,9 @@ const REVIEW_MAX: usize = 1 << 20;
 /// A phone shows a larger file too slowly to read it there.
 const FILE_MAX: u64 = 1 << 20;
 /// How long the `initData` Telegram hands the page when it opens stays valid, in seconds.
-const SIGNED_MAX: u64 = 24 * 60 * 60;
+/// Every request of the page carries the `initData` it opened with, so a review left open
+/// longer than this loses its comments.
+const SIGNED_MAX: u64 = 6 * 60 * 60;
 /// The Ed25519 key, in hex, Telegram signs the `initData` of every Mini App with.
 const TELEGRAM_KEY: &str = "e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d";
 const OUTSIDE: &str = "that conversation runs outside tmux, where nothing can be typed into it";
@@ -563,7 +565,7 @@ fn verify(verifier: &Verifier, data: &str, now: u64) -> Result<Signed, &'static 
         .and_then(|date| date.parse().ok())
         .ok_or("the page carries no date")?;
     if now.saturating_sub(signed_at) > SIGNED_MAX {
-        return Err("the page was opened over a day ago; open the link again");
+        return Err("the page was opened over six hours ago; open the link again");
     }
     let user = field("user")
         .and_then(|user| serde_json::from_str(user).ok())
@@ -892,13 +894,13 @@ mod tests {
     }
 
     #[test]
-    fn init_data_older_than_a_day_is_refused() {
+    fn init_data_older_than_six_hours_is_refused() {
         let oldest = NOW - SIGNED_MAX;
         let verifier = verifier("111111");
         assert!(verify(&verifier, &data(&fields(&oldest.to_string())), NOW).is_ok());
         assert_eq!(
             verify(&verifier, &data(&fields(&(oldest - 1).to_string())), NOW).unwrap_err(),
-            "the page was opened over a day ago; open the link again"
+            "the page was opened over six hours ago; open the link again"
         );
     }
 
