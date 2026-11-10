@@ -290,6 +290,36 @@ function Suggestion({
   );
 }
 
+export interface Entry {
+  key: string;
+  label: string;
+  draft: Draft;
+  onJump: () => void;
+}
+
+/** The first line of a comment's text, or `Suggested change` for a suggestion without text. */
+function headline({ text }: Draft): string {
+  const [first = ''] = text.trim().split('\n');
+  return first === '' ? 'Suggested change' : first;
+}
+
+/** The comments saved, each scrolling the page to its lines on a tap. */
+export function Overview({ entries }: { entries: readonly Entry[] }) {
+  return (
+    entries.length > 0 && (
+      <section className="section">
+        <div className="label">Comments</div>
+        {entries.map(({ key, label, draft, onJump }) => (
+          <button key={key} className="row" onClick={onJump}>
+            <span className="hint">{label}</span>
+            <span>{headline(draft)}</span>
+          </button>
+        ))}
+      </section>
+    )
+  );
+}
+
 export function NoteView({
   label,
   path,

@@ -23,6 +23,7 @@ import {
   EMPTY,
   Editor,
   NoteView,
+  Overview,
   THEMES,
   keepFocus,
   span,
@@ -231,7 +232,7 @@ function Commits({
   const row = (commit: Commit) => (
     <button
       key={commit.hash}
-      className={commit.included ? 'commit included' : 'commit'}
+      className={commit.included ? 'row' : 'row excluded'}
       disabled={commit.parent === null}
       onClick={() => {
         if (commit.parent !== null) {
@@ -239,7 +240,7 @@ function Commits({
         }
       }}
     >
-      <span className="subject">{commit.subject}</span>
+      <span>{commit.subject}</span>
       <span className="hint">
         {commit.hash.slice(0, 7)} · {shown(commit.time)}
       </span>
@@ -531,6 +532,40 @@ export function ChangesReview({
     view.current?.scrollTo({ type: 'item', id: path, align: 'start' });
   };
 
+  const order = (note: Note): [number, number] => {
+    const fileDiff = diff(note.span.path);
+    return [files.indexOf(fileDiff), find(rows(fileDiff), note.span.end)];
+  };
+  const entries = [...notes.values()]
+    .map((note) => ({ note, at: order(note) }))
+    .sort(
+      ({ at: [file, row] }, { at: [otherFile, otherRow] }) =>
+        file - otherFile || row - otherRow,
+    )
+    .map(({ note: { span, quote, draft } }) => ({
+      key: key(span),
+      label: `${span.path} · ${label(quote)}`,
+      draft,
+      onJump: () => {
+        const scroll = () => {
+          view.current?.scrollTo({
+            type: 'line',
+            id: span.path,
+            lineNumber: span.end.line,
+            side: span.end.side,
+            align: 'center',
+          });
+        };
+        // The lines of a folded file have no place to scroll to until it unfolds.
+        if (folded.has(span.path)) {
+          fold(span.path);
+          requestAnimationFrame(scroll);
+        } else {
+          scroll();
+        }
+      },
+    }));
+
   const selection = dragged ?? editing;
   const quote = editing === null ? null : quoted(diff(editing.path), editing);
 
@@ -560,6 +595,7 @@ export function ChangesReview({
                 }}
               />
             )}
+            <Overview entries={entries} />
             <div className="hint status">
               {files.length === 0
                 ? `No changes since ${changes.since.slice(0, 7)}.`

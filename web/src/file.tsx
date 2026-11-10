@@ -11,6 +11,7 @@ import {
   EMPTY,
   Editor,
   NoteView,
+  Overview,
   THEMES,
   keepFocus,
   span,
@@ -69,17 +70,18 @@ export function FileReview({ shown }: { shown: Shown }) {
     [shown],
   );
 
+  const sorted = [...notes.values()].sort(
+    (one, other) => one.from - other.from,
+  );
   useSending(notes.size, editing !== null, () => ({
     since: null,
-    notes: [...notes.values()]
-      .sort((one, other) => one.from - other.from)
-      .map((note) => ({
-        new: { path: shown.path, from: note.from, to: note.to },
-        old: null,
-        lines: original(note).map((line) => ` ${line}`),
-        text: note.text.trim(),
-        suggestion: note.suggestion,
-      })),
+    notes: sorted.map((note) => ({
+      new: { path: shown.path, from: note.from, to: note.to },
+      old: null,
+      lines: original(note).map((line) => ` ${line}`),
+      text: note.text.trim(),
+      suggestion: note.suggestion,
+    })),
   }));
 
   // A tap on a line number opens the editor there, and a tap on another while it is
@@ -125,7 +127,9 @@ export function FileReview({ shown }: { shown: Shown }) {
   // The library draws the lines after the render it reports as the mount, so the page
   // jumps to the target on the first render that has it.
   const jumped = useRef(shown.from === 0);
+  const code = useRef<HTMLElement | null>(null);
   const rendered = useStableCallback((node: HTMLElement) => {
+    code.current = node;
     const target = node.shadowRoot?.querySelector(
       `[data-line="${String(shown.from)}"]`,
     );
@@ -160,6 +164,17 @@ export function FileReview({ shown }: { shown: Shown }) {
       : [{ lineNumber: editing.to, metadata: { editor: editing } }, ...saved];
   }, [notes, editing]);
 
+  const entries = sorted.map((note) => ({
+    key: String(note.to),
+    label: span(note),
+    draft: note,
+    onJump: () => {
+      code.current?.shadowRoot
+        ?.querySelector(`[data-line="${String(note.to)}"]`)
+        ?.scrollIntoView({ block: 'center' });
+    },
+  }));
+
   const selection = dragged ?? editing;
 
   return (
@@ -172,6 +187,7 @@ export function FileReview({ shown }: { shown: Shown }) {
         )}
       </header>
       <main onMouseDown={keepFocus}>
+        <Overview entries={entries} />
         <File<Extension>
           file={file}
           options={options}

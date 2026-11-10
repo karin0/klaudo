@@ -201,22 +201,19 @@ button:disabled {
   border-bottom: 1px solid var(--border);
 }
 
-.commit {
+.row {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
   padding: 6px 0;
-  color: var(--hint);
-  text-align: left;
-}
-
-.commit.included {
   color: var(--fg);
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 
-.commit .subject {
-  overflow-wrap: anywhere;
+.row.excluded {
+  color: var(--hint);
 }
 
 .section .label {
