@@ -1214,6 +1214,38 @@ fn a_message_sent_while_the_daemon_starts_is_answered() {
     drop(daemon);
 }
 
+/// A reply to a `/new` anchor removes the reply box the anchor opened, once the window
+/// of its conversation opens, so the next message typed reaches that conversation.
+#[test]
+fn a_reply_to_a_new_anchor_closes_its_reply_box() {
+    let (temporary, calls, chat) = prepare("new-unanchor");
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let dir = project(root).display().to_string();
+
+    chat.replies(
+        OWNER,
+        OWNER,
+        "hello",
+        &json!({"rich_message": {"blocks": [
+            {"type": "paragraph", "text": [{"type": "code", "text": "new"}]},
+            {"type": "paragraph", "text": dir},
+        ]}}),
+    );
+    let made = collect(&calls, |call| {
+        call.body["reply_markup"]["remove_keyboard"] == json!(true)
+    });
+    let removal = made.last().expect("the removal");
+    assert_eq!(removal.chat, Some(OWNER));
+    assert_eq!(
+        removal.markdown.replace('\\', ""),
+        format!("opening a conversation in `{dir}`")
+    );
+    let log = std::fs::read_to_string(root.join("tmux.log")).expect("the tmux log");
+    assert!(log.contains("new-session"), "{log}");
+    drop(daemon);
+}
+
 /// A conversation opened from a topic belongs to that topic from its first event, even
 /// where another session of its project posted elsewhere.
 #[test]

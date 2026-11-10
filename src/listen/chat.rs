@@ -255,10 +255,17 @@ impl Machine {
                 // `..` in its directory would pass the check of `CHAT_PROJECTS`.
                 Some(body) => match expand(&body) {
                     Some(cwd) => {
-                        if self.reaches(ask.guest.as_deref(), place, &cwd)
-                            && let Err(error) = self.open(cwd, Start::New, Awaiting::Prompt(ask))
-                        {
-                            self.say(place, &error);
+                        if self.reaches(ask.guest.as_deref(), place, &cwd) {
+                            let opening =
+                                format!("opening a conversation in {}", code(&tilde(&cwd)));
+                            match self.open(cwd, Start::New, Awaiting::Prompt(ask)) {
+                                // The anchor's reply box would send every later message
+                                // of the topic to a conversation of its own.
+                                Ok(_) => {
+                                    self.telegram.unanchor(place, &opening);
+                                }
+                                Err(error) => self.say(place, &error),
+                            }
                         }
                     }
                     None => self.say(place, &format!("{} is not a directory", code(&body))),

@@ -192,9 +192,12 @@ message carrying `ForceReply`, so an anchor takes no button back to the projects
 A client reopens the reply box of a topic's latest anchor whenever the topic is entered,
 until a later message of the bot there sets another reply markup, and then a message
 typed there goes to that anchor's session. `/cancel` posts a message removing the
-markup. That message has to stay, since deleting it brings the anchor's box back. The
-mobile clients apply a new reply markup, `ForceReply` included, as it arrives, while
-Telegram Desktop applies it only once the topic is entered again.
+markup, and so does a reply to the anchor of `/new` or `/clear` once its window opens,
+since every message that anchor's box catches would open another conversation. The box
+of another anchor sends a message to the session just picked, so it stays until
+`/cancel`. The message removing the markup has to stay, since deleting it brings the
+anchor's box back. The mobile clients apply a new reply markup, `ForceReply` included,
+as it arrives, while Telegram Desktop applies it only once the topic is entered again.
 
 tmux runs `claude` through its `default-shell` as a non-interactive shell with the tmux
 server's environment and the daemon's `PATH`, so `claude` has to be on the `PATH` that
