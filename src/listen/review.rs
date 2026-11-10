@@ -64,9 +64,11 @@ pub(super) enum Asked {
         path: String,
         answer: oneshot::Sender<Result<PathBuf, String>>,
     },
-    /// The working tree the session runs in, once the visitor may see all of it.
+    /// The working tree holding the directory `path` names in the session's directory,
+    /// once the visitor may see all of it.
     Tree {
         visit: Visit,
+        path: String,
         answer: oneshot::Sender<Result<Tree, String>>,
     },
     /// A prompt to type into the session.
@@ -77,7 +79,7 @@ pub(super) enum Asked {
     },
 }
 
-/// The directory a session runs in, and the top of the working tree holding it.
+/// The directory a session runs in, and the top of a working tree it may show.
 pub(super) struct Tree {
     dir: PathBuf,
     top: PathBuf,
@@ -251,9 +253,9 @@ impl Server {
                     to,
                 }
             }
-            Opens::Changes { since } => {
+            Opens::Changes { since, path } => {
                 let since = parameter(request, "since").unwrap_or(since);
-                let Tree { top, .. } = self.tree(visit).await?;
+                let Tree { top, .. } = self.tree(visit, path).await?;
                 let changes = blocking(move || {
                     changes::verify(&top, &since)?;
                     changes::changes(&top, &since)
@@ -272,7 +274,7 @@ impl Server {
         request: &Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Refusal> {
         let (visit, target) = self.visitor(request)?;
-        let Opens::Changes { .. } = target.opens else {
+        let Opens::Changes { path: held, .. } = target.opens else {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "the link names no changes".to_owned(),
@@ -282,7 +284,7 @@ impl Server {
         let since = parameter(request, "since").ok_or_else(|| missing("since"))?;
         let path = parameter(request, "path").ok_or_else(|| missing("path"))?;
         let prev = parameter(request, "prev").ok_or_else(|| missing("prev"))?;
-        let Tree { top, .. } = self.tree(visit.clone()).await?;
+        let Tree { top, .. } = self.tree(visit.clone(), held).await?;
         let file = self
             .file(visit, top.join(&path).display().to_string())
             .await?;
@@ -320,9 +322,13 @@ impl Server {
         .await
     }
 
-    async fn tree(&self, visit: Visit) -> Result<Tree, Refusal> {
+    async fn tree(&self, visit: Visit, path: String) -> Result<Tree, Refusal> {
         self.ask(
-            |answer| Asked::Tree { visit, answer },
+            |answer| Asked::Tree {
+                visit,
+                path,
+                answer,
+            },
             "the daemon is busy; open the link again",
         )
         .await
@@ -349,7 +355,7 @@ impl Server {
         // writes it as the session would.
         let tree = match target.opens {
             Opens::File { .. } => None,
-            Opens::Changes { .. } => Some(self.tree(visit.clone()).await?),
+            Opens::Changes { path, .. } => Some(self.tree(visit.clone(), path).await?),
         };
         let shown = |path: &str| match &tree {
             None => path.to_owned(),
@@ -662,7 +668,11 @@ impl Machine {
                 path,
                 answer,
             } => answer.send(self.opened(&visit, &path)).is_err(),
-            Asked::Tree { visit, answer } => answer.send(self.tree(&visit)).is_err(),
+            Asked::Tree {
+                visit,
+                path,
+                answer,
+            } => answer.send(self.tree(&visit, &path)).is_err(),
             Asked::Review {
                 visit,
                 prompt,
@@ -698,11 +708,11 @@ impl Machine {
         Ok(file)
     }
 
-    /// The working tree of the session the page was opened on, whose every file the
-    /// changes page may show.
-    fn tree(&self, visit: &Visit) -> Result<Tree, String> {
+    /// The working tree holding the directory `path` names in the session's directory,
+    /// whose every file the changes page may show.
+    fn tree(&self, visit: &Visit, path: &str) -> Result<Tree, String> {
         let dir = self.visited(visit)?;
-        let top = changes::top(&dir)?;
+        let top = changes::top(&self.opened(visit, path)?)?;
         self.admits(visit.guest.as_deref(), &top)?;
         Ok(Tree { dir, top })
     }

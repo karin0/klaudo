@@ -87,6 +87,17 @@ pub fn top(dir: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(text(&run(&mut git)?).trim_end()))
 }
 
+/// The commit the unpushed changes of the working tree at `top` start from: where `HEAD`
+/// forked from its upstream, or `HEAD` without one.
+pub fn pushed(top: &Path) -> Result<String, String> {
+    let forked = run(git(top).args(["merge-base", "HEAD", "@{upstream}"]));
+    let hash = forked.or_else(|_| {
+        run(git(top).args(["rev-parse", "--verify", "--quiet", "HEAD"]))
+            .map_err(|_| "no commit yet".to_owned())
+    })?;
+    Ok(text(&hash).trim_end().to_owned())
+}
+
 /// Whether `text` is a full commit hash, in SHA-1 or SHA-256.
 pub fn hash(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -305,6 +316,35 @@ mod tests {
         git(&["commit", "-qam", "second"]);
         let second = git(&["rev-parse", "HEAD"]).trim().to_owned();
         (first, second)
+    }
+
+    #[test]
+    fn unpushed_changes_start_where_head_forked_from_its_upstream() {
+        let temporary = tempfile::tempdir().expect("a directory");
+        let dir = temporary.path();
+        let git = |args: &[&str]| run(git(dir).args(args)).expect("git runs");
+        git(&["init", "-q"]);
+        assert_eq!(pushed(dir), Err("no commit yet".to_owned()));
+        let (first, second) = repository(dir);
+        assert_eq!(pushed(dir), Ok(second));
+        git(&["branch", "-q", "base", &first]);
+        git(&["branch", "-q", "--set-upstream-to=base"]);
+        assert_eq!(pushed(dir).as_ref(), Ok(&first));
+        // An upstream that moved on keeps the start at the fork.
+        git(&["switch", "-q", "base"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "third",
+        ]);
+        git(&["switch", "-q", "-"]);
+        assert_eq!(pushed(dir), Ok(first));
     }
 
     #[test]

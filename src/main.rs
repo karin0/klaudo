@@ -1,5 +1,4 @@
 mod changes;
-mod diff;
 mod hook;
 mod listen;
 mod process;

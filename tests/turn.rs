@@ -3324,6 +3324,12 @@ fn a_guest_is_refused_the_projects_outside_the_group() {
     );
     chat.replies(GROUP, GUEST, "/usage", &closed);
     chat.replies(GROUP, GUEST, "/diff", &closed);
+    chat.replies(
+        GROUP,
+        GUEST,
+        &format!("/diff {}", root.display()),
+        &from_session("01234567"),
+    );
     chat.replies(GROUP, GUEST, "/attach", &from_session("01234567"));
     chat.says(GROUP, GUEST, &format!("/new {}", project(root).display()));
     let made = collect(&calls, |call| {
@@ -3338,6 +3344,7 @@ fn a_guest_is_refused_the_projects_outside_the_group() {
     assert_eq!(
         said,
         [
+            refused.clone(),
             refused.clone(),
             refused.clone(),
             refused.clone(),
@@ -4278,83 +4285,133 @@ fn usage_is_answered_from_the_status_lines() {
     drop(daemon);
 }
 
-/// `/diff` draws the unstaged changes of the session a message would reach, each file
-/// folded under a line of what changed in it, and lists a file too large to draw.
+/// `/diff` answers under the head of the session a message would reach with a link to
+/// the changes its working tree has not pushed, or those of the working tree holding the
+/// directory it names, which the page then shows.
 #[test]
-fn diff_draws_the_unstaged_changes_of_a_session() {
-    let (temporary, calls, chat) = prepare("diff");
+fn diff_links_the_unpushed_changes_of_a_directory() {
+    let (temporary, calls, chat, port) = reviewing("diff");
+    let root = temporary.path();
+    let project = project(root);
+    let other = root.join("other");
+    std::fs::create_dir(&other).expect("another repository");
+    let git = |dir: &Path, args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&project, &["init", "-q"]);
+    git(&project, &["add", "src/a.rs"]);
+    git(&project, &["commit", "-qm", "first"]);
+    let first = git(&project, &["rev-parse", "HEAD"]);
+    git(&project, &["branch", "-q", "pushed"]);
+    git(&project, &["branch", "-q", "--set-upstream-to=pushed"]);
+    std::fs::write(project.join("src/a.rs"), "fn a() {}\nfn c() {}\n").expect("an edit");
+    git(&project, &["commit", "-qam", "second"]);
+    git(&other, &["init", "-q"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let head = git(&other, &["rev-parse", "HEAD"]);
+    std::fs::write(other.join("n"), "new\n").expect("an untracked file");
+    let (session, pid) = terminal(root);
+    let daemon = served(root, pid, port);
+    let said = |text: &str| {
+        chat.replies(GROUP, OWNER, text, &from_session("01234567"));
+        let made = collect(&calls, |call| call.label == "sendRichMessage silent");
+        let said = made.last().expect("the answer");
+        assert_eq!(said.reply["message_id"], 9000);
+        said.markdown.clone()
+    };
+    let shown = |dir: &Path| {
+        let dir = dir.canonicalize().expect("a directory");
+        let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+        dir.strip_prefix(&home).map_or_else(
+            |_| dir.display().to_string(),
+            |rest| format!("~/{}", rest.display()),
+        )
+    };
+
+    let start = format!("{SHARED}_{first}_Lg");
+    assert_eq!(
+        said("/diff"),
+        format!(
+            "**project** `01234567`\n\n\
+             [Review changes: 1 commit, 1 file](https://t.me/klaudo_bot?startapp={start}) in `{}`",
+            shown(&project)
+        )
+    );
+
+    let other_top = other.canonicalize().expect("a directory");
+    let start = format!(
+        "{SHARED}_{head}_{}",
+        base64url(&other_top.display().to_string())
+    );
+    assert_eq!(
+        said(&format!("/diff {}", other.display())),
+        format!(
+            "**project** `01234567`\n\n\
+             [Review changes: 1 file](https://t.me/klaudo_bot?startapp={start}) in `{}`",
+            shown(&other)
+        )
+    );
+    let (status, opened) = page(port, "GET", "/api/open", &signed(OWNER, &start), "");
+    assert_eq!(status, 200, "{opened}");
+    let opened: serde_json::Value = serde_json::from_str(&opened).expect("changes");
+    let patch = opened["patch"].as_str().expect("a patch");
+    assert!(
+        patch.contains("+++ b/n\n@@ -0,0 +1,1 @@\n+new\n"),
+        "{patch}"
+    );
+
+    git(&project, &["push", "-q", ".", "HEAD:pushed"]);
+    assert_eq!(
+        said("/diff"),
+        format!(
+            "**project** `01234567`\n\n`{}` has no unpushed changes",
+            shown(&project)
+        )
+    );
+
+    chat.replies(GROUP, OWNER, "/diff /nowhere", &from_session("01234567"));
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    assert_eq!(
+        made.last().expect("the answer").markdown,
+        "`/nowhere` is not a directory"
+    );
+
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
+/// A daemon serving no review page has no link for `/diff` to post.
+#[test]
+fn diff_needs_the_review_page() {
+    let (temporary, calls, chat) = prepare("diff-unserved");
     let root = temporary.path();
     let daemon = daemon(root);
-
     chat.says(OWNER, OWNER, "/diff");
     let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
     assert_eq!(
         made.last().expect("the answer").markdown,
         "no session has run here to show the changes of"
     );
-
-    let tree = root.join("a");
-    std::fs::create_dir(&tree).expect("a project");
-    let git = |args: &[&str]| {
-        let ran = Command::new("git")
-            .arg("-C")
-            .arg(&tree)
-            .args(args)
-            .output()
-            .expect("run git");
-        assert!(ran.status.success(), "git {args:?}: {ran:?}");
-    };
-    git(&["init", "-q"]);
-    let write = |name: &str, text: &str| std::fs::write(tree.join(name), text).expect("a file");
-    write("a.rs", "fn main() {\n    let x = 1;\n}\n");
-    write("big.lock", &"x\n".repeat(300));
-    write("gone", "bye\n");
-    write("same", "s\n");
-    git(&["add", "."]);
-    write("a.rs", "fn main() {\n    let x = 2;\n}\n");
-    write("big.lock", &"y\n".repeat(300));
-    std::fs::remove_file(tree.join("gone")).expect("a deletion");
-    // Staged alone, so it is no unstaged change.
-    write("staged", "s\n");
-    git(&["add", "staged"]);
     hook(
         root,
-        &json!({"hook_event_name": "SessionStart", "session_id": "aaaaaaaa", "cwd": tree}),
+        &json!({"hook_event_name": "SessionStart", "session_id": "aaaaaaaa", "cwd": root}),
     );
-    // A session's own git command fails while another process holds the index lock,
-    // which a git command refreshing the index's record of `same` takes.
-    std::fs::File::options()
-        .write(true)
-        .open(tree.join("same"))
-        .and_then(|file| file.set_modified(SystemTime::now() - Duration::from_secs(3600)))
-        .expect("an older modification time");
-    let index = || std::fs::read(tree.join(".git/index")).expect("the index");
-    let indexed = index();
-
     chat.says(OWNER, OWNER, "/diff");
-    let made = collect(&calls, |call| call.markdown.contains("tg://photo"));
-    assert!(index() == indexed, "/diff rewrote the index");
-    let posted = made.last().expect("the pictures");
-    assert_eq!(posted.label, "sendRichMessage silent");
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
     assert_eq!(
-        posted.markdown,
-        "**a** `aaaaaaaa`\n\n\
-         <details><summary>M `a.rs` \\+1 −1</summary>\n\n![](tg://photo?id=p0)\n\n</details>\n\n\
-         M `big.lock` \\+300 −300, over the 500 lines drawn\n\n\
-         <details><summary>D `gone` \\+0 −1</summary>\n\n![](tg://photo?id=p1)\n\n</details>"
+        made.last().expect("the answer").markdown,
+        "this daemon serves no review page; set `WEB_LISTEN`"
     );
-    assert_eq!(
-        posted.body["rich_message"]["media"],
-        json!([
-            {"id": "p0", "media": {"type": "photo", "media": "attach://p0"}},
-            {"id": "p1", "media": {"type": "photo", "media": "attach://p1"}},
-        ])
-    );
-    for photo in ["p0", "p1"] {
-        let bytes = posted.body[photo].as_str().expect("an uploaded photo");
-        assert!(bytes.starts_with("\u{fffd}PNG\r\n"), "{photo} is no PNG");
-    }
-    assert_eq!(posted.reply["message_id"], 9000);
     drop(daemon);
 }
 
@@ -4941,7 +4998,7 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
     std::fs::write(project.join("src/n.rs"), "fn n() {}\n").expect("a new file");
     // The review goes first, since the hooks below report from a process the pane does
     // not hold.
-    let start = format!("{SHARED}_{head}");
+    let start = format!("{SHARED}_{head}_Lg");
     let owner = signed(OWNER, &start);
     let (status, opened) = page(port, "GET", "/api/open", &owner, "");
     assert_eq!(status, 200, "{opened}");
@@ -5054,9 +5111,13 @@ fn served(root: &Path, pid: u32, port: u16) -> Daemon {
 
 /// The `startapp` parameter of a link to line 2 of `path` in `session`.
 fn link(session: &str, path: &str) -> String {
+    format!("{session}_2_2_{}", base64url(path))
+}
+
+/// `text` in base64url, as a link carries a path.
+fn base64url(text: &str) -> String {
     use base64::Engine;
-    let path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
-    format!("{session}_2_2_{path}")
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text)
 }
 
 /// The `initData` Telegram hands the Mini App of the test's bot when `user` opens it from

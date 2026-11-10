@@ -285,38 +285,6 @@ impl Telegram {
         logged(method, sent).map(drop)
     }
 
-    /// A silent rich message showing `photos`, each uploaded with it and placed where
-    /// the markdown links to `tg://photo?id=p<N>`, `N` its place in the list.
-    pub fn photos(
-        &self,
-        place: Place,
-        markdown: &str,
-        photos: &[PathBuf],
-        reply_to: i64,
-    ) -> Option<i64> {
-        let names: Vec<String> = (0..photos.len()).map(|index| format!("p{index}")).collect();
-        let media: Vec<Value> = names
-            .iter()
-            .map(|name| json!({"id": name, "media": {"type": "photo", "media": format!("attach://{name}")}}))
-            .collect();
-        let rich = json!({"markdown": clamp(markdown), "media": media}).to_string();
-        let addressed = Addressed::new(place, Some(reply_to));
-        let timeout = UPLOAD_TIMEOUT * u32::try_from(photos.len()).expect("a count of photos");
-        let sent = self
-            .client
-            .request::<Message>("sendRichMessage", timeout, |request| {
-                let mut form = addressed
-                    .form()
-                    .text("disable_notification", "true")
-                    .text("rich_message", &rich);
-                for (name, path) in names.iter().zip(photos) {
-                    form = form.part(name, Part::file(path)?);
-                }
-                request.send(form)
-            });
-        logged("sendRichMessage", sent).map(|sent| sent.id)
-    }
-
     /// A silent rich message with a button on each row, each `(label, data)`.
     pub fn buttoned(
         &self,
@@ -605,15 +573,6 @@ fn file(post: &Post) -> Result<Part<'_>, ureq::Error> {
         .mime_str("text/markdown")
 }
 
-/// A truncated notification beats a rejected one.
-fn clamp(markdown: &str) -> String {
-    if markdown.len() <= MAX_BYTES {
-        return markdown.to_owned();
-    }
-    let end = markdown.floor_char_boundary(MAX_BYTES - ELLIPSIS.len_utf8());
-    format!("{}{ELLIPSIS}", &markdown[..end])
-}
-
 /// Whether Telegram takes `markdown` as a rich message whole. Its blocks are counted by
 /// `pulldown_cmark`, which splits a `<details>` holding blank lines into several, so a
 /// body heavy with those goes as a file before it has to.
@@ -843,14 +802,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_oversized_body_is_truncated_to_its_bytes_on_a_character_boundary() {
-        let long = "字".repeat(MAX_BYTES);
-        let clamped = clamp(&long);
-        assert!((MAX_BYTES - 2..=MAX_BYTES).contains(&clamped.len()));
-        assert!(clamped.ends_with(ELLIPSIS));
-    }
-
-    #[test]
     fn a_rich_message_holds_500_top_level_blocks_however_deep_they_nest() {
         let paragraphs = |count: usize| vec!["p"; count].join("\n\n");
         assert!(fits(&paragraphs(MAX_BLOCKS)));
@@ -903,11 +854,6 @@ mod tests {
         for other in ["", "true", "false", "yes", "01"] {
             assert_eq!(switch(other), None);
         }
-    }
-
-    #[test]
-    fn a_body_within_the_limit_is_untouched() {
-        assert_eq!(clamp("short"), "short");
     }
 
     #[test]

@@ -749,7 +749,13 @@ impl Machine {
         let head = session.head(id, Some(&turn.prompt_id));
         let links = Links::new(self.app, id);
         let mut answer = hook::message(event, &head, &took(turn.started.elapsed()), links);
-        if let Some(line) = turn.start.as_ref().zip(links).and_then(review) {
+        let line = turn.start.as_ref().zip(links).and_then(|(start, links)| {
+            review(links, &start.top, &start.head, ".")
+                .inspect_err(|error| eprintln!("changes since {}: {error}", start.head))
+                .ok()
+                .flatten()
+        });
+        if let Some(line) = line {
             answer.markdown = format!("{}\n\n{line}", answer.markdown);
         }
         let closing = Closing {
@@ -1065,16 +1071,25 @@ fn interrupted(path: &Path, from: u64) -> bool {
         })
 }
 
-/// The line linking to the changes made since `start`, `None` when there are none.
-fn review((start, links): (&Start, Links)) -> Option<String> {
-    let summary = changes::summary(&start.top, &start.head)
-        .inspect_err(|error| eprintln!("changes since {}: {error}", start.head))
-        .ok()?;
+/// The line linking to the changes since `since` of the working tree at `top`, which
+/// `path` names in the session's directory, `None` when nothing changed.
+pub(super) fn review(
+    links: Links,
+    top: &Path,
+    since: &str,
+    path: &str,
+) -> Result<Option<String>, String> {
+    let summary = changes::summary(top, since)?;
     if summary.files == 0 {
-        return None;
+        return Ok(None);
     }
-    let link = links.changes(&start.head)?;
-    Some(format!("[Review changes: {}]({link})", counted(&summary)))
+    let link = links
+        .changes(since, path)
+        .ok_or("the link would pass the 512 characters Telegram passes on")?;
+    Ok(Some(format!(
+        "[Review changes: {}]({link})",
+        counted(&summary)
+    )))
 }
 
 /// How a review link counts its changes, as `3 commits, 5 files`.

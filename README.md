@@ -250,13 +250,6 @@ each call. The daemon reads them from where the transcript ended when it first
 heard of the session, since the transcript of a long conversation runs to tens of
 megabytes.
 
-`/diff` answers with the unstaged changes of the working tree holding the directory of
-the session a message would reach, each file drawn in pictures folded under a line of
-its status and line counts. Telegram's markup has no colours, so `pango-view`, from the
-pango package, draws them, and has to be on the daemon's `PATH`. A file changed in too
-many lines to read on a phone, as a lock file is, is listed without being drawn, and so
-is a binary one.
-
 `/attach` shows the terminal of the session a message would reach on another device,
 for the dialogs a reply cannot answer, such as the `/rewind` picker. It runs the program
 `ATTACH_COMMAND` names with the session's tmux pane and the socket of its tmux server as
@@ -270,8 +263,8 @@ a dialog. Any other message starting with a slash is typed with its first word i
 backticks, so Claude reads it as text and invokes a skill it names through its Skill tool,
 while a mistyped command, or one opening a dialog such as `/model` alone, opens nothing in
 the terminal. A command Claude Code adds later reaches Claude this way until the list in
-the code includes it. The daemon's own commands other than `/new` take no argument, so one
-followed by text, such as `/resume the design`, goes to a session the same way. The daemon
+the code includes it. The daemon's own commands other than `/new` and `/diff` take no
+argument, so one followed by text, such as `/resume the design`, goes to a session the same way. The daemon
 lists these commands in the command menu of each person it answers, shown to that person
 alone.
 
@@ -371,16 +364,25 @@ stays as Claude Code wrote it. A relative path resolves in the session's directo
 answer the hook posts without a daemon keeps its links as Claude Code wrote them.
 
 A turn of a session in a git working tree that changed anything there ends with a link
-to the changes, as in `[Review changes: 3 commits, 5 files](https://t.me/<bot>?startapp=<session>_<commit>)`.
-The daemon records the commit checked out as the turn starts, and the page shows the
-changes from it to the working tree as it is when the page opens, untracked files
-included, so an older link shows everything since its turn began. The link is in the
-answer's text, since the daemon rewrites a message without its buttons, and an answer
-split over several messages would have to carry a button on its last one. The page
-lists the commits the changes take in, and a tap on any commit moves the start to its
-parent, and lists the files, each scrolling the page to itself on a tap. Each file shows
-the hunks git found, and expanding one loads both sides of the file whole. The arrow in a
-file's header folds it.
+to the changes, as in `[Review changes: 3 commits, 5 files](https://t.me/<bot>?startapp=<session>_<commit>_<path in base64url>)`.
+The page shows the working tree holding the path, which resolves in the session's
+directory and is `.` for a turn. The daemon records the commit checked out as the turn
+starts, and the page shows the changes from it to the working tree as it is when the
+page opens, untracked files included, so an older link shows everything since its turn
+began. The link is in the answer's text, since the daemon rewrites a message without
+its buttons, and an answer split over several messages would have to carry a button on
+its last one. The page lists the latest 30 commits of the first-parent history of
+`HEAD`, with those before the start behind `Earlier commits`. A tap on one moves the
+start to its parent, so the changes then take in that commit, every later one, and the
+working tree. The page also lists the files, each scrolling the page to itself on a
+tap. Each file shows the hunks git found, and expanding one loads both sides of the
+file whole. The arrow in a file's header folds it.
+
+`/diff` posts such a link under the head of the session a message would reach, for the
+changes of its working tree since `HEAD` forked from its upstream, or since `HEAD` when
+there is no upstream. `/diff <directory>` links the working tree holding that directory,
+read as `/new` reads one, so the review of a repository the session changed outside its
+own directory still goes to the session.
 
 On either page, a tap on a line number opens a comment there, and a tap on another in
 the same file stretches it over the lines between, as a drag across line numbers does.

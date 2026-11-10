@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use crate::changes;
 use crate::telegram::setting;
 
 /// The longest `startapp` parameter Telegram passes on.
@@ -62,11 +63,12 @@ impl<'a> Links<'a> {
         })
     }
 
-    /// The Mini App link opening the changes of the session's working tree since the
-    /// commit `since`, a full hash.
-    pub fn changes(self, since: &str) -> Option<String> {
+    /// The Mini App link opening the changes since the commit `since`, a full hash, of
+    /// the working tree holding `path`, which resolves in the session's directory.
+    pub fn changes(self, since: &str, path: &str) -> Option<String> {
         self.opening(Opens::Changes {
             since: since.to_owned(),
+            path: path.to_owned(),
         })
     }
 
@@ -100,8 +102,9 @@ fn lines(fragment: &str) -> Option<(usize, usize)> {
 }
 
 /// What a link opens in a session. It travels as `<session>_<from>_<to>_<path in
-/// base64url>` for a file and `<session>_<since>` for changes, which keeps to the
-/// alphabet `startapp` allows, since a session id holds no `_`.
+/// base64url>` for a file and `<session>_<since>_<path in base64url>` for changes, which
+/// keeps to the alphabet `startapp` allows, since a session id holds no `_`. A link to
+/// changes posted before it carried a path has the session's directory as its path.
 #[derive(Debug, PartialEq)]
 pub struct Target {
     pub session: String,
@@ -116,8 +119,8 @@ pub enum Opens {
         from: usize,
         to: usize,
     },
-    /// The changes of the working tree since the commit `since`.
-    Changes { since: String },
+    /// The changes since the commit `since` of the working tree holding `path`.
+    Changes { since: String, path: String },
 }
 
 impl Target {
@@ -128,28 +131,42 @@ impl Target {
                 self.session,
                 URL_SAFE_NO_PAD.encode(path)
             ),
-            Opens::Changes { since } => format!("{}_{since}", self.session),
+            Opens::Changes { since, path } => {
+                format!("{}_{since}_{}", self.session, URL_SAFE_NO_PAD.encode(path))
+            }
         }
     }
 
+    /// The fields after the session tell a link to changes from one to a file by the
+    /// first, since a line number has fewer digits than a commit hash.
     pub fn decode(parameter: &str) -> Option<Self> {
-        let fields: Vec<&str> = parameter.splitn(4, '_').collect();
-        let opens = match fields[1..] {
-            [since] => Opens::Changes {
-                since: since.to_owned(),
-            },
-            [from, to, path] => Opens::File {
-                from: from.parse().ok()?,
+        let (session, rest) = parameter.split_once('_')?;
+        let (first, rest) = rest
+            .split_once('_')
+            .map_or((rest, None), |(first, rest)| (first, Some(rest)));
+        let opens = if changes::hash(first) {
+            Opens::Changes {
+                since: first.to_owned(),
+                path: rest.map_or(Some(".".to_owned()), text)?,
+            }
+        } else {
+            let (to, path) = rest?.split_once('_')?;
+            Opens::File {
+                from: first.parse().ok()?,
                 to: to.parse().ok()?,
-                path: String::from_utf8(URL_SAFE_NO_PAD.decode(path).ok()?).ok()?,
-            },
-            _ => return None,
+                path: text(path)?,
+            }
         };
         Some(Self {
-            session: fields[0].to_owned(),
+            session: session.to_owned(),
             opens,
         })
     }
+}
+
+/// The text `encoded` holds in base64url.
+fn text(encoded: &str) -> Option<String> {
+    String::from_utf8(URL_SAFE_NO_PAD.decode(encoded).ok()?).ok()
 }
 
 #[cfg(test)]
@@ -208,18 +225,24 @@ mod tests {
     #[test]
     fn a_link_to_changes_opens_them_since_its_commit() {
         let since = "0123456789abcdef0123456789abcdef01234567";
-        let link = links().changes(since).expect("a link");
-        let parameter = link
-            .strip_prefix("https://t.me/bot/app?startapp=")
-            .expect("a startapp link");
+        let changes = |path: &str| Target {
+            session: SESSION.to_owned(),
+            opens: Opens::Changes {
+                since: since.to_owned(),
+                path: path.to_owned(),
+            },
+        };
+        // The second path holds a `_` in base64url.
+        for path in [".", "/home/u/??"] {
+            let link = links().changes(since, path).expect("a link");
+            let parameter = link
+                .strip_prefix("https://t.me/bot/app?startapp=")
+                .expect("a startapp link");
+            assert_eq!(Target::decode(parameter), Some(changes(path)));
+        }
         assert_eq!(
-            Target::decode(parameter),
-            Some(Target {
-                session: SESSION.to_owned(),
-                opens: Opens::Changes {
-                    since: since.to_owned()
-                },
-            })
+            Target::decode(&format!("{SESSION}_{since}")),
+            Some(changes("."))
         );
     }
 

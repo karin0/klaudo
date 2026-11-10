@@ -67,7 +67,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         DIFF,
-        "Show the unstaged changes of the conversation it replies to",
+        "Link the unpushed changes of a directory, or of the conversation it replies to",
     ),
     (
         ATTACH,
@@ -150,8 +150,8 @@ impl Machine {
     }
 
     /// Carries out `text` where it is one of the daemon's own commands, which reach no
-    /// session, and says whether it was one. Only `/new` takes an argument, so another
-    /// command followed by text is a prompt that mentions it.
+    /// session, and says whether it was one. Only `/new` and `/diff` take an argument, so
+    /// another command followed by text is a prompt that mentions it.
     fn commanded(
         &mut self,
         from: &Admitted,
@@ -184,8 +184,8 @@ impl Machine {
             Some((USAGE, "")) => {
                 self.usage(from, carrier, replied);
             }
-            Some((DIFF, "")) => {
-                self.diff(from, carrier, replied);
+            Some((DIFF, argument)) => {
+                self.diff(from, carrier, replied, argument);
             }
             Some((STOP, "")) => {
                 self.stop(from, replied);
@@ -1202,7 +1202,7 @@ pub(super) fn tilde(dir: &Path) -> String {
 
 /// A directory as it would be typed in the chat, where a leading `~` is the only shell
 /// spelling worth honouring because nothing here runs a shell.
-fn expand(argument: &str) -> Option<PathBuf> {
+pub(super) fn expand(argument: &str) -> Option<PathBuf> {
     if argument.is_empty() {
         return None;
     }
