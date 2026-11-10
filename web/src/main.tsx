@@ -258,12 +258,9 @@ function Review({ shown }: { shown: Shown }) {
   }, [notes]);
 
   // A tap on a line number opens the editor there, and a tap on another while it is
-  // open stretches it over the lines between. The library reports a tap on the one line
-  // selected as `null`.
-  const tapped = (line: number | null) => {
-    if (line === null) {
-      setEditing(null);
-    } else if (editing === null) {
+  // open stretches it over the lines between.
+  const tapped = (line: number) => {
+    if (editing === null) {
       const note = notes.get(line);
       setEditing({ from: note?.from ?? line, to: line });
       setDraft(note ?? EMPTY);
@@ -283,16 +280,22 @@ function Review({ shown }: { shown: Shown }) {
     dragging.current = true;
     setDragged(range === null ? null : ordered(range));
   });
+  // The library reports a tap on the one line selected as `null`, which leaves the
+  // editor open, since only its Cancel button drops the draft.
   const selected = useStableCallback((range: SelectedLineRange | null) => {
-    if (!dragging.current) {
-      tapped(range?.start ?? null);
+    const drag = dragging.current;
+    started();
+    if (range === null) {
       return;
     }
-    started();
+    if (!drag) {
+      tapped(range.start);
+      return;
+    }
     if (editing === null) {
       setDraft(EMPTY);
     }
-    setEditing(range === null ? null : ordered(range));
+    setEditing(ordered(range));
   });
   // The library draws the lines after the render it reports as the mount, so the page
   // jumps to the target on the first render that has it.
