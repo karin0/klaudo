@@ -201,6 +201,10 @@ button:disabled {
   border-bottom: 1px solid var(--border);
 }
 
+.section .label {
+  padding-block: 6px 2px;
+}
+
 .row {
   display: flex;
   flex-direction: column;
@@ -212,17 +216,101 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.row.excluded {
-  color: var(--hint);
+.start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  color: var(--fg);
+  font-weight: 400;
 }
 
-.section .label {
-  padding-block: 6px 2px;
+.start .value {
+  flex: 1;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.earlier {
-  align-self: flex-start;
-  padding-inline: 0;
+/* Telegram's own sheets: grouped cells on the secondary background, sliding up over a
+   dimmed page. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.sheet {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 75vh;
+  padding-bottom: var(--tg-safe-area-inset-bottom, 0px);
+  border-radius: 12px 12px 0 0;
+  background: var(--card);
+  animation: rise 0.2s ease-out;
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+.sheet .heading {
+  padding: 14px 16px 6px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.starts {
+  padding: 8px 16px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.starts .label {
+  padding: 16px 16px 6px;
+  text-transform: uppercase;
+}
+
+.group {
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  color: var(--fg);
+  font-weight: 400;
+  text-align: left;
+}
+
+.cell + .cell {
+  border-top: 0.5px solid var(--border);
+}
+
+.cell .grow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cell .check {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .file {

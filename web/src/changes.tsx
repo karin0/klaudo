@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { parsePatchFiles } from '@pierre/diffs';
 import {
   CodeView,
@@ -210,10 +211,7 @@ function range({ start, end }: Span): SelectedLineRange {
   };
 }
 
-/**
- * The commits the changes take in, newest first, then those before the start behind a
- * button. A tap on one moves the start to its parent.
- */
+/** The start of the changes, which a tap opens a sheet to move. */
 function Commits({
   changes,
   onMove,
@@ -221,49 +219,145 @@ function Commits({
   changes: Changes;
   onMove: (since: string) => void;
 }) {
-  const [earlier, setEarlier] = useState(false);
-  const shown = (time: number) =>
+  const [open, setOpen] = useState(false);
+  const [head] = changes.commits;
+  const oldest = changes.commits.find(
+    (commit) => commit.parent === changes.since,
+  );
+  const shown =
+    changes.since === head?.hash
+      ? 'Working tree only'
+      : (oldest?.subject ?? changes.since.slice(0, 7));
+  return (
+    <section className="section">
+      <button
+        className="start"
+        onClick={() => {
+          setOpen(true);
+        }}
+      >
+        <span>Changes from</span>
+        <span className="hint value">{shown}</span>
+        <span className="hint">›</span>
+      </button>
+      {open && (
+        <Starts
+          changes={changes}
+          onClose={() => {
+            setOpen(false);
+          }}
+          onMove={onMove}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
+ * A sheet of starts: `HEAD`, which leaves the working tree alone, then the parent of
+ * each commit the changes take in, newest first, then of each commit before the start.
+ * It renders in the body, since the view it opens from scrolls and transforms.
+ */
+function Starts({
+  changes,
+  onClose,
+  onMove,
+}: {
+  changes: Changes;
+  onClose: () => void;
+  onMove: (since: string) => void;
+}) {
+  const closed = useStableCallback(onClose);
+  useEffect(() => {
+    const pressed = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closed();
+      }
+    };
+    app.BackButton.onClick(closed);
+    app.BackButton.show();
+    window.addEventListener('keydown', pressed);
+    return () => {
+      app.BackButton.offClick(closed);
+      app.BackButton.hide();
+      window.removeEventListener('keydown', pressed);
+    };
+  }, [closed]);
+  const date = (time: number) =>
     new Date(time * 1000).toLocaleString(undefined, {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
     });
-  const row = (commit: Commit) => (
+  const cell = (
+    key: string,
+    start: string | null,
+    title: string,
+    hint = '',
+  ) => (
     <button
-      key={commit.hash}
-      className={commit.included ? 'row' : 'row excluded'}
-      disabled={commit.parent === null}
+      key={key}
+      className="cell"
+      disabled={start === null}
       onClick={() => {
-        if (commit.parent !== null) {
-          onMove(commit.parent);
+        onClose();
+        if (start !== null && start !== changes.since) {
+          app.HapticFeedback.selectionChanged();
+          onMove(start);
         }
       }}
     >
-      <span>{commit.subject}</span>
-      <span className="hint">
-        {commit.hash.slice(0, 7)} · {shown(commit.time)}
+      <span className="grow">
+        <span className="title">{title}</span>
+        {hint && <span className="hint">{hint}</span>}
       </span>
+      {start === changes.since && <span className="check">✓</span>}
     </button>
   );
-  const before = changes.commits.filter((commit) => !commit.included);
-  return (
-    <section className="section">
-      <div className="label">Changes since {changes.since.slice(0, 7)}</div>
-      {changes.commits.filter((commit) => commit.included).map(row)}
-      {earlier
-        ? before.map(row)
-        : before.length > 0 && (
-            <button
-              className="earlier"
-              onClick={() => {
-                setEarlier(true);
-              }}
-            >
-              Earlier commits
-            </button>
+  const commit = (commit: Commit) =>
+    cell(
+      commit.hash,
+      commit.parent,
+      commit.subject,
+      `${commit.hash.slice(0, 7)} · ${date(commit.time)}`,
+    );
+  const group = (label: string, commits: Commit[]) =>
+    commits.length > 0 && (
+      <>
+        <div className="label">{label}</div>
+        <div className="group">{commits.map(commit)}</div>
+      </>
+    );
+  const [head] = changes.commits;
+  return createPortal(
+    <div className="backdrop" onClick={onClose}>
+      <div
+        className="sheet"
+        role="dialog"
+        onClick={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        <div className="heading">Changes from</div>
+        <div className="starts">
+          {head !== undefined && (
+            <div className="group">
+              {cell('head', head.hash, 'Working tree only')}
+            </div>
           )}
-    </section>
+          {group(
+            'Included',
+            changes.commits.filter((commit) => commit.included),
+          )}
+          {group(
+            'Earlier',
+            changes.commits.filter((commit) => !commit.included),
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

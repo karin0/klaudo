@@ -373,10 +373,11 @@ starts, and the page shows the changes from it to the working tree as it is when
 page opens, untracked files included, so an older link shows everything since its turn
 began. The link is in the answer's text, since the daemon rewrites a message without
 its buttons, and an answer split over several messages would have to carry a button on
-its last one. The page lists the latest 30 commits of the first-parent history of
-`HEAD`, with those before the start behind `Earlier commits`. A tap on one moves the
-start to its parent, so the changes then take in that commit, every later one, and the
-working tree. The page also lists the files, each scrolling the page to itself on a
+its last one. A menu on the page lists the latest 30 commits of the first-parent
+history of `HEAD`, grouped by whether the changes take them in, and choosing one moves
+the start to its parent, so the changes then take in that commit, every later one, and
+the working tree. The menu can also move the start to `HEAD`, which leaves the working
+tree alone. The page also lists the files, each scrolling the page to itself on a
 tap. Each file shows the hunks git found, and expanding one loads both sides of the
 file whole. The arrow in a file's header folds it.
 
