@@ -308,6 +308,7 @@ function Review({ shown }: { shown: Shown }) {
 
   const options = useMemo(
     (): FileOptions<Extension, undefined> => ({
+      theme: { dark: 'one-dark-pro', light: 'one-light' },
       themeType: scheme,
       overflow: 'wrap',
       disableFileHeader: true,
