@@ -146,7 +146,8 @@ impl Machine {
     }
 
     /// Carries out `text` where it is one of the daemon's own commands, which reach no
-    /// session, and says whether it was one.
+    /// session, and says whether it was one. Only `/new` takes an argument, so another
+    /// command followed by text is a prompt that mentions it.
     fn commanded(
         &mut self,
         from: &Admitted,
@@ -166,41 +167,41 @@ impl Machine {
             Some((NEW, argument)) => {
                 self.anchor(from, argument);
             }
-            Some((CLEAR, _)) => {
+            Some((CLEAR, "")) => {
                 if let Some(dir) = self.reached(place, replied) {
                     self.anchor(from, &tilde(dir));
                 } else {
                     self.say(place, NOTHING_RAN);
                 }
             }
-            Some((RESUME, _)) => {
+            Some((RESUME, "")) => {
                 self.resume(from, self.reached(place, replied));
             }
-            Some((USAGE, _)) => {
+            Some((USAGE, "")) => {
                 self.usage(from, carrier, replied);
             }
-            Some((DIFF, _)) => {
+            Some((DIFF, "")) => {
                 self.diff(from, carrier, replied);
             }
-            Some((STOP, _)) => {
+            Some((STOP, "")) => {
                 self.stop(from, replied);
             }
-            Some((REWIND, _)) => {
+            Some((REWIND, "")) => {
                 self.rewind(from, carrier, replied);
             }
-            Some((SPLIT, _)) => {
+            Some((SPLIT, "")) => {
                 self.split_off(from, replied);
             }
-            Some((CANCEL, _)) => {
+            Some((CANCEL, "")) => {
                 self.telegram.unanchor(
                     place,
                     "closed the reply box, which Telegram Desktop shows once you switch away and back",
                 );
             }
-            Some((ATTACH, _)) if from.guest.is_some() => {
+            Some((ATTACH, "")) if from.guest.is_some() => {
                 self.say(place, "a guest cannot attach to a terminal");
             }
-            Some((ATTACH, _)) => {
+            Some((ATTACH, "")) => {
                 self.attach(place, carrier, replied);
             }
             _ => return false,
@@ -809,13 +810,14 @@ impl Machine {
         if session.turn.as_ref().is_some_and(|turn| turn.dialog) {
             return Err(IN_DIALOG.to_owned());
         }
-        // A command runs only from the start of the prompt, and compacting and branching
-        // are routine work. Instructions to `/compact` would write the summary every
-        // later turn reads.
-        if let Some(guest) = &ask.guest
-            && !matches!(command(&ask.text), Some(("compact" | BRANCH, "")))
+        if !command(&ask.text)
+            .is_some_and(|(name, argument)| runs(name, argument, ask.guest.is_some()))
         {
-            ask.text = reminded(guest, &dir, self.guest_push, &ask.text);
+            let text = literal(&ask.text);
+            ask.text = match &ask.guest {
+                Some(guest) => reminded(guest, &dir, self.guest_push, &text),
+                None => text,
+            };
         }
         let pane = self.terminal(&id)?;
         pane.deliver(&ask.text)
@@ -1044,6 +1046,29 @@ fn command(text: &str) -> Option<(&str, &str)> {
     Some((name, argument.trim()))
 }
 
+/// Whether `/<name> <argument>` is a command of Claude Code that runs without a dialog,
+/// which a reply would answer with its default choice, and that the sender, a guest when
+/// `guest` holds, may run. `/model` and `/effort` open a dialog without an argument.
+/// Compacting and branching are routine work for a guest, but their instructions to
+/// `/compact` would write the summary every later turn reads.
+fn runs(name: &str, argument: &str, guest: bool) -> bool {
+    match name {
+        "compact" | BRANCH => argument.is_empty() || !guest,
+        "model" | "effort" | "rename" => !argument.is_empty() && !guest,
+        _ => false,
+    }
+}
+
+/// `text` with the command it starts with in backticks, so Claude Code submits it as a
+/// prompt. Claude invokes a skill named that way itself.
+fn literal(text: &str) -> String {
+    if !text.starts_with('/') {
+        return text.to_owned();
+    }
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    format!("`{}`{}", &text[..end], &text[end..])
+}
+
 /// `text` without the `@<bot>` a group's command menu appends to a command, which Claude
 /// Code would take for part of the command's name.
 fn unaddressed(text: &str) -> String {
@@ -1175,6 +1200,27 @@ mod tests {
             Some(("compact", "keep it short"))
         );
         assert_eq!(command("new"), None);
+    }
+
+    #[test]
+    fn only_a_command_without_a_dialog_is_carried_out() {
+        assert!(runs("compact", "", false));
+        assert!(runs("compact", "keep it short", false));
+        assert!(runs(BRANCH, "", true));
+        assert!(!runs("compact", "keep it short", true));
+        assert!(runs("model", "sonnet", false));
+        assert!(!runs("model", "", false));
+        assert!(!runs("rename", "x", true));
+        assert!(!runs("context", "", false));
+        assert!(!runs(RESUME, "the design", false));
+    }
+
+    #[test]
+    fn a_command_not_carried_out_is_typed_as_text() {
+        assert_eq!(literal("/sessions"), "`/sessions`");
+        assert_eq!(literal("/resume the design"), "`/resume` the design");
+        assert_eq!(literal("/model\nwhich?"), "`/model`\nwhich?");
+        assert_eq!(literal("why /model?"), "why /model?");
     }
 
     #[test]

@@ -253,8 +253,16 @@ its two arguments, and marks the message with 👀 once the program succeeds. A 
 that has exited is resumed in a window first, which the terminal then shows starting.
 Configuration below has such a program for a phone running Termux.
 
-`/compact` goes to a session like any other message. The daemon lists these commands
-in the command menu of each person it answers, shown to that person alone.
+Of Claude Code's own commands, `/compact`, `/branch`, and `/model`, `/effort` and
+`/rename` with an argument go to a session like any other message, since they run without
+a dialog. Any other message starting with a slash is typed with its first word in
+backticks, so Claude reads it as text and invokes a skill it names through its Skill tool,
+while a mistyped command, or one opening a dialog such as `/model` alone, opens nothing in
+the terminal. A command Claude Code adds later reaches Claude this way until the list in
+the code includes it. The daemon's own commands other than `/new` take no argument, so one
+followed by text, such as `/resume the design`, goes to a session the same way. The daemon
+lists these commands in the command menu of each person it answers, shown to that person
+alone.
 
 Only `USER_ID` is answered, in `CHAT_ID` or in that person's private chat with the bot,
 and the guests in `GUEST_IDS`, in `CHAT_ID` alone. A guest reaches only the sessions and
