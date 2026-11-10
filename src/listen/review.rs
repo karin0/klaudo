@@ -32,24 +32,9 @@ use super::chat::{IN_DIALOG, unseen};
 use super::turn::Ask;
 use super::{Arrival, Machine, now_millis};
 
-/// `web/dist`, which `check.sh` builds before the binary.
-const ASSETS: [(&str, &str, &[u8]); 3] = [
-    (
-        "/",
-        "text/html; charset=utf-8",
-        include_bytes!("../../web/dist/index.html"),
-    ),
-    (
-        "/app.js",
-        "text/javascript; charset=utf-8",
-        include_bytes!("../../web/dist/app.js"),
-    ),
-    (
-        "/app.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/dist/app.css"),
-    ),
-];
+/// Each file of `web/dist` with its path under the page and its type, as `build.rs` lists
+/// them.
+const ASSETS: &[(&str, &str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 /// A request comes whole from the proxy in front, so one slower than this has stalled.
 const REQUEST_WAIT: Duration = Duration::from_secs(10);
 /// Longer than a Telegram call retrying a rate limit can hold up the machine.
@@ -180,6 +165,8 @@ impl Server {
         path: &str,
         request: &Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Refusal> {
+        let path = if path == "/" { "/index.html" } else { path };
+        let page = path == "/index.html";
         let index = ASSETS
             .iter()
             .position(|(served, _, _)| *served == path)
@@ -197,8 +184,14 @@ impl Server {
         };
         let headers = response.headers_mut();
         headers.insert(header::ETAG, HeaderValue::from_str(tag).expect("a hex tag"));
-        // A deploy replaces the files under the same names.
-        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        // A deploy replaces the page under the same name, and the page loads every other
+        // file under a name carrying a hash of its content.
+        let cache = if page {
+            "no-cache"
+        } else {
+            "public, max-age=31536000, immutable"
+        };
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
         Ok(response)
     }
 

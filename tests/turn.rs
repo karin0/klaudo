@@ -4592,7 +4592,12 @@ fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
 
     let (status, index) = page("/", "");
     assert_eq!(status, 200);
-    assert!(index.contains("./app.js"), "the page loads its script");
+    let script = index
+        .split("src=\".")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the page loads its script");
+    assert_eq!(page(script, "").0, 200, "{script}");
 
     let (status, shown) = page("/api/file", &signed(OWNER, &link(SHARED, "src/a.rs")));
     assert_eq!(status, 200, "{shown}");

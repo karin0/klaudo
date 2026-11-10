@@ -473,9 +473,9 @@ needs a main Mini App, which BotFather sets up, and the daemon stops at start wi
 one. Telegram opens a Mini App only over HTTPS, so a reverse proxy forwards the URL
 registered with BotFather to `WEB_LISTEN`, with
 any path prefix stripped, since the page asks for its files relative to itself. The
-page's script is over a megabyte, so the proxy should compress it. The page loads its
-script and styles under URLs carrying a hash of their content, so the proxy may cache
-them, but it must keep the daemon's `Cache-Control` on the page itself.
+page's script is over a megabyte, so the proxy should compress it. Every file the page
+loads carries a hash of its content in its name, so the proxy may cache them, but it
+must keep the daemon's `Cache-Control` on the page itself.
 
 `TRACE_UPDATES`, set to `1`, logs every polled update as Telegram sent it.
 `API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own

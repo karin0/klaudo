@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -75,46 +74,12 @@ function mock(): Plugin {
   };
 }
 
-/**
- * A hash of each file the page loads, appended to its URL, so that no cache serves the
- * page a file a deploy has replaced under the same name.
- */
-function versioned(): Plugin {
-  return {
-    name: 'klaudo-versioned',
-    apply: 'build',
-    transformIndexHtml: {
-      order: 'post',
-      handler(html, { bundle }) {
-        return html.replace(/"\.\/(app\.(?:js|css))"/g, (_, name: string) => {
-          const file = bundle?.[name];
-          if (file === undefined) {
-            throw new Error(`index.html loads ${name}, which the build lacks`);
-          }
-          const hash = createHash('sha256')
-            .update(file.type === 'chunk' ? file.code : file.source)
-            .digest('hex')
-            .slice(0, 16);
-          return `"./${name}?${hash}"`;
-        });
-      },
-    },
-  };
-}
-
 export default defineConfig({
-  plugins: [react(), mock(), versioned()],
-  // The daemon may be reached under any path prefix, and it serves the files under the
-  // fixed names its binary embeds.
+  plugins: [react(), mock()],
+  // The daemon may be reached under any path prefix.
   base: './',
   build: {
     // The page is one script by design, which the daemon embeds and a browser caches.
     chunkSizeWarningLimit: 2048,
-    rolldownOptions: {
-      output: {
-        entryFileNames: 'app.js',
-        assetFileNames: 'app[extname]',
-      },
-    },
   },
 });
