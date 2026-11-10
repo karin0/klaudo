@@ -138,7 +138,9 @@ function Editor({
   // The library moves the editor into place in its own layout effect, after React has
   // mounted it, so `autoFocus` would find the fields detached.
   useEffect(() => {
-    box.current?.querySelector('textarea')?.focus();
+    const field = box.current?.querySelector('textarea');
+    field?.focus();
+    field?.setSelectionRange(field.value.length, field.value.length);
   }, [suggesting]);
   return (
     <div ref={box} className="extension editor">
@@ -186,16 +188,22 @@ function Editor({
 function NoteView({
   note,
   original,
+  onEdit,
   onDelete,
 }: {
   note: Note;
   original: readonly string[];
+  /** Opens the note in the editor, or `null` while the editor is open on other lines. */
+  onEdit: (() => void) | null;
   onDelete: () => void;
 }) {
   return (
     <div className="extension">
       <div className="buttons">
         <span className="hint grow">{span(note)}</span>
+        <button disabled={onEdit === null} onClick={onEdit ?? undefined}>
+          Edit
+        </button>
         <button onClick={onDelete}>Delete</button>
       </div>
       {note.suggestion !== null && (
@@ -409,6 +417,15 @@ function Review({ shown }: { shown: Shown }) {
               <NoteView
                 note={extension.note}
                 original={original(extension.note)}
+                onEdit={
+                  editing === null
+                    ? () => {
+                        const { note } = extension;
+                        setEditing({ from: note.from, to: note.to });
+                        setDraft(note);
+                      }
+                    : null
+                }
                 onDelete={() => {
                   const kept = new Map(notes);
                   kept.delete(extension.note.to);
