@@ -2641,15 +2641,14 @@ fn a_terminal_is_attached_by_the_program_the_env_file_names() {
     writeln!(env, "ATTACH_COMMAND={}", program.display()).expect("the program");
     let daemon = daemon(root);
     // A guest is never attached, so their menu leaves `/attach` out.
-    let made = collect(&calls, |call| call.body["scope"]["user_id"] == GUEST);
-    let attaching: Vec<_> = made
+    let attaching: Vec<_> = chat
+        .menus()
         .iter()
-        .filter(|call| call.label == "setMyCommands")
-        .map(|call| {
-            let listed = call.body["commands"]
+        .map(|menu| {
+            let listed = menu["commands"]
                 .to_string()
                 .contains(r#""command":"attach""#);
-            (call.body["scope"]["user_id"].as_i64(), listed)
+            (menu["scope"]["user_id"].as_i64(), listed)
         })
         .collect();
     assert_eq!(
@@ -3102,9 +3101,9 @@ fn a_message_after_a_reply_follows_it() {
     let mut session = session;
     let _ = session.kill();
     let _ = session.wait();
-    let made = collect(&calls, |_| true);
     assert!(
-        made.iter()
+        drained(&calls)
+            .iter()
             .all(|call| !call.markdown.starts_with("`fedcba98`")),
         "the other session answered"
     );
@@ -3566,6 +3565,9 @@ struct Chat {
     /// Every chat action the daemon sent, with when it arrived. An action leaves nothing
     /// a later call acts on, so it stays out of the calls a turn made.
     actions: Arc<Mutex<Vec<(Instant, serde_json::Value)>>>,
+    /// Every command menu the daemon registered. Registering runs beside the turns and
+    /// may finish after any of their calls, so it stays out of the calls a turn made.
+    menus: Arc<Mutex<Vec<serde_json::Value>>>,
     /// How long each `setMyCommands` is held before it is answered.
     commands_held: Arc<Mutex<Duration>>,
 }
@@ -3702,6 +3704,21 @@ impl Chat {
     fn actions(&self) -> Vec<(Instant, serde_json::Value)> {
         self.actions.lock().expect("the actions").clone()
     }
+
+    /// The command menus, in the order they were registered, once the last, the guest's,
+    /// has been.
+    fn menus(&self) -> Vec<serde_json::Value> {
+        let menus = || self.menus.lock().expect("the menus").clone();
+        wait_for(
+            || {
+                menus()
+                    .last()
+                    .is_some_and(|menu| menu["scope"]["user_id"] == GUEST)
+            },
+            "the guest's commands were never registered",
+        );
+        menus()
+    }
 }
 
 /// User `id` as Telegram names the sender of a message.
@@ -3783,15 +3800,16 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         None => serde_json::from_slice(&body).expect("a JSON body"),
     };
 
-    if method == "setMyCommands" {
-        std::thread::sleep(*chat.commands_held.lock().expect("the hold"));
-    }
     // The poll that asks what the chat said is not a call the turn made.
     let sent = if method == "getUpdates" {
         let offset = body["offset"].as_i64().expect("an offset");
         json!({"ok": true, "result": chat.since(offset)}).to_string()
     } else if method == "sendChatAction" {
         chat.act(body);
+        json!({"ok": true, "result": true}).to_string()
+    } else if method == "setMyCommands" {
+        std::thread::sleep(*chat.commands_held.lock().expect("the hold"));
+        chat.menus.lock().expect("the menus").push(body);
         json!({"ok": true, "result": true}).to_string()
     } else {
         let sound = match method.as_str() {
@@ -3822,7 +3840,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
             })
             .expect("record");
         let result = match method.as_str() {
-            "setMyCommands" | "deleteMessage" | "setMessageReaction" | "answerCallbackQuery" => {
+            "deleteMessage" | "setMessageReaction" | "answerCallbackQuery" => {
                 json!(true)
             }
             "createForumTopic" => {
@@ -3916,32 +3934,28 @@ fn the_command_line_explains_itself() {
 /// user alone.
 #[test]
 fn the_commands_are_listed_for_the_user_in_both_chats_and_for_each_guest_in_the_group() {
-    let (temporary, calls, _chat) = prepare("commands");
+    let (temporary, _calls, chat) = prepare("commands");
     let daemon = daemon(temporary.path());
 
-    let made = collect(&calls, |call| call.body["scope"]["user_id"] == GUEST);
-    let registered: Vec<_> = made
-        .iter()
-        .filter(|call| call.label == "setMyCommands")
-        .collect();
+    let menus = chat.menus();
     assert!(
-        registered
+        menus
             .iter()
-            .all(|call| call.body["commands"][0]["command"] == "new")
+            .all(|menu| menu["commands"][0]["command"] == "new")
     );
     // With no `ATTACH_COMMAND`, there is nothing for `/attach` to run.
-    assert!(registered.iter().all(|call| {
-        !call.body["commands"]
+    assert!(menus.iter().all(|menu| {
+        !menu["commands"]
             .to_string()
             .contains(r#""command":"attach""#)
     }));
     // A guest branches a conversation as the user does.
-    assert!(registered.iter().all(|call| {
-        call.body["commands"]
+    assert!(menus.iter().all(|menu| {
+        menu["commands"]
             .to_string()
             .contains(r#""command":"branch""#)
     }));
-    let scopes: Vec<_> = registered.iter().map(|call| &call.body["scope"]).collect();
+    let scopes: Vec<_> = menus.iter().map(|menu| &menu["scope"]).collect();
     assert_eq!(
         scopes,
         [
