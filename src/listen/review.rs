@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
@@ -20,7 +22,8 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use kuriero::User;
-use ring::{digest, hmac};
+use ring::digest;
+use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
@@ -45,6 +48,8 @@ const REVIEW_MAX: usize = 1 << 20;
 const FILE_MAX: u64 = 1 << 20;
 /// How long the `initData` Telegram hands the page when it opens stays valid, in seconds.
 const SIGNED_MAX: u64 = 24 * 60 * 60;
+/// The Ed25519 key, in hex, Telegram signs the `initData` of every Mini App with.
+const TELEGRAM_KEY: &str = "e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d";
 const OUTSIDE: &str = "that conversation runs outside tmux, where nothing can be typed into it";
 
 /// Who opened the page, and on which session.
@@ -138,8 +143,7 @@ struct Contents {
 }
 
 struct Server {
-    /// The key Telegram signs the `initData` of this bot's Mini Apps with.
-    key: hmac::Key,
+    verifier: Verifier,
     telegram: Arc<Telegram>,
     landed: Sender<Arrival>,
     /// The entity tag of each of `ASSETS`, so a browser keeps a page it already has.
@@ -148,8 +152,12 @@ struct Server {
 
 pub(super) fn serve(listener: TcpListener, telegram: Arc<Telegram>, landed: Sender<Arrival>) {
     let token = crate::telegram::setting("BOT_TOKEN").expect("the daemon has a BOT_TOKEN");
+    let (bot, _) = token
+        .split_once(':')
+        .expect("BOT_TOKEN is the bot's id, a colon and its secret");
+    let key = crate::telegram::setting("INIT_DATA_KEY");
     let server = Arc::new(Server {
-        key: key(&token),
+        verifier: Verifier::new(bot, key.as_deref().unwrap_or(TELEGRAM_KEY)),
         telegram,
         landed,
         tags: ASSETS.iter().map(|(_, _, body)| tag(body)).collect(),
@@ -391,7 +399,7 @@ impl Server {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("tma "))
             .ok_or_else(|| unauthorized("open this page from a link in the chat"))?;
-        let signed = verify(&self.key, data, now_millis() / 1000).map_err(unauthorized)?;
+        let signed = verify(&self.verifier, data, now_millis() / 1000).map_err(unauthorized)?;
         let guest = self
             .telegram
             .guest(&signed.user)
@@ -474,16 +482,6 @@ fn read(file: &Path, path: &str) -> Result<String, Refusal> {
     })
 }
 
-/// The key Telegram signs a Mini App's `initData` with: HMAC-SHA256 of the bot token
-/// under the key `WebAppData`.
-fn key(token: &str) -> hmac::Key {
-    let derived = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, b"WebAppData"),
-        token.as_bytes(),
-    );
-    hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref())
-}
-
 fn tag(body: &[u8]) -> String {
     format!(
         "\"{}\"",
@@ -506,29 +504,54 @@ struct Signed {
     start: String,
 }
 
-/// The fields of `data`, once its `hash` proves Telegram signed them with `key` within
-/// `SIGNED_MAX` of `now`, in Unix seconds. The signature covers every other field, sorted
-/// by name, each as `name=value` on a line of its own.
-fn verify(key: &hmac::Key, data: &str, now: u64) -> Result<Signed, &'static str> {
-    let mut hash = None;
+/// What checks the `initData` of the bot's Mini Apps. Telegram signs it twice, and only
+/// the Ed25519 signature is checked, since the HMAC beside it is keyed by the bot token,
+/// which would let whoever holds the token open the page as anyone.
+struct Verifier {
+    /// The bot's id, which opens the text Telegram signs.
+    bot: String,
+    key: UnparsedPublicKey<Vec<u8>>,
+}
+
+impl Verifier {
+    /// The verifier of the bot with the id `bot`, whose `initData` Telegram signs with the
+    /// Ed25519 key `key` in hex.
+    fn new(bot: &str, key: &str) -> Self {
+        let key = unhex(key)
+            .filter(|key| key.len() == 32)
+            .expect("INIT_DATA_KEY is an Ed25519 key in hex");
+        Self {
+            bot: bot.to_owned(),
+            key: UnparsedPublicKey::new(&ED25519, key),
+        }
+    }
+}
+
+/// The fields of `data`, once its `signature` proves Telegram signed them for the bot of
+/// `verifier` within `SIGNED_MAX` of `now`, in Unix seconds. The signature covers the line
+/// `<bot id>:WebAppData`, then every field other than `hash` and itself, sorted by name,
+/// each as `name=value` on a line of its own.
+fn verify(verifier: &Verifier, data: &str, now: u64) -> Result<Signed, &'static str> {
+    let mut signature = None;
     let mut fields: Vec<(String, String)> = Vec::new();
     for (name, value) in form_urlencoded::parse(data.as_bytes()) {
-        if name == "hash" {
-            hash = Some(value.into_owned());
-        } else {
-            fields.push((name.into_owned(), value.into_owned()));
+        match &*name {
+            "signature" => signature = Some(value.into_owned()),
+            "hash" => {}
+            _ => fields.push((name.into_owned(), value.into_owned())),
         }
     }
     fields.sort();
-    let checked = fields
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
+    let checked = std::iter::once(format!("{}:WebAppData", verifier.bot))
+        .chain(fields.iter().map(|(name, value)| format!("{name}={value}")))
         .collect::<Vec<_>>()
         .join("\n");
-    let hash = hash
-        .and_then(|hash| unhex(&hash))
+    let signature = signature
+        .and_then(|signature| URL_SAFE_NO_PAD.decode(signature).ok())
         .ok_or("the page carries no signature")?;
-    hmac::verify(key, checked.as_bytes(), &hash)
+    verifier
+        .key
+        .verify(checked.as_bytes(), &signature)
         .map_err(|_| "the page carries a forged signature")?;
     let field = |name: &str| {
         fields
@@ -768,19 +791,31 @@ impl Machine {
 mod tests {
     use super::*;
 
-    const TOKEN: &str = "111111:secret";
+    use ring::signature::{Ed25519KeyPair, KeyPair};
 
-    /// `fields` signed as Telegram signs them for the bot of `TOKEN`.
+    /// The key Telegram would sign with, were its private half this test's.
+    fn pair() -> Ed25519KeyPair {
+        Ed25519KeyPair::from_seed_unchecked(&[7; 32]).expect("a key from any seed")
+    }
+
+    fn verifier(bot: &str) -> Verifier {
+        Verifier::new(bot, &hex(pair().public_key().as_ref()))
+    }
+
+    /// `fields` signed as Telegram signs them for the bot `111111`, beside a `hash` that
+    /// only the bot token could check.
     fn signed(fields: &[(&str, &str)]) -> String {
         let mut sorted: Vec<String> = fields
             .iter()
             .map(|(name, value)| format!("{name}={value}"))
             .collect();
         sorted.sort();
-        let hash = hex(hmac::sign(&key(TOKEN), sorted.join("\n").as_bytes()).as_ref());
+        sorted.insert(0, "111111:WebAppData".to_owned());
+        let signature = URL_SAFE_NO_PAD.encode(pair().sign(sorted.join("\n").as_bytes()));
         form_urlencoded::Serializer::new(String::new())
             .extend_pairs(fields)
-            .append_pair("hash", &hash)
+            .append_pair("hash", &"0".repeat(64))
+            .append_pair("signature", &signature)
             .finish()
     }
 
@@ -808,9 +843,30 @@ mod tests {
 
     #[test]
     fn init_data_telegram_signed_names_its_user_and_link() {
-        let signed = verify(&key(TOKEN), &data(&fields(&NOW.to_string())), NOW).expect("valid");
+        let signed = verify(&verifier("111111"), &data(&fields(&NOW.to_string())), NOW);
+        let signed = signed.expect("valid");
         assert_eq!(signed.user.id, 7);
         assert_eq!(signed.start, "s_1_2_YS5ycw");
+    }
+
+    /// `initData` Telegram signed in production, as the tma.js documentation quotes it.
+    #[test]
+    fn init_data_telegram_signed_in_production_passes_the_signature_check() {
+        let data = "user=%7B%22id%22%3A279058397%2C%22first_name%22%3A%22Vladislav%20%2B%20-%20%3F%20%5C%2F%22%2C%22last_name%22%3A%22Kibenko%22%2C%22username%22%3A%22vdkfrost%22%2C%22language_code%22%3A%22ru%22%2C%22is_premium%22%3Atrue%2C%22allows_write_to_pm%22%3Atrue%2C%22photo_url%22%3A%22https%3A%5C%2F%5C%2Ft.me%5C%2Fi%5C%2Fuserpic%5C%2F320%5C%2F4FPEE4tmP3ATHa57u6MqTDih13LTOiMoKoLDRG4PnSA.svg%22%7D\
+            &chat_instance=8134722200314281151&chat_type=private&auth_date=1733584787\
+            &signature=zL-ucjNyREiHDE8aihFwpfR9aggP2xiAo3NSpfe-p7IbCisNlDKlo7Kb6G4D0Ao2mBrSgEk4maLSdv6MLIlADQ\
+            &hash=2174df5b000556d044f3f020384e879c8efcab55ddea2ced4eb752e93e7080d6";
+        let verifier = Verifier::new("7342037359", TELEGRAM_KEY);
+        // The sample was opened from no link.
+        assert_eq!(
+            verify(&verifier, data, 1_733_584_787).unwrap_err(),
+            "the page was opened from no link"
+        );
+        let altered = data.replace("chat_type=private", "chat_type=group");
+        assert_eq!(
+            verify(&verifier, &altered, 1_733_584_787).unwrap_err(),
+            "the page carries a forged signature"
+        );
     }
 
     #[test]
@@ -818,20 +874,30 @@ mod tests {
         let valid = data(&fields(&NOW.to_string()));
         let altered = valid.replace("s_1_2_YS5ycw", "s_1_2_Yi5ycw");
         assert_eq!(
-            verify(&key(TOKEN), &altered, NOW).unwrap_err(),
+            verify(&verifier("111111"), &altered, NOW).unwrap_err(),
             "the page carries a forged signature"
         );
-        assert!(verify(&key("222222:other"), &valid, NOW).is_err());
-        let unsigned = valid.split("&hash=").next().expect("fields").to_owned();
-        assert!(verify(&key(TOKEN), &unsigned, NOW).is_err());
+        assert!(verify(&verifier("222222"), &valid, NOW).is_err());
+        let other = Verifier::new("111111", TELEGRAM_KEY);
+        assert!(verify(&other, &valid, NOW).is_err());
+        let unsigned = valid
+            .split("&signature=")
+            .next()
+            .expect("fields")
+            .to_owned();
+        assert_eq!(
+            verify(&verifier("111111"), &unsigned, NOW).unwrap_err(),
+            "the page carries no signature"
+        );
     }
 
     #[test]
     fn init_data_older_than_a_day_is_refused() {
-        let day = NOW - SIGNED_MAX;
-        assert!(verify(&key(TOKEN), &data(&fields(&day.to_string())), NOW).is_ok());
+        let oldest = NOW - SIGNED_MAX;
+        let verifier = verifier("111111");
+        assert!(verify(&verifier, &data(&fields(&oldest.to_string())), NOW).is_ok());
         assert_eq!(
-            verify(&key(TOKEN), &data(&fields(&(day - 1).to_string())), NOW).unwrap_err(),
+            verify(&verifier, &data(&fields(&(oldest - 1).to_string())), NOW).unwrap_err(),
             "the page was opened over a day ago; open the link again"
         );
     }

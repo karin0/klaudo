@@ -5143,7 +5143,12 @@ fn reviewing(name: &str) -> (TempDir, Receiver<Call>, Chat, u16) {
         .append(true)
         .open(root.join("config/klaudo/env"))
         .expect("credentials");
-    writeln!(env, "WEB_LISTEN=127.0.0.1:{port}").expect("the page's settings");
+    writeln!(
+        env,
+        "WEB_LISTEN=127.0.0.1:{port}\nINIT_DATA_KEY={}",
+        telegram_public_key()
+    )
+    .expect("the page's settings");
     std::fs::create_dir(project(root).join("src")).expect("a source directory");
     std::fs::write(project(root).join("src/a.rs"), "fn a() {}\nfn b() {}\n").expect("a file");
     std::fs::write(root.join("outside"), "kept from guests\n").expect("a file outside");
@@ -5171,33 +5176,42 @@ fn base64url(text: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text)
 }
 
+/// The key Telegram would sign `initData` with, were its private half the tests'.
+fn telegram_key() -> ring::signature::Ed25519KeyPair {
+    ring::signature::Ed25519KeyPair::from_seed_unchecked(&[7; 32]).expect("a key from any seed")
+}
+
+/// The public half of `telegram_key`, in hex.
+fn telegram_public_key() -> String {
+    use ring::signature::KeyPair;
+    telegram_key()
+        .public_key()
+        .as_ref()
+        .iter()
+        .fold(String::new(), |key, byte| format!("{key}{byte:02x}"))
+}
+
 /// The `initData` Telegram hands the Mini App of the test's bot when `user` opens it from
-/// a link carrying `start`, signed with the key Telegram derives from the bot's token.
+/// a link carrying `start`.
 fn signed(user: i64, start: &str) -> String {
-    use ring::hmac;
+    use base64::Engine;
     let fields = [
         ("auth_date", now().to_string()),
         ("query_id", "AAE".to_owned()),
         ("start_param", start.to_owned()),
         ("user", json!({"id": user, "first_name": "Ann"}).to_string()),
     ];
-    let checked = fields
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
+    let checked = std::iter::once("111111:WebAppData".to_owned())
+        .chain(fields.iter().map(|(name, value)| format!("{name}={value}")))
         .collect::<Vec<_>>()
         .join("\n");
-    let derived = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, b"WebAppData"),
-        b"111111:secret",
-    );
-    let key = hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref());
-    let hash = hmac::sign(&key, checked.as_bytes())
-        .as_ref()
-        .iter()
-        .fold(String::new(), |hash, byte| format!("{hash}{byte:02x}"));
+    let signature = telegram_key().sign(checked.as_bytes());
     form_urlencoded::Serializer::new(String::new())
         .extend_pairs(fields)
-        .append_pair("hash", &hash)
+        .append_pair(
+            "signature",
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature),
+        )
         .finish()
 }
 

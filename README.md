@@ -402,9 +402,11 @@ daemon first posts the prompt quoted under the session's head where the session 
 between turns, and the turn it starts replies to that message, as a turn replies to the
 message that asked for it.
 
-Telegram signs the `initData` it hands the page with a key derived from the bot token.
-It names who opened the page and carries the link's `startapp`, and the page passes it
-with every request. That signature is all that guards the files, so the page reaches as
+Telegram signs the `initData` it hands the page with its own Ed25519 key, beside an HMAC
+keyed by the bot token, and the daemon checks only the Ed25519 signature, so a leaked bot
+token cannot open the page. The `initData` names who opened the page and carries the
+link's `startapp`, and the page passes it with every request. That signature is all that
+guards the files, so the page reaches as
 far as a reply could: the user reads any file the daemon can, and a guest only the
 sessions and the files inside `CHAT_PROJECTS`, with symlinks resolved, and the changes of
 a working tree whose top is inside them. A signature older
@@ -526,7 +528,9 @@ cache them, but it must keep the daemon's `Cache-Control` on the page itself.
 
 `TRACE_UPDATES`, set to `1`, logs every polled update as Telegram sent it.
 `API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own
-server. A local Bot API server (`--local`) lifts Telegram's 20 MB limit on the files a
+server. `INIT_DATA_KEY`, in hex, is the Ed25519 key the page's `initData` is checked
+against, which defaults to the key of Telegram's production environment, and the tests
+sign with their own. A local Bot API server (`--local`) lifts Telegram's 20 MB limit on the files a
 bot can fetch, and gives the daemon the path of a file sent in the chat on the server's
 own filesystem, so that path has to be readable on the daemon's machine.
 
