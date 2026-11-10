@@ -49,6 +49,9 @@ const SWEEP: Duration = Duration::from_secs(5);
 /// finishes, so this outlasts any it runs. A command still running in the background
 /// keeps the window open.
 const IDLE_HOURS: u64 = 6;
+/// How long the messages of an album that have arrived wait for the next. A client sends
+/// an album's files in one request once they are uploaded, so they arrive together.
+const ALBUM_WAIT: Duration = Duration::from_secs(1);
 /// Long enough to let a restarting instance take over from one still shutting down.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(50);
@@ -177,6 +180,8 @@ pub fn run() {
     let ended_file = kept.join("ended.json");
     let ended =
         load(&ended_file).unwrap_or_else(|error| panic!("{}: {error}", ended_file.display()));
+    let files = kept.join("files");
+    fs::create_dir_all(&files).expect("files directory");
     let mut machine = Machine {
         telegram,
         sessions: running
@@ -200,6 +205,8 @@ pub fn run() {
         idle: crate::telegram::number("IDLE_HOURS").unwrap_or(IDLE_HOURS) * 60 * 60 * 1000,
         running_file,
         ended_file,
+        files,
+        albums: Vec::new(),
         limits: None,
         attach,
         guest_push: crate::telegram::flag("GUEST_PUSH"),
@@ -485,6 +492,11 @@ struct Machine {
     running_file: PathBuf,
     /// Where `ended` is written, which outlives a reboot.
     ended_file: PathBuf,
+    /// Where the files sent in the chat are saved. A prompt names them, so they are kept
+    /// as long as the transcripts that hold it.
+    files: PathBuf,
+    /// The albums whose messages are still arriving.
+    albums: Vec<Album>,
     /// The limits a status line last reported, and when, in Unix seconds.
     limits: Option<(Limits, u64)>,
     /// The program `/attach` runs to show a pane on another terminal.
@@ -560,6 +572,13 @@ struct Opening {
     ask: Awaiting,
 }
 
+/// The messages of an album that have arrived, which wait until `due` for the next.
+struct Album {
+    group: String,
+    parts: Vec<Message>,
+    due: Instant,
+}
+
 /// What a window the daemon opened was asked for.
 enum Awaiting {
     /// A prompt to type once the session is ready.
@@ -592,8 +611,28 @@ impl Machine {
                 }
             }
             Arrival::Press(press) => self.press(&press),
-            Arrival::Chat(message) => self.chat(&message),
+            Arrival::Chat(message) => self.arrived(message),
             Arrival::Page(asked) => self.page(asked),
+        }
+    }
+
+    /// A message from the chat, which waits for the rest of its album where it is part
+    /// of one.
+    fn arrived(&mut self, message: Message) {
+        let Some(group) = message.media_group_id.clone() else {
+            return self.chat(&[message]);
+        };
+        let due = Instant::now() + ALBUM_WAIT;
+        match self.albums.iter_mut().find(|album| album.group == group) {
+            Some(album) => {
+                album.parts.push(message);
+                album.due = due;
+            }
+            None => self.albums.push(Album {
+                group,
+                parts: vec![message],
+                due,
+            }),
         }
     }
 
@@ -806,12 +845,21 @@ impl Machine {
                     .filter_map(|session| session.closing.as_ref())
                     .map(|_| Instant::now() + POLL),
             )
+            .chain(self.albums.iter().map(|album| album.due))
             .min()
     }
 
     fn tick(&mut self) {
         if self.swept.elapsed() >= SWEEP {
             self.sweep();
+        }
+        let now = Instant::now();
+        let (complete, arriving): (Vec<_>, _) = std::mem::take(&mut self.albums)
+            .into_iter()
+            .partition(|album| album.due <= now);
+        self.albums = arriving;
+        for album in complete {
+            self.chat(&album.parts);
         }
         let ids: Vec<String> = self.sessions.keys().cloned().collect();
         for id in ids {

@@ -741,6 +741,7 @@ impl Machine {
             .ok_or("Telegram refused the review")?;
         let ask = Ask {
             text: prompt,
+            files: Vec::new(),
             place,
             message,
             guest: visit.guest,

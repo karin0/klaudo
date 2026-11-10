@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use kuriero::{
     AnswerCallbackQuery, BotCommand, Button, ChatAction, Client, CommandScope, Content,
-    CreateForumTopic, DeleteMessage, EditMessageText, GetMe, Keyboard, Message, Method, ParseMode,
-    Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction, SendMessage,
+    CreateForumTopic, DeleteMessage, EditMessageText, GetFile, GetMe, Keyboard, Message, Method,
+    ParseMode, Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction, SendMessage,
     SendRichMessage, Sent, SetMessageReaction, SetMyCommands, Update, User,
 };
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
@@ -503,6 +503,18 @@ impl Telegram {
             "getUpdates",
             self.client.get_updates(offset, POLL_SECONDS, self.trace),
         )
+    }
+
+    /// Saves the file Telegram names `file_id` as `to`.
+    pub fn save(&self, file_id: &str, to: &Path) -> Result<(), String> {
+        let file = self
+            .client
+            .send(&GetFile { file_id })
+            .map_err(|error| error.to_string())?;
+        let path = file.file_path.ok_or("Telegram gave no path to download")?;
+        self.client
+            .download(&path, to)
+            .map_err(|error| error.to_string())
     }
 
     fn call<M: Method>(&self, body: &M) -> Option<M::Response> {

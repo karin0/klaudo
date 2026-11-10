@@ -3366,6 +3366,91 @@ fn a_guest_is_refused_the_projects_outside_the_group() {
     let _ = session.wait();
 }
 
+/// Files sent in the chat are saved and typed as a line each under the caption, an
+/// album's files as one prompt, and a guest's prompt allows reading the files it sent.
+#[test]
+fn files_sent_in_the_chat_are_typed_as_their_paths() {
+    let (temporary, _calls, chat) = prepare("files");
+    let root = temporary.path();
+    let (session, pid) = terminal(root);
+    let daemon = guested(root, pid);
+    let typed_file = root.join("typed");
+    let typed = || std::fs::read_to_string(&typed_file).unwrap_or_default();
+    let server = root.join("server");
+    std::fs::create_dir(&server).expect("the server's directory");
+    let file = |name: &str, content: &str| {
+        let path = server.join(name);
+        std::fs::write(&path, content).expect("a file on the server");
+        path.display().to_string()
+    };
+    let sent = |parts: &[serde_json::Value]| {
+        for part in parts {
+            let mut message = json!({
+                "chat": {"id": GROUP},
+                "reply_to_message": delivered(from_session("01234567"), GROUP),
+            });
+            message
+                .as_object_mut()
+                .expect("a message")
+                .extend(part.as_object().expect("a part").clone());
+            chat.push(message);
+        }
+    };
+    let kept = root.join("state/klaudo/files");
+
+    let small = file("small", "a thumbnail");
+    let large = file("large", "the photo");
+    let notes = file("notes", "the notes");
+    sent(&[
+        json!({"from": person(OWNER), "media_group_id": "1", "caption": "what are these",
+            "photo": [{"file_id": small, "file_unique_id": "s"},
+                      {"file_id": large, "file_unique_id": "p"}]}),
+        json!({"from": person(OWNER), "media_group_id": "1",
+            "document": {"file_id": notes, "file_unique_id": "n", "file_name": "a`b@c<d.txt"}}),
+    ]);
+    let photo = kept.join("p/photo.jpg");
+    let document = kept.join("n/a_b_c_d.txt");
+    let prompt = format!(
+        "what are these\n`{}`\n`{}`",
+        photo.display(),
+        document.display()
+    );
+    wait_for(|| !typed().is_empty(), "the album was never typed");
+    assert_eq!(typed(), prompt);
+    assert_eq!(
+        std::fs::read_to_string(&photo).expect("the photo"),
+        "the photo"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&document).expect("the notes"),
+        "the notes"
+    );
+
+    let shot = file("shot", "a screenshot");
+    sent(&[json!({"from": person(GUEST),
+        "photo": [{"file_id": shot, "file_unique_id": "g"}]})]);
+    let path = kept.join("g/photo.jpg").display().to_string();
+    wait_for(
+        || typed().len() > prompt.len(),
+        "the guest's photo was never typed",
+    );
+    let reminded = &typed()[prompt.len()..];
+    assert!(
+        reminded.contains(&format!(
+            "dependencies and their caches, and reading the files the guest sent: {path}. DO NOT"
+        )),
+        "{reminded}"
+    );
+    assert!(
+        reminded.ends_with(&format!("<guest>\n`{path}`\n</guest>")),
+        "{reminded}"
+    );
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
 /// The daemon, knowing two sessions in the pane of the terminal `pid` runs on: one in
 /// the project, which is open to guests, and one in the throwaway root, which is outside
 /// `CHAT_PROJECTS` and so closed to them.
@@ -3865,6 +3950,33 @@ fn now_millis() -> u128 {
         .as_millis()
 }
 
+/// The answer to a call that is not one the turn made, such as the poll that asks what
+/// the chat said, or `None` for a call to record.
+fn unrecorded(method: &str, body: &serde_json::Value, chat: &Chat) -> Option<String> {
+    let result = match method {
+        "getUpdates" => json!(chat.since(body["offset"].as_i64().expect("an offset"))),
+        "sendChatAction" => {
+            chat.act(body.clone());
+            json!(true)
+        }
+        "getMe" => {
+            let main_app = chat.main_app.load(Ordering::Relaxed);
+            json!({"id": 111_111, "first_name": "Klaŭdo", "username": "klaudo_bot",
+                "has_main_web_app": main_app})
+        }
+        // A local Bot API server gives the absolute path of the file, which the tests
+        // send as its id.
+        "getFile" => json!({"file_id": body["file_id"], "file_path": body["file_id"]}),
+        "setMyCommands" => {
+            std::thread::sleep(*chat.commands_held.lock().expect("the hold"));
+            chat.menus.lock().expect("the menus").push(body.clone());
+            json!(true)
+        }
+        _ => return None,
+    };
+    Some(json!({"ok": true, "result": result}).to_string())
+}
+
 fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
     let mut received = Vec::new();
     let mut chunk = [0; 4096];
@@ -3910,23 +4022,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
         None => serde_json::from_slice(&body).expect("a JSON body"),
     };
 
-    // The poll that asks what the chat said is not a call the turn made.
-    let sent = if method == "getUpdates" {
-        let offset = body["offset"].as_i64().expect("an offset");
-        json!({"ok": true, "result": chat.since(offset)}).to_string()
-    } else if method == "sendChatAction" {
-        chat.act(body);
-        json!({"ok": true, "result": true}).to_string()
-    } else if method == "getMe" {
-        let main_app = chat.main_app.load(Ordering::Relaxed);
-        json!({"ok": true, "result": {"id": 111_111, "first_name": "Klaŭdo",
-            "username": "klaudo_bot", "has_main_web_app": main_app}})
-        .to_string()
-    } else if method == "setMyCommands" {
-        std::thread::sleep(*chat.commands_held.lock().expect("the hold"));
-        chat.menus.lock().expect("the menus").push(body);
-        json!({"ok": true, "result": true}).to_string()
-    } else {
+    let sent = unrecorded(&method, &body, chat).unwrap_or_else(|| {
         let sound = match method.as_str() {
             "sendRichMessage" | "sendDocument" | "sendMediaGroup"
                 if body["disable_notification"] == json!(true) =>
@@ -3964,7 +4060,7 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
             _ => json!({"message_id": id}),
         };
         json!({"ok": true, "result": result}).to_string()
-    };
+    });
     // A daemon killed while its poll was held has left nobody to answer.
     let _ = write!(
         stream,

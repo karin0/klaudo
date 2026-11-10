@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::changes::{self, Start, Summary};
@@ -193,10 +193,29 @@ pub(super) struct Closing {
 /// becomes replies into.
 pub(super) struct Ask {
     pub(super) text: String,
+    /// The files sent with the text, saved on this machine.
+    pub(super) files: Vec<PathBuf>,
     pub(super) place: Place,
     pub(super) message: i64,
     /// The name of the guest who sent the text, which is `None` for the user.
     pub(super) guest: Option<String>,
+}
+
+impl Ask {
+    /// The text followed by a line per file. Claude Code turns a paste that is one
+    /// image's path alone into an attachment, which leaves the prompt it reports
+    /// unlike the text typed, so each path goes in a code span.
+    pub(super) fn prompt(&self) -> String {
+        let paths = self
+            .files
+            .iter()
+            .map(|path| format!("`{}`", path.display()));
+        std::iter::once(self.text.clone())
+            .filter(|text| !text.is_empty())
+            .chain(paths)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 /// One turn, from the event that started it to its Stop.
@@ -1195,6 +1214,7 @@ mod tests {
     fn a_prompt_klaudo_typed_is_paired_with_the_message_that_asked_for_it() {
         let ask = |text: &str, message| Ask {
             text: text.to_owned(),
+            files: Vec::new(),
             place: HERE,
             message,
             guest: None,
@@ -1219,6 +1239,7 @@ mod tests {
         let found = |texts: &[&str]| {
             let asked = VecDeque::from_iter(texts.iter().zip(1..).map(|(text, message)| Ask {
                 text: (*text).to_owned(),
+                files: Vec::new(),
                 place: HERE,
                 message,
                 guest: None,
