@@ -356,8 +356,9 @@ included, so an older link shows everything since its turn began. The link is in
 answer's text, since the daemon rewrites a message without its buttons, and an answer
 split over several messages would have to carry a button on its last one. The page
 lists the commits the changes take in, and a tap on any commit moves the start to its
-parent. Each file shows the hunks git found, and expanding one loads both sides of the
-file whole.
+parent, and lists the files, each scrolling the page to itself on a tap. Each file shows
+the hunks git found, and expanding one loads both sides of the file whole. The arrow in a
+file's header folds it.
 
 On either page, a tap on a line number opens a comment there, and a tap on another in
 the same file stretches it over the lines between, as a drag across line numbers does.

@@ -194,7 +194,7 @@ button:disabled {
   overflow-y: auto;
 }
 
-.commits {
+.section {
   display: flex;
   flex-direction: column;
   padding: 4px 12px;
@@ -219,11 +219,35 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.commits .label {
+.section .label {
   padding-block: 6px 2px;
 }
 
-.commits .earlier {
+.earlier {
   align-self: flex-start;
   padding-inline: 0;
+}
+
+.file {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  color: var(--fg);
+  text-align: left;
+}
+
+.file .path {
+  overflow-wrap: anywhere;
+}
+
+.file .hint {
+  white-space: nowrap;
+}
+
+/* The margins give the padding back, so a finger can miss the arrow by 8px. */
+.fold {
+  margin: -8px 0 -8px -8px;
+  padding: 8px;
+  color: var(--hint);
 }

@@ -4,6 +4,7 @@ import {
   CodeView,
   useStableCallback,
   type CodeViewDiffItem,
+  type CodeViewHandle,
   type CodeViewReactOptions,
   type DiffLineAnnotation,
   type FileDiffMetadata,
@@ -246,7 +247,7 @@ function Commits({
   );
   const before = changes.commits.filter((commit) => !commit.included);
   return (
-    <section className="commits">
+    <section className="section">
       <div className="label">Changes since {changes.since.slice(0, 7)}</div>
       {changes.commits.filter((commit) => commit.included).map(row)}
       {earlier
@@ -265,6 +266,50 @@ function Commits({
   );
 }
 
+/** How many lines `fileDiff` removes and adds, as its header counts them. */
+function counts(fileDiff: FileDiffMetadata): string {
+  const sum = (lines: 'deletionLines' | 'additionLines') =>
+    fileDiff.hunks.reduce((total, hunk) => total + hunk[lines], 0);
+  const [removed, added] = [sum('deletionLines'), sum('additionLines')];
+  return [
+    removed > 0 && `-${String(removed)}`,
+    added > 0 && `+${String(added)}`,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** The files the changes touch, each with a button that scrolls to it. */
+function Files({
+  files,
+  onJump,
+}: {
+  files: readonly FileDiffMetadata[];
+  onJump: (path: string) => void;
+}) {
+  return (
+    <section className="section">
+      <div className="label">Files</div>
+      {files.map((fileDiff) => (
+        <button
+          key={fileDiff.name}
+          className="file"
+          onClick={() => {
+            onJump(fileDiff.name);
+          }}
+        >
+          <span className="path">
+            {fileDiff.prevName === undefined
+              ? fileDiff.name
+              : `${fileDiff.prevName} → ${fileDiff.name}`}
+          </span>
+          <span className="hint">{counts(fileDiff)}</span>
+        </button>
+      ))}
+    </section>
+  );
+}
+
 const numbers = new WeakMap<object, number>();
 let numbered = 0;
 
@@ -278,19 +323,22 @@ function numbering(object: object): number {
 /**
  * The version of an item, which CodeView redraws only when it changes, keeping the diff
  * it holds otherwise. A new diff, or any annotation added or replaced, is a new object,
- * numbered past all the others, and an annotation removed shortens the list, so no two
- * states an item goes through share a version.
+ * numbered past all the others, an annotation removed shortens the list, and folding
+ * the item flips the lowest bit, so no two states an item goes through share a version.
  */
 const version = (
   fileDiff: FileDiffMetadata,
   annotations: readonly DiffLineAnnotation<Extension>[],
+  folded: boolean,
 ) =>
-  Math.max(
+  (Math.max(
     numbering(fileDiff),
     ...annotations.map(({ metadata }) => numbering(metadata)),
   ) *
     4096 +
-  annotations.length;
+    annotations.length) *
+    2 +
+  Number(folded);
 
 export function ChangesReview({
   changes,
@@ -306,6 +354,8 @@ export function ChangesReview({
   const [dragged, setDragged] = useState<Span | null>(null);
   const dragging = useRef(false);
   const [draft, setDraft] = useState<Draft>(EMPTY);
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const view = useRef<CodeViewHandle<Extension, undefined>>(null);
 
   // The library loads a file whole into its metadata in place, so each stays one object.
   const files = useMemo(
@@ -457,16 +507,29 @@ export function ChangesReview({
             : []),
           ...saved.map((note) => ({ ...at(note.span.end), metadata: note })),
         ];
+        const collapsed = folded.has(path);
         return {
           id: path,
           type: 'diff',
           fileDiff,
           annotations,
-          version: version(fileDiff, annotations),
+          collapsed,
+          version: version(fileDiff, annotations, collapsed),
         };
       }),
-    [files, notes, editing],
+    [files, notes, editing, folded],
   );
+
+  const fold = (path: string) => {
+    const next = new Set(folded);
+    if (!next.delete(path)) {
+      next.add(path);
+    }
+    setFolded(next);
+  };
+  const jump = (path: string) => {
+    view.current?.scrollTo({ type: 'item', id: path, align: 'start' });
+  };
 
   const selection = dragged ?? editing;
   const quote = editing === null ? null : quoted(diff(editing.path), editing);
@@ -474,6 +537,7 @@ export function ChangesReview({
   return (
     <main className="changes" onMouseDown={keepFocus}>
       <CodeView<Extension>
+        ref={view}
         className="code-view"
         items={items}
         options={options}
@@ -485,12 +549,37 @@ export function ChangesReview({
         renderCodeViewHeader={() => (
           <>
             <Commits changes={changes} onMove={moved} />
+            {files.length > 0 && (
+              <Files
+                files={files}
+                onJump={(path) => {
+                  jump(path);
+                  if (folded.has(path)) {
+                    fold(path);
+                  }
+                }}
+              />
+            )}
             <div className="hint status">
               {files.length === 0
                 ? `No changes since ${changes.since.slice(0, 7)}.`
                 : notes.size === 0 && 'Tap or drag line numbers to comment.'}
             </div>
           </>
+        )}
+        // A file folded from its sticky header, scrolled far into it, would leave the
+        // view among the files after it, so the view first scrolls to the file's top.
+        renderHeaderPrefix={({ id }) => (
+          <button
+            className="fold"
+            aria-label={folded.has(id) ? 'Unfold' : 'Fold'}
+            onClick={() => {
+              jump(id);
+              fold(id);
+            }}
+          >
+            {folded.has(id) ? '▸' : '▾'}
+          </button>
         )}
         renderAnnotation={(...[{ metadata: extension }]) =>
           !('draft' in extension) ? (
