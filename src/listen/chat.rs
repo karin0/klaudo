@@ -114,7 +114,10 @@ impl Machine {
             })
             .collect();
         for ask in asks.into_iter().rev() {
-            self.send(id, ask);
+            let place = ask.place;
+            if let Err(error) = self.send(id, ask) {
+                self.say(place, &error);
+            }
         }
     }
 
@@ -251,15 +254,21 @@ impl Machine {
                 // `..` in its directory would pass the check of `CHAT_PROJECTS`.
                 Some(body) => match expand(&body) {
                     Some(cwd) => {
-                        if self.reaches(ask.guest.as_deref(), place, &cwd) {
-                            self.open(cwd, Start::New, Awaiting::Prompt(ask));
+                        if self.reaches(ask.guest.as_deref(), place, &cwd)
+                            && let Err(error) = self.open(cwd, Start::New, Awaiting::Prompt(ask))
+                        {
+                            self.say(place, &error);
                         }
                     }
                     None => self.say(place, &format!("{} is not a directory", code(&body))),
                 },
                 None => self.say(place, "that anchor names no directory"),
             },
-            Ok(Some(address)) => self.send(&address, ask),
+            Ok(Some(address)) => {
+                if let Err(error) = self.send(&address, ask) {
+                    self.say(place, &error);
+                }
+            }
             Ok(None) => self.say(place, NOTHING_RAN),
             Err(error) => self.say(place, error),
         }
@@ -308,11 +317,18 @@ impl Machine {
     /// Whether the sender, a `guest` when named, may reach the sessions in `dir`, which
     /// a guest who may not is answered in `place`.
     pub(super) fn reaches(&self, guest: Option<&str>, place: Place, dir: &Path) -> bool {
-        let reaches = guest.is_none() || self.telegram.shared(dir);
-        if !reaches {
-            self.say(place, CLOSED);
+        self.admits(guest, dir)
+            .inspect_err(|error| self.say(place, error))
+            .is_ok()
+    }
+
+    /// Whether the sender, a `guest` when named, may reach the sessions in `dir`.
+    pub(super) fn admits(&self, guest: Option<&str>, dir: &Path) -> Result<(), String> {
+        if guest.is_none() || self.telegram.shared(dir) {
+            Ok(())
+        } else {
+            Err(CLOSED.to_owned())
         }
-        reaches
     }
 
     /// A button pressed on a menu. Its label is what it picks, so a menu posted before a
@@ -735,26 +751,27 @@ impl Machine {
     /// Opens a window for a conversation as `start` says, and keeps what it was asked
     /// for until the session there reports that it is ready. A session already being
     /// resumed gets no second window, which would run it twice.
-    pub(super) fn open(&mut self, dir: PathBuf, start: Start, ask: Awaiting) -> Option<Pane> {
+    pub(super) fn open(
+        &mut self,
+        dir: PathBuf,
+        start: Start,
+        ask: Awaiting,
+    ) -> Result<Pane, String> {
         let resuming = self
             .opening
             .iter()
             .find(|opening| matches!(start, Start::Resume(_)) && opening.start == start)
             .map(|opening| opening.pane.clone());
-        let pane = match resuming.map_or_else(|| tmux::open(&dir, &start), Ok) {
-            Ok(pane) => pane,
-            Err(error) => {
-                self.say(ask.place(), &format!("tmux: {}", hook::prose(&error)));
-                return None;
-            }
-        };
+        let pane = resuming
+            .map_or_else(|| tmux::open(&dir, &start), Ok)
+            .map_err(|error| format!("tmux: {}", hook::prose(&error)))?;
         self.opening.push(Opening {
             dir,
             start,
             pane: pane.clone(),
             ask,
         });
-        Some(pane)
+        Ok(pane)
     }
 
     /// The running session whose id starts with `address`, which is how a message names
@@ -764,37 +781,33 @@ impl Machine {
     }
 
     /// Types into the session whose id starts with `address`, resuming it first when it
-    /// has exited. The message typed is the last of the session's conversation. A
-    /// guest's text is typed behind the reminder of what Claude may do for them.
-    fn send(&mut self, address: &str, mut ask: Ask) {
-        let place = ask.place;
-        let typed = Some(Last::now(place, Some(ask.message)));
+    /// has exited, or says why it did not. The message typed is the last of the session's
+    /// conversation. A guest's text is typed behind the reminder of what Claude may do for
+    /// them.
+    pub(super) fn send(&mut self, address: &str, mut ask: Ask) -> Result<(), String> {
+        let typed = Some(Last::now(ask.place, Some(ask.message)));
         let Some((id, session)) = self.addressed(address) else {
-            let Some(index) = self
+            let index = self
                 .ended
                 .iter()
                 .position(|ended| ended.id.starts_with(address))
-            else {
-                return self.say(place, &unseen(address));
-            };
+                .ok_or_else(|| unseen(address))?;
             let (dir, id) = (self.ended[index].dir.clone(), self.ended[index].id.clone());
-            if !self.reaches(ask.guest.as_deref(), place, &dir) {
-                return;
-            }
+            self.admits(ask.guest.as_deref(), &dir)?;
             self.ended[index].trail.last = typed;
             self.save_ended();
-            self.open(dir, Start::Resume(id), Awaiting::Prompt(ask));
-            return;
+            return self
+                .open(dir, Start::Resume(id), Awaiting::Prompt(ask))
+                .map(drop);
         };
         let (id, dir) = (id.clone(), session.dir.clone());
-        if !self.reaches(ask.guest.as_deref(), place, &dir) {
-            return;
-        }
+        self.admits(ask.guest.as_deref(), &dir)?;
         if session.pane.is_none() {
-            return self.confirm(&id, &ask);
+            self.confirm(&id, &ask);
+            return Ok(());
         }
         if session.turn.as_ref().is_some_and(|turn| turn.dialog) {
-            return self.say(place, IN_DIALOG);
+            return Err(IN_DIALOG.to_owned());
         }
         // A command runs only from the start of the prompt, and compacting and branching
         // are routine work. Instructions to `/compact` would write the summary every
@@ -804,21 +817,14 @@ impl Machine {
         {
             ask.text = reminded(guest, &dir, self.guest_push, &ask.text);
         }
-        let pane = match self.terminal(&id) {
-            Ok(pane) => pane,
-            Err(error) => {
-                self.say(place, &error);
-                return;
-            }
-        };
-        if let Err(error) = pane.deliver(&ask.text) {
-            self.say(place, &format!("tmux: {}", hook::prose(&error)));
-            return;
-        }
+        let pane = self.terminal(&id)?;
+        pane.deliver(&ask.text)
+            .map_err(|error| format!("tmux: {}", hook::prose(&error)))?;
         let session = self.sessions.get_mut(&id).expect("the session just found");
         session.asked.push_back(ask);
         session.idle_since = now_millis();
         session.trail.last = typed;
+        Ok(())
     }
 
     /// Asks whether to branch session `id`, which runs outside tmux, into a window of its
@@ -865,8 +871,9 @@ impl Machine {
             guest: from.guest.clone(),
         };
         let start = Start::Fork(id.to_owned());
-        if self.open(dir, start, Awaiting::Prompt(ask)).is_some() {
-            self.telegram.delete(place.chat, confirmation.id);
+        match self.open(dir, start, Awaiting::Prompt(ask)) {
+            Ok(_) => self.telegram.delete(place.chat, confirmation.id),
+            Err(error) => self.say(place, &error),
         }
     }
 

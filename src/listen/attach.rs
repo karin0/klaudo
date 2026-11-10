@@ -68,5 +68,7 @@ impl Machine {
         };
         let (dir, id) = (ended.dir.clone(), ended.id.clone());
         self.open(dir, Start::Resume(id), Awaiting::Terminal(place))
+            .inspect_err(|error| self.say(place, error))
+            .ok()
     }
 }
