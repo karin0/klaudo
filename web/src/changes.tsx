@@ -525,8 +525,9 @@ export function ChangesReview({
           ) : (
             <NoteView
               label={label(extension.quote)}
+              path={extension.span.path}
               draft={extension.draft}
-              original={extension.quote.original?.split('\n') ?? []}
+              original={extension.quote.original}
               onEdit={
                 editing === null
                   ? () => {

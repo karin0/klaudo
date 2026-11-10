@@ -3,6 +3,7 @@ import {
   getFiletypeFromFileName,
   getSharedHighlighter,
   type DiffsHighlighter,
+  type ThemedToken,
 } from '@pierre/diffs';
 import { useStableCallback } from '@pierre/diffs/react';
 import { app, call, failure, type Range, type Review } from './api';
@@ -118,6 +119,37 @@ export function keepFocus(event: React.MouseEvent) {
   }
 }
 
+type Token = Pick<ThemedToken, 'content' | 'offset' | 'color'>;
+
+/**
+ * The lines of `code` split into tokens in the colors the code view gives `path`'s
+ * language, or uncolored until the highlighter loads.
+ */
+function useTokens(path: string, code: string): readonly (readonly Token[])[] {
+  const scheme = useScheme();
+  const lang = getFiletypeFromFileName(path);
+  const [highlighter, setHighlighter] = useState<DiffsHighlighter | null>(null);
+  useEffect(() => {
+    void getSharedHighlighter({
+      themes: Object.values(THEMES),
+      langs: [lang],
+    }).then(setHighlighter);
+  }, [lang]);
+  return useMemo(
+    () =>
+      highlighter?.codeToTokens(code, { lang, theme: THEMES[scheme] }).tokens ??
+      code.split('\n').map((content) => [{ content, offset: 0 }]),
+    [highlighter, lang, scheme, code],
+  );
+}
+
+const colored = (tokens: readonly Token[]) =>
+  tokens.map(({ content, offset, color }) => (
+    <span key={offset} style={{ color }}>
+      {content}
+    </span>
+  ));
+
 /**
  * A field for code, drawn in the colors the code view gives `path`'s language: the
  * text typed is transparent over a copy drawn in those colors, laid out the same way.
@@ -131,32 +163,14 @@ function Code({
   value: string;
   onChange: (value: string) => void;
 }) {
-  const scheme = useScheme();
-  const lang = getFiletypeFromFileName(path);
-  const [highlighter, setHighlighter] = useState<DiffsHighlighter | null>(null);
-  useEffect(() => {
-    void getSharedHighlighter({
-      themes: Object.values(THEMES),
-      langs: [lang],
-    }).then(setHighlighter);
-  }, [lang]);
-  const lines = useMemo(
-    () =>
-      highlighter?.codeToTokens(value, { lang, theme: THEMES[scheme] })
-        .tokens ?? [[{ content: value, offset: 0 }]],
-    [highlighter, lang, scheme, value],
-  );
+  const lines = useTokens(path, value);
   return (
     <div className="code">
       <pre aria-hidden>
         {lines.map((tokens, line) => (
           <span key={line}>
             {line > 0 && '\n'}
-            {tokens.map(({ content, offset, color }) => (
-              <span key={offset} style={{ color }}>
-                {content}
-              </span>
-            ))}
+            {colored(tokens)}
           </span>
         ))}
         {/* A text ending in a line break shows one more line in the field. */}{' '}
@@ -249,17 +263,46 @@ export function Editor({
   );
 }
 
+function Suggestion({
+  path,
+  original,
+  suggestion,
+}: {
+  path: string;
+  original: string;
+  suggestion: string;
+}) {
+  const removed = useTokens(path, original);
+  const added = useTokens(path, suggestion);
+  return (
+    <pre className="suggestion">
+      {removed.map((tokens, index) => (
+        <div key={`-${String(index)}`} className="removed">
+          - {colored(tokens)}
+        </div>
+      ))}
+      {added.map((tokens, index) => (
+        <div key={`+${String(index)}`} className="added">
+          + {colored(tokens)}
+        </div>
+      ))}
+    </pre>
+  );
+}
+
 export function NoteView({
   label,
+  path,
   draft,
   original,
   onEdit,
   onDelete,
 }: {
   label: string;
+  path: string;
   draft: Draft;
-  /** The lines its suggestion rewrites. */
-  original: readonly string[];
+  /** The lines a suggestion starts from, or `null` for lines it cannot rewrite. */
+  original: string | null;
   /** Opens the note in the editor, or `null` while the editor is open on other lines. */
   onEdit: (() => void) | null;
   onDelete: () => void;
@@ -267,19 +310,12 @@ export function NoteView({
   return (
     <div className="extension note">
       <div className="label">{label}</div>
-      {draft.suggestion !== null && (
-        <pre className="suggestion">
-          {original.map((line, index) => (
-            <div key={`-${String(index)}`} className="removed">
-              - {line}
-            </div>
-          ))}
-          {draft.suggestion.split('\n').map((line, index) => (
-            <div key={`+${String(index)}`} className="added">
-              + {line}
-            </div>
-          ))}
-        </pre>
+      {draft.suggestion !== null && original !== null && (
+        <Suggestion
+          path={path}
+          original={original}
+          suggestion={draft.suggestion}
+        />
       )}
       {draft.text && <div className="text">{draft.text}</div>}
       <div className="buttons">

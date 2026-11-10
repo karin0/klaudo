@@ -208,8 +208,9 @@ export function FileReview({ shown }: { shown: Shown }) {
             ) : (
               <NoteView
                 label={span(extension.note)}
+                path={shown.path}
                 draft={extension.note}
-                original={original(extension.note)}
+                original={original(extension.note).join('\n')}
                 onEdit={
                   editing === null
                     ? () => {
