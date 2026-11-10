@@ -52,7 +52,7 @@ const IDLE_HOURS: u64 = 6;
 /// Long enough to let a restarting instance take over from one still shutting down.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(50);
-/// After a rejected poll, before asking again.
+/// After a call that failed, before making it again.
 const RETRY: Duration = Duration::from_secs(5);
 /// A peer writes its whole request as soon as it connects, so one silent for this long
 /// has stalled and would hold up every connection behind it.
@@ -152,14 +152,17 @@ pub fn run() {
     let poller = Arc::clone(&telegram);
     let updates = landed.clone();
     std::thread::spawn(move || poll(&poller, &updates, &commands, &guests, started));
-    let page = web::config();
-    if let Some(config) = &page {
-        let server = TcpListener::bind(config.listen)
-            .unwrap_or_else(|error| panic!("WEB_LISTEN {}: {error}", config.listen));
+    let page = web::listen();
+    if let Some(listen) = page {
+        let server = TcpListener::bind(listen)
+            .unwrap_or_else(|error| panic!("WEB_LISTEN {listen}: {error}"));
         let (telegram, landed) = (Arc::clone(&telegram), landed.clone());
         std::thread::spawn(move || review::serve(server, telegram, landed));
     }
     std::thread::spawn(move || read(&listener, &landed));
+    // The hooks reaching the socket meanwhile wait in `arrivals`, and nothing could be
+    // sent while Telegram is out of reach anyway.
+    let app = page.map(|_| main_app(&telegram));
 
     let running_file = directory.join("state.json");
     // A list a different version wrote may not parse, and it only saves the sessions
@@ -200,7 +203,7 @@ pub fn run() {
         limits: None,
         attach,
         guest_push: crate::telegram::flag("GUEST_PUSH"),
-        app: page.map(|config| &*config.app.leak()),
+        app,
     };
     // Whatever exited while nothing was listening.
     machine.sweep();
@@ -270,6 +273,21 @@ fn acquire(lock: &File) -> bool {
 /// and messages from the phone are handled in the order they landed. Messages older
 /// than this loop are the backlog Telegram still holds, and typing those into a terminal
 /// would replay an afternoon of asks.
+/// The link to the bot's main Mini App, which opens the files an answer names.
+fn main_app(telegram: &Telegram) -> &'static str {
+    let bot = loop {
+        match telegram.me() {
+            Some(bot) => break bot,
+            None => std::thread::sleep(RETRY),
+        }
+    };
+    assert!(
+        bot.has_main_web_app,
+        "WEB_LISTEN is set, but the bot has no main Mini App"
+    );
+    web::app(&bot.username.expect("a bot's username")).leak()
+}
+
 fn poll(
     telegram: &Telegram,
     landed: &Sender<Arrival>,

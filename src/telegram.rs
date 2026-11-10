@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use kuriero::{
     AnswerCallbackQuery, BotCommand, Button, ChatAction, Client, CommandScope, Content,
-    CreateForumTopic, DeleteMessage, EditMessageText, Keyboard, Message, Method, ParseMode,
+    CreateForumTopic, DeleteMessage, EditMessageText, GetMe, Keyboard, Message, Method, ParseMode,
     Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction, SendMessage,
     SendRichMessage, Sent, SetMessageReaction, SetMyCommands, Update, User,
 };
@@ -490,6 +490,11 @@ impl Telegram {
         for (scope, commands) in scopes {
             self.call(&SetMyCommands { commands, scope });
         }
+    }
+
+    /// The bot itself.
+    pub fn me(&self) -> Option<User> {
+        self.call(&GetMe)
     }
 
     /// One long poll for what the chat has sent since `offset`.

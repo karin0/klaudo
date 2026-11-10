@@ -12,25 +12,19 @@ use crate::telegram::setting;
 /// The longest `startapp` parameter Telegram passes on.
 const PARAMETER_MAX: usize = 512;
 
-/// Where the daemon serves the page, and the Mini App link that opens it, set together
-/// in the env file.
-pub struct Config {
-    pub listen: SocketAddr,
-    pub app: String,
+/// Where the daemon serves the page, or `None` when the env file has it serve none.
+pub fn listen() -> Option<SocketAddr> {
+    setting("WEB_LISTEN").map(|listen| {
+        listen
+            .parse()
+            .unwrap_or_else(|error| panic!("WEB_LISTEN {listen}: {error}"))
+    })
 }
 
-/// The page's settings, or `None` when the env file sets neither.
-pub fn config() -> Option<Config> {
-    match (setting("WEB_LISTEN"), setting("WEB_APP")) {
-        (None, None) => None,
-        (Some(listen), Some(app)) => Some(Config {
-            listen: listen
-                .parse()
-                .unwrap_or_else(|error| panic!("WEB_LISTEN {listen}: {error}")),
-            app,
-        }),
-        _ => panic!("WEB_LISTEN and WEB_APP are set together or not at all"),
-    }
+/// The link to the main Mini App of the bot named `username`, which hands the `startapp`
+/// parameter appended to it on to the page.
+pub fn app(username: &str) -> String {
+    format!("https://t.me/{username}")
 }
 
 /// How the links of one session's answer are rewritten: the Mini App link, and the

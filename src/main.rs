@@ -172,11 +172,9 @@ fn deliver(event: &Event, raw: &[u8]) {
             chat: telegram.chat(&directory),
             topic: None,
         };
-        let app = web::config().map(|config| config.app);
-        let links = web::Links::new(app.as_deref(), &event.session_id);
         telegram.post(
             place,
-            &hook::message(event, &head, "", links),
+            &hook::message(event, &head, "", None),
             telegram::Sound::Ring,
             None,
         );

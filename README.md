@@ -339,14 +339,14 @@ status says whether every file arrived.
 ## Reviewing a file
 
 Claude Code links to the files it talks about, as in `[listen.rs:588](src/listen.rs#L588)`.
-Once `WEB_LISTEN` and `WEB_APP` are set, each inline link of an answer whose target has no
-scheme opens the file in a Telegram Mini App the daemon serves, at the lines a fragment
-`#L12` or `#L12-L20` names. The link is `WEB_APP` with
+Once `WEB_LISTEN` is set, each inline link of an answer whose target has no scheme opens
+the file in the bot's main Mini App, which the daemon serves, at the lines a fragment
+`#L12` or `#L12-L20` names. The link is `https://t.me/<bot>` with
 `?startapp=<session>_<from>_<to>_<path in base64url>`, so it carries everything the page
-needs and still opens after a restart. A link whose parameter would pass the 512
-characters Telegram passes on stays as Claude Code wrote it. A relative path resolves in
-the session's directory. The hook rewrites the links of an answer it posts without a
-daemon too.
+needs and still opens after a restart. The daemon reads the bot's username from `getMe`
+when it starts. A link whose parameter would pass the 512 characters Telegram passes on
+stays as Claude Code wrote it. A relative path resolves in the session's directory. An
+answer the hook posts without a daemon keeps its links as Claude Code wrote them.
 
 On the page, a tap on a line number opens a comment there, and a tap on another
 stretches it over the lines between. `Suggest change` fills an editor with the lines to
@@ -468,10 +468,10 @@ the `\;` inside single quotes. Both ssh connections need keys without a passphra
 inside tmux as `attach "$TMUX_PANE" "$(tmux display -p '#{socket_path}')"`, the program
 is tried without the chat.
 
-`WEB_LISTEN` is the address the Mini App is served on, such as `127.0.0.1:8080`, and
-`WEB_APP` its direct link, `https://t.me/<bot>/<app>`, which BotFather's `/newapp` creates
-for the bot. Either is set only with the other. Telegram opens a Mini App only over
-HTTPS, so a reverse proxy forwards the URL registered with BotFather to `WEB_LISTEN`, with
+`WEB_LISTEN` is the address the Mini App is served on, such as `127.0.0.1:8080`. The bot
+needs a main Mini App, which BotFather sets up, and the daemon stops at start without
+one. Telegram opens a Mini App only over HTTPS, so a reverse proxy forwards the URL
+registered with BotFather to `WEB_LISTEN`, with
 any path prefix stripped, since the page asks for its files relative to itself. The
 page's script is over a megabyte, so the proxy should compress it.
 

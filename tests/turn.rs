@@ -8,6 +8,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -3570,6 +3571,8 @@ struct Chat {
     menus: Arc<Mutex<Vec<serde_json::Value>>>,
     /// How long each `setMyCommands` is held before it is answered.
     commands_held: Arc<Mutex<Duration>>,
+    /// Whether `getMe` tells of the bot's main Mini App.
+    main_app: Arc<AtomicBool>,
 }
 
 impl Chat {
@@ -3807,6 +3810,11 @@ fn answer(mut stream: TcpStream, id: i64, calls: &Sender<Call>, chat: &Chat) {
     } else if method == "sendChatAction" {
         chat.act(body);
         json!({"ok": true, "result": true}).to_string()
+    } else if method == "getMe" {
+        let main_app = chat.main_app.load(Ordering::Relaxed);
+        json!({"ok": true, "result": {"id": 111_111, "first_name": "Klaŭdo",
+            "username": "klaudo_bot", "has_main_web_app": main_app}})
+        .to_string()
     } else if method == "setMyCommands" {
         std::thread::sleep(*chat.commands_held.lock().expect("the hold"));
         chat.menus.lock().expect("the menus").push(body);
@@ -4565,7 +4573,7 @@ fn cancel_closes_the_reply_box_in_its_topic() {
 /// for, within what a reply of theirs could reach.
 #[test]
 fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
-    let (temporary, _calls, port) = reviewing("review-file");
+    let (temporary, _calls, _chat, port) = reviewing("review-file");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let daemon = served(root, pid, port);
@@ -4615,7 +4623,7 @@ fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
 /// chat, which the turn it starts replies to, and the answer's file links open the page.
 #[test]
 fn a_review_from_the_mini_app_is_typed_into_its_session() {
-    let (temporary, calls, port) = reviewing("review");
+    let (temporary, calls, _chat, port) = reviewing("review");
     let root = temporary.path();
     let (session, pid) = terminal(root);
     let daemon = served(root, pid, port);
@@ -4659,7 +4667,7 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
     let answer = made.last().expect("the answer");
     assert_eq!(answer.reply, replying_to(quoted.id));
     let opening = format!(
-        "Renamed [b](https://t.me/klaudo_bot/review?startapp={}).",
+        "Renamed [b](https://t.me/klaudo_bot?startapp={}).",
         link(SHARED, "src/a.rs")
     );
     assert!(answer.markdown.ends_with(&opening), "{}", answer.markdown);
@@ -4684,13 +4692,32 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
     let _ = session.wait();
 }
 
+/// A bot without a main Mini App has no link for the files an answer names, so a daemon
+/// set to serve the page stops.
+#[test]
+fn a_daemon_serving_the_page_stops_when_the_bot_has_no_main_mini_app() {
+    let (temporary, _calls, chat, _port) = reviewing("no-mini-app");
+    chat.main_app.store(false, Ordering::Relaxed);
+    let root = temporary.path();
+    let mut daemon = logging_daemon(root);
+    wait_for(
+        || {
+            std::fs::read_to_string(root.join("log.txt"))
+                .is_ok_and(|log| log.contains("the bot has no main Mini App"))
+        },
+        "the daemon never told why it stopped",
+    );
+    assert!(!daemon.0.wait().expect("the daemon's exit").success());
+}
+
 /// The session in `CHAT_PROJECTS` that `guested` seeds.
 const SHARED: &str = "0123456789abcdef";
 
-/// A test whose env file has the daemon serve the Mini App on a free port, with a file
-/// `src/a.rs` in the project and one outside it.
-fn reviewing(name: &str) -> (TempDir, Receiver<Call>, u16) {
-    let (temporary, calls, _chat) = prepare(name);
+/// A test whose env file has the daemon serve the bot's main Mini App on a free port,
+/// with a file `src/a.rs` in the project and one outside it.
+fn reviewing(name: &str) -> (TempDir, Receiver<Call>, Chat, u16) {
+    let (temporary, calls, chat) = prepare(name);
+    chat.main_app.store(true, Ordering::Relaxed);
     let root = temporary.path();
     let port = TcpListener::bind("127.0.0.1:0")
         .and_then(|free| free.local_addr())
@@ -4700,15 +4727,11 @@ fn reviewing(name: &str) -> (TempDir, Receiver<Call>, u16) {
         .append(true)
         .open(root.join("config/klaudo/env"))
         .expect("credentials");
-    writeln!(
-        env,
-        "WEB_LISTEN=127.0.0.1:{port}\nWEB_APP=https://t.me/klaudo_bot/review"
-    )
-    .expect("the page's settings");
+    writeln!(env, "WEB_LISTEN=127.0.0.1:{port}").expect("the page's settings");
     std::fs::create_dir(project(root).join("src")).expect("a source directory");
     std::fs::write(project(root).join("src/a.rs"), "fn a() {}\nfn b() {}\n").expect("a file");
     std::fs::write(root.join("outside"), "kept from guests\n").expect("a file outside");
-    (temporary, calls, port)
+    (temporary, calls, chat, port)
 }
 
 /// The daemon of `guested`, once it serves the page on `port`.
