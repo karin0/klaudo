@@ -1,7 +1,7 @@
-//! The server of the Mini App a file link in an answer opens: the page, the file the
-//! link names, and the review the page sends back, which the session receives as a
-//! prompt. It runs on a thread of its own, and asks the machine, which owns the sessions,
-//! through the channel the other input threads feed.
+//! The server of the Mini App a link in an answer opens: the page, the file or the
+//! changes the link names, and the review the page sends back, which the session receives
+//! as a prompt. It runs on a thread of its own, and asks the machine, which owns the
+//! sessions, through the channel the other input threads feed.
 
 use std::convert::Infallible;
 use std::fmt::Write;
@@ -24,9 +24,10 @@ use ring::{digest, hmac};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+use crate::changes::{self, Changes};
 use crate::hook;
 use crate::telegram::{Sound, Telegram};
-use crate::web::Target;
+use crate::web::{Opens, Target};
 
 use super::chat::{IN_DIALOG, unseen};
 use super::turn::Ask;
@@ -47,6 +48,7 @@ const SIGNED_MAX: u64 = 24 * 60 * 60;
 const OUTSIDE: &str = "that conversation runs outside tmux, where nothing can be typed into it";
 
 /// Who opened the page, and on which session.
+#[derive(Clone)]
 pub(super) struct Visit {
     session: String,
     /// The name of the guest who opened it, `None` for the user.
@@ -62,6 +64,11 @@ pub(super) enum Asked {
         path: String,
         answer: oneshot::Sender<Result<PathBuf, String>>,
     },
+    /// The working tree the session runs in, once the visitor may see all of it.
+    Tree {
+        visit: Visit,
+        answer: oneshot::Sender<Result<Tree, String>>,
+    },
     /// A prompt to type into the session.
     Review {
         visit: Visit,
@@ -70,26 +77,61 @@ pub(super) enum Asked {
     },
 }
 
+/// The directory a session runs in, and the top of the working tree holding it.
+pub(super) struct Tree {
+    dir: PathBuf,
+    top: PathBuf,
+}
+
 type Refusal = (StatusCode, String);
 
-/// One comment of a review, on lines `from` to `to` of `path` as the page showed them.
+/// What the page sends back: its comments, and the commit the changes it showed start
+/// from, which the lines it shows as removed belong to.
+#[derive(Deserialize)]
+struct Review {
+    since: Option<String>,
+    notes: Vec<Note>,
+}
+
+/// One comment of a review, on the lines it spans in the file as it is, in the file as
+/// of `since`, or in both.
 #[derive(Deserialize)]
 struct Note {
-    path: String,
-    from: usize,
-    to: usize,
-    original: String,
+    new: Option<Lines>,
+    old: Option<Lines>,
+    /// The lines as a unified diff shows them, each behind ` `, `-` or `+`.
+    lines: Vec<String>,
     text: String,
-    /// What the lines should read instead.
+    /// What the lines of the file as it is should read instead.
     suggestion: Option<String>,
 }
 
-#[derive(Serialize)]
-struct Shown<'a> {
-    path: &'a str,
-    content: &'a str,
+#[derive(Deserialize)]
+struct Lines {
+    path: String,
     from: usize,
     to: usize,
+}
+
+/// What a link opens, as the page draws it.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum Opened {
+    File {
+        path: String,
+        content: String,
+        from: usize,
+        to: usize,
+    },
+    Changes(Changes),
+}
+
+/// A changed file as of the start and as it is, for the page to show the lines around a
+/// change.
+#[derive(Serialize)]
+struct Contents {
+    old: String,
+    new: String,
 }
 
 struct Server {
@@ -150,7 +192,8 @@ pub(super) fn serve(listener: TcpListener, telegram: Arc<Telegram>, landed: Send
 impl Server {
     async fn answer(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
         let answered = match (request.method(), request.uri().path()) {
-            (&Method::GET, "/api/file") => self.file(&request).await,
+            (&Method::GET, "/api/open") => self.open(&request).await,
+            (&Method::GET, "/api/contents") => self.contents(&request).await,
             (&Method::POST, "/api/review") => self.review(request).await,
             (&Method::GET, path) => self.asset(path, &request),
             _ => Err((StatusCode::NOT_FOUND, "no such page".to_owned())),
@@ -195,32 +238,98 @@ impl Server {
         Ok(response)
     }
 
-    async fn file(&self, request: &Request<Incoming>) -> Result<Response<Full<Bytes>>, Refusal> {
+    /// What the link names. The page moves the start of changes with `?since=`.
+    async fn open(&self, request: &Request<Incoming>) -> Result<Response<Full<Bytes>>, Refusal> {
         let (visit, target) = self.visitor(request)?;
-        let path = target.path.clone();
-        let file = self
-            .ask(
-                |answer| Asked::File {
-                    visit,
+        let opened = match target.opens {
+            Opens::File { path, from, to } => {
+                let file = self.file(visit, path.clone()).await?;
+                Opened::File {
+                    content: read(&file, &path)?,
                     path,
-                    answer,
-                },
-                "the daemon is busy; open the link again",
-            )
-            .await?;
-        let content = read(&file, &target.path)?;
-        let shown = Shown {
-            path: &target.path,
-            content: &content,
-            from: target.from,
-            to: target.to,
+                    from,
+                    to,
+                }
+            }
+            Opens::Changes { since } => {
+                let since = parameter(request, "since").unwrap_or(since);
+                let Tree { top, .. } = self.tree(visit).await?;
+                let changes = blocking(move || {
+                    changes::verify(&top, &since)?;
+                    changes::changes(&top, &since)
+                })
+                .await?;
+                Opened::Changes(changes)
+            }
         };
-        let body = serde_json::to_vec(&shown).expect("a file serializes");
+        let body = serde_json::to_vec(&opened).expect("what a link opens serializes");
         Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
     }
 
+    /// The file `?path=` names as it is, and as `?prev=` named it at `?since=`.
+    async fn contents(
+        &self,
+        request: &Request<Incoming>,
+    ) -> Result<Response<Full<Bytes>>, Refusal> {
+        let (visit, target) = self.visitor(request)?;
+        let Opens::Changes { .. } = target.opens else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "the link names no changes".to_owned(),
+            ));
+        };
+        let missing = |name: &str| (StatusCode::BAD_REQUEST, format!("no {name} given"));
+        let since = parameter(request, "since").ok_or_else(|| missing("since"))?;
+        let path = parameter(request, "path").ok_or_else(|| missing("path"))?;
+        let prev = parameter(request, "prev").ok_or_else(|| missing("prev"))?;
+        let Tree { top, .. } = self.tree(visit.clone()).await?;
+        let file = self
+            .file(visit, top.join(&path).display().to_string())
+            .await?;
+        let new = read(&file, &path)?;
+        let old = blocking(move || {
+            changes::verify(&top, &since)?;
+            changes::old(&top, &since, &prev)
+        })
+        .await?;
+        if old.len() as u64 > FILE_MAX {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("{path} was larger than 1 MiB"),
+            ));
+        }
+        let old = String::from_utf8(old).map_err(|_| {
+            (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                format!("{path} was no text in UTF-8"),
+            )
+        })?;
+        let body = serde_json::to_vec(&Contents { old, new }).expect("contents serialize");
+        Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
+    }
+
+    async fn file(&self, visit: Visit, path: String) -> Result<PathBuf, Refusal> {
+        self.ask(
+            |answer| Asked::File {
+                visit,
+                path,
+                answer,
+            },
+            "the daemon is busy; open the link again",
+        )
+        .await
+    }
+
+    async fn tree(&self, visit: Visit) -> Result<Tree, Refusal> {
+        self.ask(
+            |answer| Asked::Tree { visit, answer },
+            "the daemon is busy; open the link again",
+        )
+        .await
+    }
+
     async fn review(&self, request: Request<Incoming>) -> Result<Response<Full<Bytes>>, Refusal> {
-        let (visit, _) = self.visitor(&request)?;
+        let (visit, target) = self.visitor(&request)?;
         let body = tokio::time::timeout(
             REQUEST_WAIT,
             Limited::new(request.into_body(), REVIEW_MAX).collect(),
@@ -234,9 +343,25 @@ impl Server {
         })?
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?
         .to_bytes();
-        let notes: Vec<Note> = serde_json::from_slice(&body)
+        let review: Review = serde_json::from_slice(&body)
             .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
-        let prompt = prompt(&notes).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+        // A path of changes is relative to the top of the working tree, and the prompt
+        // writes it as the session would.
+        let tree = match target.opens {
+            Opens::File { .. } => None,
+            Opens::Changes { .. } => Some(self.tree(visit.clone()).await?),
+        };
+        let shown = |path: &str| match &tree {
+            None => path.to_owned(),
+            Some(Tree { dir, top }) => {
+                let file = top.join(path);
+                file.strip_prefix(dir)
+                    .unwrap_or(&file)
+                    .display()
+                    .to_string()
+            }
+        };
+        let prompt = prompt(&review, shown).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
         self.ask(
             |answer| Asked::Review {
                 visit,
@@ -290,6 +415,23 @@ impl Server {
             .expect("the machine answers every request")
             .map_err(|reason| (StatusCode::CONFLICT, reason))
     }
+}
+
+/// The query parameter `name` of `request`.
+fn parameter(request: &Request<Incoming>, name: &str) -> Option<String> {
+    form_urlencoded::parse(request.uri().query()?.as_bytes())
+        .find(|(field, _)| field == name)
+        .map(|(_, value)| value.into_owned())
+}
+
+/// What `work`, which runs git, makes, off the thread serving every request.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, Refusal> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .expect("git work runs to its end")
+        .map_err(|reason| (StatusCode::UNPROCESSABLE_ENTITY, reason))
 }
 
 fn reply(status: StatusCode, kind: &'static str, body: Bytes) -> Response<Full<Bytes>> {
@@ -411,45 +553,72 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The prompt a review is typed into the session as: a block per note, each opening with
-/// where it points, then the lines it suggests in a diff or the lines it comments on
-/// quoted, then what the reviewer wrote.
-fn prompt(notes: &[Note]) -> Result<String, String> {
-    if notes.is_empty() {
+/// where it points, then the lines it suggests in a diff, or else the lines it comments
+/// on, quoted when they are all in the file as it is, then what the reviewer wrote.
+/// `shown` writes a path of the file as it is as the session would. Removed lines are
+/// written as git names a file as of a commit, so Claude does not read them as lines of
+/// the file as it is.
+fn prompt(review: &Review, shown: impl Fn(&str) -> String) -> Result<String, String> {
+    if review.notes.is_empty() {
         return Err("the review holds no comment".to_owned());
     }
     let mut blocks = vec!["Review:".to_owned()];
-    for note in notes {
+    for note in &review.notes {
         let Note {
-            path,
-            from,
-            to,
-            original,
+            new,
+            old,
+            lines,
             text,
             suggestion,
         } = note;
-        if *from == 0 || to < from {
-            return Err(format!("{path}: {from} to {to} is no range of lines"));
-        }
+        let since = || match &review.since {
+            Some(since) if changes::hash(since) => Ok(&since[..12]),
+            _ => Err("removed lines need the commit they were removed since".to_owned()),
+        };
+        let place = match (new, old) {
+            (Some(new), None) => new.at(&shown(&new.path))?,
+            (None, Some(old)) => old.at(&format!("{}:{}", since()?, old.path))?,
+            (Some(new), Some(old)) => format!(
+                "{} (was {})",
+                new.at(&shown(&new.path))?,
+                old.at(&format!("{}:{}", since()?, old.path))?
+            ),
+            (None, None) => return Err("a comment spans no lines".to_owned()),
+        };
         let text = text.trim();
         if text.is_empty() && suggestion.is_none() {
-            return Err(format!("{path}:{from} has an empty comment"));
+            return Err(format!("{place} has an empty comment"));
         }
-        let lines = if from == to {
-            from.to_string()
-        } else {
-            format!("{from}-{to}")
-        };
-        let mut block = vec![format!("{path}:{lines}")];
+        let rows = lines
+            .iter()
+            .map(|line| match line.split_at_checked(1) {
+                Some((" " | "-" | "+", text)) => Ok((line.as_str(), text)),
+                _ => Err(format!("{place}: {line:?} is no line of a diff")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut block = vec![place];
         match suggestion {
+            Some(_) if old.is_some() => {
+                return Err("a suggestion rewrites lines of the file as it is".to_owned());
+            }
             Some(suggestion) => {
-                let fence = fence(&[original, suggestion]);
+                let original = rows.iter().map(|(_, text)| *text).collect::<Vec<_>>();
+                let fence = fence(&[&original.join("\n"), suggestion]);
                 block.push(format!("{fence}diff"));
-                block.extend(original.split('\n').map(|line| format!("-{line}")));
+                block.extend(original.iter().map(|line| format!("-{line}")));
                 // An empty suggestion deletes the lines.
                 block.extend(suggestion.lines().map(|line| format!("+{line}")));
                 block.push(fence);
             }
-            None => block.extend(original.split('\n').map(|line| format!("> {line}"))),
+            None if old.is_none() => {
+                block.extend(rows.iter().map(|(_, text)| format!("> {text}")));
+            }
+            None => {
+                let fence = fence(&[&lines.join("\n")]);
+                block.push(format!("{fence}diff"));
+                block.extend(rows.iter().map(|(line, _)| (*line).to_owned()));
+                block.push(fence);
+            }
         }
         if !text.is_empty() {
             block.push(text.to_owned());
@@ -459,8 +628,23 @@ fn prompt(notes: &[Note]) -> Result<String, String> {
     Ok(blocks.join("\n\n"))
 }
 
+impl Lines {
+    /// `file` followed by the lines, as in `src/main.rs:3-5`.
+    fn at(&self, file: &str) -> Result<String, String> {
+        let Self { from, to, .. } = *self;
+        if from == 0 || to < from {
+            return Err(format!("{file}: {from} to {to} is no range of lines"));
+        }
+        Ok(if from == to {
+            format!("{file}:{from}")
+        } else {
+            format!("{file}:{from}-{to}")
+        })
+    }
+}
+
 /// A code fence longer than every run of backticks in `texts`, so none of them closes it.
-fn fence(texts: &[&String]) -> String {
+fn fence(texts: &[&str]) -> String {
     let longest = texts
         .iter()
         .flat_map(|text| text.split(|c| c != '`'))
@@ -478,6 +662,7 @@ impl Machine {
                 path,
                 answer,
             } => answer.send(self.opened(&visit, &path)).is_err(),
+            Asked::Tree { visit, answer } => answer.send(self.tree(&visit)).is_err(),
             Asked::Review {
                 visit,
                 prompt,
@@ -489,21 +674,37 @@ impl Machine {
         }
     }
 
-    /// The file `path` names in the session's directory, once the visitor may see it:
-    /// a guest only what lies in `CHAT_PROJECTS`, where every link resolves.
-    fn opened(&self, visit: &Visit, path: &str) -> Result<PathBuf, String> {
+    /// The directory of the session the page was opened on, once the visitor may see it:
+    /// a guest only what lies in `CHAT_PROJECTS`.
+    fn visited(&self, visit: &Visit) -> Result<PathBuf, String> {
         let dir = self
             .known()
             .find(|(id, _, _)| *id == visit.session)
             .map(|(_, dir, _)| dir.to_owned())
             .ok_or_else(|| unseen(&visit.session))?;
         self.admits(visit.guest.as_deref(), &dir)?;
+        Ok(dir)
+    }
+
+    /// The file `path` names in the session's directory, once the visitor may see it,
+    /// with every link resolved.
+    fn opened(&self, visit: &Visit, path: &str) -> Result<PathBuf, String> {
+        let dir = self.visited(visit)?;
         let file = dir
             .join(path)
             .canonicalize()
             .map_err(|error| format!("{path}: {error}"))?;
         self.admits(visit.guest.as_deref(), &file)?;
         Ok(file)
+    }
+
+    /// The working tree of the session the page was opened on, whose every file the
+    /// changes page may show.
+    fn tree(&self, visit: &Visit) -> Result<Tree, String> {
+        let dir = self.visited(visit)?;
+        let top = changes::top(&dir)?;
+        self.admits(visit.guest.as_deref(), &top)?;
+        Ok(Tree { dir, top })
     }
 
     /// Types a review into its session as a reply from the chat is typed. The review is
@@ -621,20 +822,34 @@ mod tests {
         );
     }
 
-    fn note(from: usize, to: usize, original: &str, text: &str, suggestion: Option<&str>) -> Note {
-        Note {
-            path: "src/telegram.rs".to_owned(),
+    fn lines(path: &str, from: usize, to: usize) -> Lines {
+        Lines {
+            path: path.to_owned(),
             from,
             to,
-            original: original.to_owned(),
+        }
+    }
+
+    fn note(from: usize, to: usize, original: &str, text: &str, suggestion: Option<&str>) -> Note {
+        Note {
+            new: Some(lines("src/telegram.rs", from, to)),
+            old: None,
+            lines: original
+                .split('\n')
+                .map(|line| format!(" {line}"))
+                .collect(),
             text: text.to_owned(),
             suggestion: suggestion.map(str::to_owned),
         }
     }
 
+    fn review(notes: Vec<Note>) -> Review {
+        Review { since: None, notes }
+    }
+
     #[test]
     fn a_review_reads_as_a_block_per_note() {
-        let notes = [
+        let notes = vec![
             note(
                 622,
                 622,
@@ -650,12 +865,12 @@ mod tests {
                 None,
             ),
             Note {
-                path: "README.md".to_owned(),
+                new: Some(lines("README.md", 3, 3)),
                 ..note(3, 3, "```sh", "", Some(""))
             },
         ];
         assert_eq!(
-            prompt(&notes).expect("a prompt"),
+            prompt(&review(notes), str::to_owned).expect("a prompt"),
             "Review:\n\
              \n\
              src/telegram.rs:622\n\
@@ -677,11 +892,87 @@ mod tests {
         );
     }
 
+    const SINCE: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn removed_lines_are_named_as_of_the_start() {
+        let replaced = Note {
+            new: Some(lines("src/b.rs", 4, 4)),
+            old: Some(lines("src/a.rs", 3, 4)),
+            lines: vec![" x".to_owned(), "-y".to_owned(), "+z".to_owned()],
+            text: "why".to_owned(),
+            suggestion: None,
+        };
+        let removed = Note {
+            new: None,
+            old: Some(lines("src/a.rs", 9, 9)),
+            lines: vec!["-w".to_owned()],
+            ..note(0, 0, "", "gone?", None)
+        };
+        let review = Review {
+            since: Some(SINCE.to_owned()),
+            notes: vec![replaced, removed],
+        };
+        assert_eq!(
+            prompt(&review, |path| format!("sub/{path}")).expect("a prompt"),
+            "Review:\n\
+             \n\
+             sub/src/b.rs:4 (was 0123456789ab:src/a.rs:3-4)\n\
+             ```diff\n\
+             \x20x\n\
+             -y\n\
+             +z\n\
+             ```\n\
+             why\n\
+             \n\
+             0123456789ab:src/a.rs:9\n\
+             ```diff\n\
+             -w\n\
+             ```\n\
+             gone?"
+        );
+    }
+
     #[test]
     fn a_review_without_a_comment_is_refused() {
-        assert!(prompt(&[]).is_err());
-        assert!(prompt(&[note(3, 3, "x", " ", None)]).is_err());
-        assert!(prompt(&[note(3, 2, "x", "why", None)]).is_err());
-        assert!(prompt(&[note(0, 0, "x", "why", None)]).is_err());
+        assert!(prompt(&review(vec![]), str::to_owned).is_err());
+        for note in [
+            note(3, 3, "x", " ", None),
+            note(3, 2, "x", "why", None),
+            note(0, 0, "x", "why", None),
+            Note {
+                new: None,
+                ..note(3, 3, "x", "why", None)
+            },
+        ] {
+            assert!(prompt(&review(vec![note]), str::to_owned).is_err());
+        }
+    }
+
+    #[test]
+    fn removed_lines_need_their_start_and_take_no_suggestion() {
+        let removed = || Note {
+            new: None,
+            old: Some(lines("a.rs", 2, 2)),
+            lines: vec!["-x".to_owned()],
+            ..note(0, 0, "", "why", None)
+        };
+        assert!(prompt(&review(vec![removed()]), str::to_owned).is_err());
+        let suggested = Review {
+            since: Some(SINCE.to_owned()),
+            notes: vec![Note {
+                suggestion: Some("y".to_owned()),
+                ..removed()
+            }],
+        };
+        assert!(prompt(&suggested, str::to_owned).is_err());
+        let unmarked = Review {
+            since: Some(SINCE.to_owned()),
+            notes: vec![Note {
+                lines: vec!["x".to_owned()],
+                ..removed()
+            }],
+        };
+        assert!(prompt(&unmarked, str::to_owned).is_err());
     }
 }

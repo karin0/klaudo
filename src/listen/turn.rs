@@ -7,6 +7,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::changes::{self, Start, Summary};
 use crate::hook::{self, Event, Produced};
 use kuriero::Message;
 
@@ -221,6 +222,8 @@ pub(super) struct Turn {
     /// with its default choice.
     pub(super) dialog: bool,
     stopping: Option<Stopping>,
+    /// Where the turn started in the session's working tree, `None` outside one.
+    start: Option<Start>,
 }
 
 /// Escape sent to a turn's pane, until its transcript shows the turn interrupted.
@@ -231,8 +234,9 @@ struct Stopping {
 }
 
 impl Turn {
-    fn new(prompt_id: String, thread: Thread) -> Self {
+    fn new(prompt_id: String, thread: Thread, dir: &Path) -> Self {
         Self {
+            start: changes::start(dir),
             segment: Some(Segment::new()),
             seed: seed(&prompt_id),
             prompt_id,
@@ -383,6 +387,7 @@ impl Machine {
             session.turn = Some(Turn::new(
                 event.prompt_id.clone().unwrap_or_default(),
                 thread,
+                &session.dir,
             ));
         }
     }
@@ -413,7 +418,7 @@ impl Machine {
             place,
             prompt: None,
         });
-        session.turn = Some(Turn::new(named.to_owned(), thread));
+        session.turn = Some(Turn::new(named.to_owned(), thread, &session.dir));
         true
     }
 
@@ -711,13 +716,13 @@ impl Machine {
         };
         session.done = Some(turn.prompt_id.clone());
         let head = session.head(id, Some(&turn.prompt_id));
+        let links = Links::new(self.app, id);
+        let mut answer = hook::message(event, &head, &took(turn.started.elapsed()), links);
+        if let Some(line) = turn.start.as_ref().zip(links).and_then(review) {
+            answer.markdown = format!("{}\n\n{line}", answer.markdown);
+        }
         let closing = Closing {
-            answer: hook::message(
-                event,
-                &head,
-                &took(turn.started.elapsed()),
-                Links::new(self.app, id),
-            ),
+            answer,
             thread: turn.thread,
             live: turn.live,
             until: Instant::now() + CLOSE_WAIT,
@@ -1027,6 +1032,30 @@ fn interrupted(path: &Path, from: u64) -> bool {
                 .as_str()
                 .is_some_and(|text| text.starts_with(INTERRUPTED))
         })
+}
+
+/// The line linking to the changes made since `start`, `None` when there are none.
+fn review((start, links): (&Start, Links)) -> Option<String> {
+    let summary = changes::summary(&start.top, &start.head)
+        .inspect_err(|error| eprintln!("changes since {}: {error}", start.head))
+        .ok()?;
+    if summary.files == 0 {
+        return None;
+    }
+    let link = links.changes(&start.head)?;
+    Some(format!("[Review changes: {}]({link})", counted(&summary)))
+}
+
+/// How a review link counts its changes, as `3 commits, 5 files`.
+fn counted(&Summary { commits, files }: &Summary) -> String {
+    let plural =
+        |count: usize, noun: &str| format!("{count} {noun}{}", if count == 1 { "" } else { "s" });
+    let files = plural(files, "file");
+    if commits == 0 {
+        files
+    } else {
+        format!("{}, {files}", plural(commits, "commit"))
+    }
 }
 
 /// The chat message that carried a prompt, when the daemon is the one that typed it.

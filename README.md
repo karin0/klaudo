@@ -336,7 +336,7 @@ is enough for Claude to learn it.
 The command asks the daemon where the files go and uploads them itself, so its exit
 status says whether every file arrived.
 
-## Reviewing a file
+## Reviews
 
 Claude Code links to the files it talks about, as in `[listen.rs:588](src/listen.rs#L588)`.
 Once `WEB_LISTEN` is set, each inline link of an answer whose target has no scheme opens
@@ -348,9 +348,23 @@ when it starts. A link whose parameter would pass the 512 characters Telegram pa
 stays as Claude Code wrote it. A relative path resolves in the session's directory. An
 answer the hook posts without a daemon keeps its links as Claude Code wrote them.
 
-On the page, a tap on a line number opens a comment there, and a tap on another
-stretches it over the lines between, as a drag across line numbers does. `Suggest
-change` fills an editor with the lines to rewrite. `Send review` types every comment
+A turn of a session in a git working tree that changed anything there ends with a link
+to the changes, as in `[Review changes: 3 commits, 5 files](https://t.me/<bot>?startapp=<session>_<commit>)`.
+The daemon records the commit checked out as the turn starts, and the page shows the
+changes from it to the working tree as it is when the page opens, untracked files
+included, so an older link shows everything since its turn began. The link is in the
+answer's text, since the daemon rewrites a message without its buttons, and an answer
+split over several messages would have to carry a button on its last one. The page
+lists the commits the changes take in, and a tap on any commit moves the start to its
+parent. Each file shows the hunks git found, and expanding one loads both sides of the
+file whole.
+
+On either page, a tap on a line number opens a comment there, and a tap on another in
+the same file stretches it over the lines between, as a drag across line numbers does.
+A comment on the changes may span removed lines, which the prompt names as git names a
+file as of a commit, as in `0123456789ab:src/a.rs:3-4`, so Claude does not read them as
+lines of the file as it is. `Suggest change` fills an editor with the lines to rewrite,
+and only lines of the file as it is can be rewritten. `Send review` types every comment
 into the session as one prompt, the way a reply from the chat is typed, so a guest's
 review goes behind the reminder and a session waiting on a dialog refuses it. The
 daemon first posts the prompt quoted under the session's head where the session posts
@@ -361,13 +375,14 @@ Telegram signs the `initData` it hands the page with a key derived from the bot 
 It names who opened the page and carries the link's `startapp`, and the page passes it
 with every request. That signature is all that guards the files, so the page reaches as
 far as a reply could: the user reads any file the daemon can, and a guest only the
-sessions and the files inside `CHAT_PROJECTS`, with symlinks resolved. A signature older
+sessions and the files inside `CHAT_PROJECTS`, with symlinks resolved, and the changes of
+a working tree whose top is inside them. A signature older
 than a day is refused, and opening the link again signs a new one. A file past 1 MiB or
 not in UTF-8 is refused.
 
 The page is a React app in `web/`, which pnpm builds into `web/dist` for the binary to
-embed, so the page always matches the daemon serving it. It draws the file with
-`@pierre/diffs`, which draws diffs as well.
+embed, so the page always matches the daemon serving it. It draws files and diffs with
+`@pierre/diffs`.
 The server runs tokio and hyper on a thread of its own, and asks the main loop for what
 only the main loop knows, a session's directory and pane, through the channel the other
 input threads feed, so the rest of the daemon stays synchronous.
@@ -547,6 +562,7 @@ building it needs Node and pnpm. The lint levels live in `Cargo.toml`, so a bare
 `cargo clippy` enforces the same set. `web/` checks its formatting with Prettier, lints
 with oxlint running typescript-eslint's strict type-aware rules, and type-checks with
 tsc. `pnpm -C web dev` serves the page with a stand-in for the daemon and Telegram, and
-`/mock` there opens it as Telegram would, `/mock?dark` in the dark theme.
+`/mock` there opens it as a file link would, `/mock?changes` as a link to changes, and
+`dark` in either query in the dark theme.
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
 against a server answering as Telegram does and a `tmux` that records how it was called.

@@ -157,3 +157,44 @@ button:disabled {
 .text {
   white-space: pre-wrap;
 }
+
+/* The code scrolls inside the view, which takes the height Telegram leaves the page,
+   so the field being typed in stays above the keyboard. */
+.changes .code-view {
+  height: var(--tg-viewport-height, 100vh);
+  overflow-y: auto;
+}
+
+.commits {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.commit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 0;
+  color: var(--hint);
+  text-align: left;
+}
+
+.commit.included {
+  color: var(--fg);
+}
+
+.commit .subject {
+  overflow-wrap: anywhere;
+}
+
+.commits .label {
+  padding-block: 6px 2px;
+}
+
+.commits .earlier {
+  align-self: flex-start;
+  padding-inline: 0;
+}

@@ -4599,36 +4599,37 @@ fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
         .expect("the page loads its script");
     assert_eq!(page(script, "").0, 200, "{script}");
 
-    let (status, shown) = page("/api/file", &signed(OWNER, &link(SHARED, "src/a.rs")));
+    let (status, shown) = page("/api/open", &signed(OWNER, &link(SHARED, "src/a.rs")));
     assert_eq!(status, 200, "{shown}");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&shown).expect("a file"),
-        json!({"path": "src/a.rs", "content": "fn a() {}\nfn b() {}\n", "from": 2, "to": 2})
+        json!({"kind": "file", "path": "src/a.rs", "content": "fn a() {}\nfn b() {}\n",
+            "from": 2, "to": 2})
     );
     // The owner can read anything a shell of theirs could.
-    let (status, _) = page("/api/file", &signed(OWNER, &link(SHARED, "../outside")));
+    let (status, _) = page("/api/open", &signed(OWNER, &link(SHARED, "../outside")));
     assert_eq!(status, 200);
     // A guest reaches neither a session outside `CHAT_PROJECTS` nor a file outside them.
     for (session, path) in [
         ("fedcba9876543210", "project/src/a.rs"),
         (SHARED, "../outside"),
     ] {
-        let (status, refusal) = page("/api/file", &signed(GUEST, &link(session, path)));
+        let (status, refusal) = page("/api/open", &signed(GUEST, &link(session, path)));
         assert_eq!(
             (status, refusal.as_str()),
             (409, "that project is not open to guests"),
             "{session} {path}"
         );
     }
-    let (status, _) = page("/api/file", &signed(GUEST, &link(SHARED, "src/a.rs")));
+    let (status, _) = page("/api/open", &signed(GUEST, &link(SHARED, "src/a.rs")));
     assert_eq!(status, 200);
     let stranger = signed(STRANGER, &link(SHARED, "src/a.rs"));
-    assert_eq!(page("/api/file", &stranger).0, 403);
+    assert_eq!(page("/api/open", &stranger).0, 403);
     let owner = signed(OWNER, &link(SHARED, "src/a.rs"));
     let forged = owner.replace("first_name%22%3A%22Ann", "first_name%22%3A%22Bob");
     assert_ne!(forged, owner);
-    assert_eq!(page("/api/file", &forged).0, 401);
-    assert_eq!(page("/api/file", "").0, 401);
+    assert_eq!(page("/api/open", &forged).0, 401);
+    assert_eq!(page("/api/open", "").0, 401);
     drop(daemon);
     let mut session = session;
     let _ = session.kill();
@@ -4645,8 +4646,8 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
     let daemon = served(root, pid, port);
 
     let owner = signed(OWNER, &link(SHARED, "src/a.rs"));
-    let review = json!([{"path": "src/a.rs", "from": 2, "to": 2, "original": "fn b() {}",
-        "text": "rename it", "suggestion": null}]);
+    let review = json!({"since": null, "notes": [{"new": {"path": "src/a.rs", "from": 2, "to": 2},
+        "old": null, "lines": [" fn b() {}"], "text": "rename it", "suggestion": null}]});
     let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
     assert_eq!(status, 204, "{refusal}");
     let prompt = "Review:\n\nsrc/a.rs:2\n> fn b() {}\nrename it";
@@ -4702,6 +4703,94 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
         .find(|call| call.label == "sendRichMessage silent")
         .expect("the refused review in the chat");
     assert_eq!(made.last().and_then(|call| call.target), Some(posted.id));
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
+/// A turn that changed its working tree ends with a link to the changes, which the Mini
+/// App shows since the turn's start, and whose removed lines a review names as of it.
+#[test]
+fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
+    let (temporary, calls, _chat, port) = reviewing("review-changes");
+    let root = temporary.path();
+    let project = project(root);
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "src/a.rs"]);
+    git(&["commit", "-qm", "first"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let (session, pid) = terminal(root);
+    let daemon = served(root, pid, port);
+
+    std::fs::write(project.join("src/a.rs"), "fn a() {}\nfn c() {}\n").expect("an edit");
+    std::fs::write(project.join("src/n.rs"), "fn n() {}\n").expect("a new file");
+    // The review goes first, since the hooks below report from a process the pane does
+    // not hold.
+    let start = format!("{SHARED}_{head}");
+    let owner = signed(OWNER, &start);
+    let (status, opened) = page(port, "GET", "/api/open", &owner, "");
+    assert_eq!(status, 200, "{opened}");
+    let opened: serde_json::Value = serde_json::from_str(&opened).expect("changes");
+    assert_eq!(opened["kind"], json!("changes"));
+    assert_eq!(opened["since"], json!(head));
+    let patch = opened["patch"].as_str().expect("a patch");
+    assert!(patch.contains("-fn b() {}\n+fn c() {}\n"), "{patch}");
+    assert!(
+        patch.contains("+++ b/src/n.rs\n@@ -0,0 +1,1 @@\n+fn n() {}\n"),
+        "{patch}"
+    );
+    let moved = page(port, "GET", "/api/open?since=HEAD", &owner, "");
+    assert_eq!(moved, (422, "HEAD is no commit hash".to_owned()));
+
+    let contents = format!("/api/contents?since={head}&path=src/a.rs&prev=src/a.rs");
+    let (status, contents) = page(port, "GET", &contents, &owner, "");
+    assert_eq!(status, 200, "{contents}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&contents).expect("contents"),
+        json!({"old": "fn a() {}\nfn b() {}\n", "new": "fn a() {}\nfn c() {}\n"})
+    );
+
+    let review = json!({"since": head, "notes": [{
+        "new": {"path": "src/a.rs", "from": 2, "to": 2},
+        "old": {"path": "src/a.rs", "from": 2, "to": 2},
+        "lines": ["-fn b() {}", "+fn c() {}"], "text": "why c?", "suggestion": null}]});
+    let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
+    assert_eq!(status, 204, "{refusal}");
+    let prompt = format!(
+        "Review:\n\nsrc/a.rs:2 (was {}:src/a.rs:2)\n```diff\n-fn b() {{}}\n+fn c() {{}}\n```\nwhy c?",
+        &head[..12]
+    );
+    let typed = root.join("typed");
+    wait_for(
+        || std::fs::read_to_string(&typed).is_ok_and(|typed| typed == prompt),
+        "the review was never typed",
+    );
+    let event = |event: serde_json::Value| {
+        let mut event = event;
+        event["session_id"] = json!(SHARED);
+        event["cwd"] = json!(project);
+        event["prompt_id"] = json!("aaaaaaaa-1111");
+        hook_in_pane(root, &event);
+    };
+    event(json!({"hook_event_name": "UserPromptSubmit", "prompt": "rename b"}));
+    event(json!({"hook_event_name": "Stop", "last_assistant_message": "Renamed."}));
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let answer = made.last().expect("the answer");
+    let linked = format!("[Review changes: 2 files](https://t.me/klaudo_bot?startapp={start})");
+    assert!(answer.markdown.contains(&linked), "{}", answer.markdown);
+
     drop(daemon);
     let mut session = session;
     let _ = session.kill();

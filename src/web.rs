@@ -1,6 +1,6 @@
-//! The links that open a file an answer names in the Telegram Mini App the daemon serves.
-//! A link carries everything the page needs in its `startapp` parameter, so a link posted
-//! before a restart still opens.
+//! The links that open a file an answer names, or the changes of a turn, in the Telegram
+//! Mini App the daemon serves. A link carries everything the page needs in its `startapp`
+//! parameter, so a link posted before a restart still opens.
 
 use std::net::SocketAddr;
 
@@ -55,11 +55,25 @@ impl<'a> Links<'a> {
             return None;
         }
         let (from, to) = lines(fragment).unwrap_or((0, 0));
-        let parameter = Target {
-            session: self.session.to_owned(),
+        self.opening(Opens::File {
             path: path.to_owned(),
             from,
             to,
+        })
+    }
+
+    /// The Mini App link opening the changes of the session's working tree since the
+    /// commit `since`, a full hash.
+    pub fn changes(self, since: &str) -> Option<String> {
+        self.opening(Opens::Changes {
+            since: since.to_owned(),
+        })
+    }
+
+    fn opening(self, opens: Opens) -> Option<String> {
+        let parameter = Target {
+            session: self.session.to_owned(),
+            opens,
         }
         .encode();
         (parameter.len() <= PARAMETER_MAX).then(|| format!("{}?startapp={parameter}", self.app))
@@ -85,39 +99,55 @@ fn lines(fragment: &str) -> Option<(usize, usize)> {
     (from > 0 && to >= from).then_some((from, to))
 }
 
-/// What a link opens: a file of a session, as the answer wrote it, and its lines, `0` to
-/// `0` for none. It travels as `<session>_<from>_<to>_<path in base64url>`, which keeps
-/// to the alphabet `startapp` allows, since a session id holds no `_`.
+/// What a link opens in a session. It travels as `<session>_<from>_<to>_<path in
+/// base64url>` for a file and `<session>_<since>` for changes, which keeps to the
+/// alphabet `startapp` allows, since a session id holds no `_`.
 #[derive(Debug, PartialEq)]
 pub struct Target {
     pub session: String,
-    pub path: String,
-    pub from: usize,
-    pub to: usize,
+    pub opens: Opens,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Opens {
+    /// A file as the answer wrote it, and its lines, `0` to `0` for none.
+    File {
+        path: String,
+        from: usize,
+        to: usize,
+    },
+    /// The changes of the working tree since the commit `since`.
+    Changes { since: String },
 }
 
 impl Target {
     fn encode(&self) -> String {
-        format!(
-            "{}_{}_{}_{}",
-            self.session,
-            self.from,
-            self.to,
-            URL_SAFE_NO_PAD.encode(&self.path)
-        )
+        match &self.opens {
+            Opens::File { path, from, to } => format!(
+                "{}_{from}_{to}_{}",
+                self.session,
+                URL_SAFE_NO_PAD.encode(path)
+            ),
+            Opens::Changes { since } => format!("{}_{since}", self.session),
+        }
     }
 
     pub fn decode(parameter: &str) -> Option<Self> {
-        let mut fields = parameter.splitn(4, '_');
-        let session = fields.next()?.to_owned();
-        let from = fields.next()?.parse().ok()?;
-        let to = fields.next()?.parse().ok()?;
-        let path = String::from_utf8(URL_SAFE_NO_PAD.decode(fields.next()?).ok()?).ok()?;
+        let fields: Vec<&str> = parameter.splitn(4, '_').collect();
+        let opens = match fields[1..] {
+            [since] => Opens::Changes {
+                since: since.to_owned(),
+            },
+            [from, to, path] => Opens::File {
+                from: from.parse().ok()?,
+                to: to.parse().ok()?,
+                path: String::from_utf8(URL_SAFE_NO_PAD.decode(path).ok()?).ok()?,
+            },
+            _ => return None,
+        };
         Some(Self {
-            session,
-            path,
-            from,
-            to,
+            session: fields[0].to_owned(),
+            opens,
         })
     }
 }
@@ -147,9 +177,11 @@ mod tests {
     fn target(path: &str, from: usize, to: usize) -> Target {
         Target {
             session: SESSION.to_owned(),
-            path: path.to_owned(),
-            from,
-            to,
+            opens: Opens::File {
+                path: path.to_owned(),
+                from,
+                to,
+            },
         }
     }
 
@@ -170,6 +202,24 @@ mod tests {
         assert_eq!(
             opened("README.md#configuration"),
             Some(target("README.md", 0, 0))
+        );
+    }
+
+    #[test]
+    fn a_link_to_changes_opens_them_since_its_commit() {
+        let since = "0123456789abcdef0123456789abcdef01234567";
+        let link = links().changes(since).expect("a link");
+        let parameter = link
+            .strip_prefix("https://t.me/bot/app?startapp=")
+            .expect("a startapp link");
+        assert_eq!(
+            Target::decode(parameter),
+            Some(Target {
+                session: SESSION.to_owned(),
+                opens: Opens::Changes {
+                    since: since.to_owned()
+                },
+            })
         );
     }
 
