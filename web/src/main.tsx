@@ -1,13 +1,12 @@
-import {
-  StrictMode,
-  useEffect,
-  useMemo,
-  useState,
-  type MouseEvent,
-} from 'react';
+import { StrictMode, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DiffModeEnum, DiffView } from '@git-diff-view/react';
-import '@git-diff-view/react/styles/diff-view-pure.css';
+import {
+  File,
+  useStableCallback,
+  type FileOptions,
+  type LineAnnotation,
+  type SelectedLineRange,
+} from '@pierre/diffs/react';
 import './app.css';
 
 const app = window.Telegram.WebApp;
@@ -37,6 +36,8 @@ type Note = Range & Draft;
 
 /** What a line carries under it: a saved note, or the editor of the lines being commented on. */
 type Extension = { note: Note } | { editor: Range };
+
+const EMPTY: Draft = { text: '', suggestion: null };
 
 const failure = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -71,22 +72,47 @@ function useScheme(): 'light' | 'dark' {
   return scheme;
 }
 
-/** A rule painting the rows of `range`, whose number the library writes on each row. */
-function paint(range: Range | null, colour: string): string {
-  if (range === null || range.from === 0) {
-    return '';
-  }
-  const rows = Array.from(
-    { length: range.to - range.from + 1 },
-    (_, index) => `tr[data-line="${String(range.from + index)}"] > td`,
-  );
-  return `${rows.join(',')} { background: ${colour} !important; }`;
+/** Scrolls the focused field into view once the viewport settles, as after the keyboard opens. */
+function useKeyboardReveal() {
+  useEffect(() => {
+    const changed = ({ isStateStable }: { isStateStable: boolean }) => {
+      const field = document.activeElement;
+      if (isStateStable && field instanceof HTMLTextAreaElement) {
+        field.scrollIntoView({ block: 'nearest' });
+      }
+    };
+    app.onEvent('viewportChanged', changed);
+    return () => {
+      app.offEvent('viewportChanged', changed);
+    };
+  }, []);
 }
 
 function span({ from, to }: Range): string {
   return from === to
     ? `Line ${String(from)}`
     : `Lines ${String(from)}–${String(to)}`;
+}
+
+function ordered({ start, end }: SelectedLineRange): Range {
+  return { from: Math.min(start, end), to: Math.max(start, end) };
+}
+
+/**
+ * Styles for the code, which the library draws in a shadow root: the page's background,
+ * and a tint on the lines the link points at, under any selection.
+ */
+function codeStyle({ from, to }: Range): string {
+  const background =
+    ':host { --diffs-light-bg: var(--bg); --diffs-dark-bg: var(--bg); }';
+  if (from === 0) {
+    return background;
+  }
+  const rows = Array.from({ length: to - from + 1 }, (_, index) => {
+    const line = String(from + index);
+    return `[data-line="${line}"], [data-column-number="${line}"]`;
+  });
+  return `${background} ${rows.join(', ')} { --diffs-computed-decoration-bg: var(--target); }`;
 }
 
 function Editor({
@@ -107,23 +133,27 @@ function Editor({
   const { text, suggestion } = draft;
   const empty =
     !text.trim() && (suggestion === null || suggestion === original);
+  const box = useRef<HTMLDivElement>(null);
+  const suggesting = suggestion !== null;
+  // The library moves the editor into place in its own layout effect, after React has
+  // mounted it, so `autoFocus` would find the fields detached.
+  useEffect(() => {
+    box.current?.querySelector('textarea')?.focus();
+  }, [suggesting]);
   return (
-    <div className="card editor">
+    <div ref={box} className="extension editor">
       <div className="hint">{span(range)}</div>
-      {/* DiffView takes a new renderExtendLine in an effect, so a controlled value would
-          trail each keystroke by a render, which moves the caret and breaks IME input. */}
       {suggestion !== null && (
         <textarea
           className="code"
-          defaultValue={suggestion}
+          value={suggestion}
           onChange={(event) => {
             onDraft({ text, suggestion: event.target.value });
           }}
-          autoFocus
         />
       )}
       <textarea
-        defaultValue={text}
+        value={text}
         placeholder={
           suggestion === null ? 'Leave a comment' : 'Why this change (optional)'
         }
@@ -131,7 +161,6 @@ function Editor({
         onChange={(event) => {
           onDraft({ text: event.target.value, suggestion });
         }}
-        autoFocus={suggestion === null}
       />
       <div className="buttons">
         <button
@@ -164,7 +193,7 @@ function NoteView({
   onDelete: () => void;
 }) {
   return (
-    <div className="card">
+    <div className="extension">
       <div className="buttons">
         <span className="hint grow">{span(note)}</span>
         <button onClick={onDelete}>Delete</button>
@@ -190,9 +219,14 @@ function NoteView({
 
 function Review({ shown }: { shown: Shown }) {
   const scheme = useScheme();
+  useKeyboardReveal();
   const [notes, setNotes] = useState<ReadonlyMap<number, Note>>(new Map());
   const [editing, setEditing] = useState<Range | null>(null);
-  const [draft, setDraft] = useState<Draft>({ text: '', suggestion: null });
+  // The lines under a finger dragging across line numbers, which become `editing` when
+  // it lifts. The ref tells a drag from a tap before the drag's last move has rendered.
+  const [dragged, setDragged] = useState<Range | null>(null);
+  const dragging = useRef(false);
+  const [draft, setDraft] = useState<Draft>(EMPTY);
   const [sending, setSending] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
 
@@ -201,32 +235,10 @@ function Review({ shown }: { shown: Shown }) {
     [shown],
   );
   const original = ({ from, to }: Range) => lines.slice(from - 1, to);
-  // The library draws only hunks, so the whole file is one hunk of context lines.
-  const data = useMemo(() => {
-    const count = String(lines.length);
-    const hunk = [
-      `--- a/${shown.path}`,
-      `+++ b/${shown.path}`,
-      `@@ -1,${count} +1,${count} @@`,
-      ...lines.map((line) => ` ${line}`),
-    ].join('\n');
-    const side = {
-      fileName: shown.path,
-      fileLang: /\.([^./]+)$/.exec(shown.path)?.[1] ?? 'plaintext',
-      content: shown.content,
-    };
-    return { oldFile: side, newFile: side, hunks: [hunk] };
-  }, [shown, lines]);
-
-  useEffect(() => {
-    if (shown.from > 0) {
-      requestAnimationFrame(() => {
-        document
-          .querySelector(`tr[data-line="${String(shown.from)}"]`)
-          ?.scrollIntoView({ block: 'center' });
-      });
-    }
-  }, [shown]);
+  const file = useMemo(
+    () => ({ name: shown.path, contents: shown.content }),
+    [shown],
+  );
 
   useEffect(() => {
     if (notes.size > 0) {
@@ -237,25 +249,15 @@ function Review({ shown }: { shown: Shown }) {
   }, [notes]);
 
   // A tap on a line number opens the editor there, and a tap on another while it is
-  // open stretches it over the lines between.
-  const tapped = (event: MouseEvent) => {
-    if (!(event.target instanceof Element)) {
-      return;
-    }
-    const number = event.target
-      .closest('td.diff-line-num')
-      ?.querySelector('[data-line-new-num]')
-      ?.getAttribute('data-line-new-num');
-    if (number == null) {
-      return;
-    }
-    const line = Number(number);
-    if (editing === null) {
+  // open stretches it over the lines between. The library reports a tap on the one line
+  // selected as `null`.
+  const tapped = (line: number | null) => {
+    if (line === null) {
+      setEditing(null);
+    } else if (editing === null) {
       const note = notes.get(line);
       setEditing({ from: note?.from ?? line, to: line });
-      setDraft(note ?? { text: '', suggestion: null });
-    } else if (editing.from === line && editing.to === line) {
-      setEditing(null);
+      setDraft(note ?? EMPTY);
     } else {
       setEditing({
         from: Math.min(editing.from, line),
@@ -264,13 +266,63 @@ function Review({ shown }: { shown: Shown }) {
     }
   };
 
-  const extensions: Record<string, { data: Extension }> = {};
-  for (const note of notes.values()) {
-    extensions[String(note.to)] = { data: { note } };
-  }
-  if (editing !== null) {
-    extensions[String(editing.to)] = { data: { editor: editing } };
-  }
+  const started = useStableCallback(() => {
+    dragging.current = false;
+    setDragged(null);
+  });
+  const changed = useStableCallback((range: SelectedLineRange | null) => {
+    dragging.current = true;
+    setDragged(range === null ? null : ordered(range));
+  });
+  const selected = useStableCallback((range: SelectedLineRange | null) => {
+    if (!dragging.current) {
+      tapped(range?.start ?? null);
+      return;
+    }
+    started();
+    if (editing === null) {
+      setDraft(EMPTY);
+    }
+    setEditing(range === null ? null : ordered(range));
+  });
+  // The library draws the lines after the render it reports as the mount, so the page
+  // jumps to the target on the first render that has it.
+  const jumped = useRef(shown.from === 0);
+  const rendered = useStableCallback((node: HTMLElement) => {
+    const target = node.shadowRoot?.querySelector(
+      `[data-line="${String(shown.from)}"]`,
+    );
+    if (!jumped.current && target != null) {
+      jumped.current = true;
+      target.scrollIntoView({ block: 'center' });
+    }
+  });
+
+  const options = useMemo(
+    (): FileOptions<Extension, undefined> => ({
+      themeType: scheme,
+      overflow: 'wrap',
+      disableFileHeader: true,
+      enableLineSelection: true,
+      onLineSelectionStart: started,
+      onLineSelectionChange: changed,
+      onLineSelectionEnd: selected,
+      onPostRender: rendered,
+      unsafeCSS: codeStyle(shown),
+    }),
+    [scheme, shown, started, changed, selected, rendered],
+  );
+
+  const annotations = useMemo((): LineAnnotation<Extension>[] => {
+    const saved = [...notes.values()]
+      .filter((note) => note.to !== editing?.to)
+      .map((note) => ({ lineNumber: note.to, metadata: { note } }));
+    return editing === null
+      ? saved
+      : [{ lineNumber: editing.to, metadata: { editor: editing } }, ...saved];
+  }, [notes, editing]);
+
+  const selection = dragged ?? editing;
 
   const send = async () => {
     setSending(true);
@@ -301,24 +353,36 @@ function Review({ shown }: { shown: Shown }) {
 
   return (
     <>
-      <style>
-        {paint(shown, 'var(--target)')}
-        {paint(editing, 'var(--selected)')}
-      </style>
       <header>
         {shown.path}
         {shown.from > 0 && <span className="hint"> {span(shown)}</span>}
       </header>
-      <main onClick={tapped}>
-        <DiffView<Extension>
-          data={data}
-          diffViewMode={DiffModeEnum.Unified}
-          diffViewTheme={scheme}
-          diffViewHighlight
-          diffViewWrap
-          diffViewFontSize={13}
-          extendData={{ newFile: extensions }}
-          renderExtendLine={({ data: extension }) =>
+      <main
+        onMouseDown={(event) => {
+          // The mouse event a browser fires after a tap would move the focus from the
+          // editor the tap opened to the line number tapped.
+          const number = event.nativeEvent
+            .composedPath()
+            .some(
+              (node) =>
+                node instanceof Element &&
+                node.hasAttribute('data-column-number'),
+            );
+          if (number) {
+            event.preventDefault();
+          }
+        }}
+      >
+        <File<Extension>
+          file={file}
+          options={options}
+          lineAnnotations={annotations}
+          selectedLines={
+            selection === null
+              ? null
+              : { start: selection.from, end: selection.to }
+          }
+          renderAnnotation={({ metadata: extension }) =>
             'editor' in extension ? (
               <Editor
                 range={extension.editor}
@@ -357,7 +421,7 @@ function Review({ shown }: { shown: Shown }) {
       </main>
       <footer>
         <span className="hint grow">
-          {refusal ?? 'Tap a line number to comment, and another for a range.'}
+          {refusal ?? 'Tap or drag line numbers to comment.'}
         </span>
         <button
           className="primary"

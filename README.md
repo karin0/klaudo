@@ -349,12 +349,13 @@ stays as Claude Code wrote it. A relative path resolves in the session's directo
 answer the hook posts without a daemon keeps its links as Claude Code wrote them.
 
 On the page, a tap on a line number opens a comment there, and a tap on another
-stretches it over the lines between. `Suggest change` fills an editor with the lines to
-rewrite. `Send review` types every comment into the session as one prompt, the way a
-reply from the chat is typed, so a guest's review goes behind the reminder and a session
-waiting on a dialog refuses it. The daemon first posts the prompt quoted under the
-session's head where the session posts between turns, and the turn it starts replies to
-that message, as a turn replies to the message that asked for it.
+stretches it over the lines between, as a drag across line numbers does. `Suggest
+change` fills an editor with the lines to rewrite. `Send review` types every comment
+into the session as one prompt, the way a reply from the chat is typed, so a guest's
+review goes behind the reminder and a session waiting on a dialog refuses it. The
+daemon first posts the prompt quoted under the session's head where the session posts
+between turns, and the turn it starts replies to that message, as a turn replies to the
+message that asked for it.
 
 Telegram signs the `initData` it hands the page with a key derived from the bot token.
 It names who opened the page and carries the link's `startapp`, and the page passes it
@@ -366,7 +367,7 @@ not in UTF-8 is refused.
 
 The page is a React app in `web/`, which pnpm builds into `web/dist` for the binary to
 embed, so the page always matches the daemon serving it. It draws the file with
-`@git-diff-view/react` as one hunk of unchanged lines, which leaves room to show a diff.
+`@pierre/diffs`, which draws diffs as well.
 The server runs tokio and hyper on a thread of its own, and asks the main loop for what
 only the main loop knows, a session's directory and pane, through the channel the other
 input threads feed, so the rest of the daemon stays synchronous.
@@ -473,9 +474,9 @@ needs a main Mini App, which BotFather sets up, and the daemon stops at start wi
 one. Telegram opens a Mini App only over HTTPS, so a reverse proxy forwards the URL
 registered with BotFather to `WEB_LISTEN`, with
 any path prefix stripped, since the page asks for its files relative to itself. The
-page's script is over a megabyte, so the proxy should compress it. Every file the page
-loads carries a hash of its content in its name, so the proxy may cache them, but it
-must keep the daemon's `Cache-Control` on the page itself.
+page's scripts come to several hundred kilobytes, so the proxy should compress them.
+Every file the page loads carries a hash of its content in its name, so the proxy may
+cache them, but it must keep the daemon's `Cache-Control` on the page itself.
 
 `TRACE_UPDATES`, set to `1`, logs every polled update as Telegram sent it.
 `API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own

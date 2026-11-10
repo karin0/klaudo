@@ -79,7 +79,8 @@ export default defineConfig({
   // The daemon may be reached under any path prefix.
   base: './',
   build: {
-    // The page is one script by design, which the daemon embeds and a browser caches.
-    chunkSizeWarningLimit: 2048,
+    // Shiki's grammars of the largest languages pass Vite's default limit, and the page
+    // loads each only for a file in its language.
+    chunkSizeWarningLimit: 1024,
   },
 });

@@ -9,7 +9,6 @@
   --accent: var(--tg-theme-button-color, #1f883d);
   --accent-fg: var(--tg-theme-button-text-color, #fff);
   --target: rgba(212, 167, 44, 0.25);
-  --selected: rgba(56, 139, 253, 0.25);
   --safe-bottom: var(--tg-safe-area-inset-bottom, 0px);
 }
 
@@ -67,30 +66,11 @@ footer {
   flex: 1;
 }
 
-/* One column of line numbers, which take the taps that open the editor. */
-[data-line-old-num],
-.diff-line-num .w-\[8px\] {
-  display: none !important;
-}
-
-.diff-line-num [data-line-new-num] {
-  width: 100% !important;
-}
-
-.diff-line-num {
-  cursor: pointer;
-  width: calc(var(--diff-aside-width--) + 10px) !important;
-  min-width: calc(var(--diff-aside-width--) + 10px) !important;
-  max-width: calc(var(--diff-aside-width--) + 10px) !important;
-}
-
-.card {
-  margin: 8px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card);
-  color: var(--fg);
+/* An annotation inherits the code's font and wrapping through the slot it fills, and
+   would widen the code to its longest line without the containment. */
+.extension {
+  contain: inline-size;
+  padding: 10px 12px;
   font:
     15px system-ui,
     sans-serif;
@@ -115,6 +95,8 @@ footer {
     16px system-ui,
     sans-serif;
   resize: vertical;
+  /* Keeps the field clear of the footer when it scrolls into view. */
+  scroll-margin-bottom: 72px;
 }
 
 .editor textarea.code {
@@ -154,7 +136,9 @@ button:disabled {
   opacity: 0.5;
 }
 
+/* A grid stretches each row's background across the longest line. */
 .suggestion {
+  display: grid;
   margin: 8px 0;
   padding: 6px 0;
   border-radius: 6px;
