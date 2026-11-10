@@ -62,17 +62,14 @@ header {
    would widen the code to its longest line without the containment. */
 .extension {
   contain: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 12px;
   font:
     15px system-ui,
     sans-serif;
   white-space: normal;
-}
-
-.editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
 
 .editor textarea {
@@ -134,7 +131,7 @@ button:disabled {
 /* A grid stretches each row's background across the longest line. */
 .suggestion {
   display: grid;
-  margin: 8px 0;
+  margin: 0;
   padding: 6px 0;
   border-radius: 6px;
   overflow-x: auto;

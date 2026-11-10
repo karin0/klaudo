@@ -199,15 +199,7 @@ function NoteView({
 }) {
   return (
     <div className="extension">
-      <div className="buttons">
-        <span className="label grow">{span(note)}</span>
-        <button disabled={onEdit === null} onClick={onEdit ?? undefined}>
-          Edit
-        </button>
-        <button className="danger" onClick={onDelete}>
-          Delete
-        </button>
-      </div>
+      <div className="label">{span(note)}</div>
       {note.suggestion !== null && (
         <pre className="suggestion">
           {original.map((line, index) => (
@@ -223,6 +215,15 @@ function NoteView({
         </pre>
       )}
       {note.text && <div className="text">{note.text}</div>}
+      <div className="buttons">
+        <span className="grow" />
+        <button disabled={onEdit === null} onClick={onEdit ?? undefined}>
+          Edit
+        </button>
+        <button className="danger" onClick={onDelete}>
+          Delete
+        </button>
+      </div>
     </div>
   );
 }
