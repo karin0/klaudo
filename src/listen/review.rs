@@ -87,12 +87,13 @@ pub(super) struct Tree {
 
 type Refusal = (StatusCode, String);
 
-/// What the page sends back: its comments, and the commit the changes it showed start
-/// from, which the lines it shows as removed belong to.
+/// What the page sends back: its comments, the commit the changes it showed start from,
+/// which the lines it shows as removed belong to, and a message for the whole review.
 #[derive(Deserialize)]
 struct Review {
     since: Option<String>,
     notes: Vec<Note>,
+    text: String,
 }
 
 /// One comment of a review, on the lines it spans in the file as it is, in the file as
@@ -558,7 +559,8 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// The prompt a review is typed into the session as: a block per note, each opening with
+/// The prompt a review is typed into the session as: its message, or `Review:` without
+/// one, then a block per note, each opening with
 /// where it points, then the lines it suggests in a diff, or else the lines it comments
 /// on, quoted when they are all in the file as it is, then what the reviewer wrote.
 /// `shown` writes a path of the file as it is as the session would. Removed lines are
@@ -568,7 +570,8 @@ fn prompt(review: &Review, shown: impl Fn(&str) -> String) -> Result<String, Str
     if review.notes.is_empty() {
         return Err("the review holds no comment".to_owned());
     }
-    let mut blocks = vec!["Review:".to_owned()];
+    let text = review.text.trim();
+    let mut blocks = vec![if text.is_empty() { "Review:" } else { text }.to_owned()];
     for note in &review.notes {
         let Note {
             new,
@@ -855,7 +858,11 @@ mod tests {
     }
 
     fn review(notes: Vec<Note>) -> Review {
-        Review { since: None, notes }
+        Review {
+            since: None,
+            notes,
+            text: String::new(),
+        }
     }
 
     #[test]
@@ -923,6 +930,7 @@ mod tests {
         let review = Review {
             since: Some(SINCE.to_owned()),
             notes: vec![replaced, removed],
+            text: String::new(),
         };
         assert_eq!(
             prompt(&review, |path| format!("sub/{path}")).expect("a prompt"),
@@ -945,8 +953,25 @@ mod tests {
     }
 
     #[test]
+    fn a_message_opens_the_review_in_place_of_its_heading() {
+        let review = Review {
+            text: " fix these, then run the tests\n".to_owned(),
+            ..review(vec![note(3, 3, "x", "why", None)])
+        };
+        assert_eq!(
+            prompt(&review, str::to_owned).expect("a prompt"),
+            "fix these, then run the tests\n\nsrc/telegram.rs:3\n> x\nwhy"
+        );
+    }
+
+    #[test]
     fn a_review_without_a_comment_is_refused() {
         assert!(prompt(&review(vec![]), str::to_owned).is_err());
+        let message = Review {
+            text: "looks good".to_owned(),
+            ..review(vec![])
+        };
+        assert!(prompt(&message, str::to_owned).is_err());
         for note in [
             note(3, 3, "x", " ", None),
             note(3, 2, "x", "why", None),
@@ -975,6 +1000,7 @@ mod tests {
                 suggestion: Some("y".to_owned()),
                 ..removed()
             }],
+            text: String::new(),
         };
         assert!(prompt(&suggested, str::to_owned).is_err());
         let unmarked = Review {
@@ -983,6 +1009,7 @@ mod tests {
                 lines: vec!["x".to_owned()],
                 ..removed()
             }],
+            text: String::new(),
         };
         assert!(prompt(&unmarked, str::to_owned).is_err());
     }

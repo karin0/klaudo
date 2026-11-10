@@ -4958,7 +4958,7 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
 
     let owner = signed(OWNER, &link(SHARED, "src/a.rs"));
     let review = json!({"since": null, "notes": [{"new": {"path": "src/a.rs", "from": 2, "to": 2},
-        "old": null, "lines": [" fn b() {}"], "text": "rename it", "suggestion": null}]});
+        "old": null, "lines": [" fn b() {}"], "text": "rename it", "suggestion": null}], "text": ""});
     let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
     assert_eq!(status, 204, "{refusal}");
     let prompt = "Review:\n\nsrc/a.rs:2\n> fn b() {}\nrename it";
@@ -5076,7 +5076,7 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
     let review = json!({"since": head, "notes": [{
         "new": {"path": "src/a.rs", "from": 2, "to": 2},
         "old": {"path": "src/a.rs", "from": 2, "to": 2},
-        "lines": ["-fn b() {}", "+fn c() {}"], "text": "why c?", "suggestion": null}]});
+        "lines": ["-fn b() {}", "+fn c() {}"], "text": "why c?", "suggestion": null}], "text": ""});
     let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
     assert_eq!(status, 204, "{refusal}");
     let prompt = format!(

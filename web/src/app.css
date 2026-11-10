@@ -271,6 +271,14 @@ button:disabled {
   text-align: center;
 }
 
+.message {
+  padding: 8px 16px 16px;
+}
+
+.message textarea {
+  background: var(--bg);
+}
+
 .starts {
   padding: 8px 16px 16px;
   overflow-y: auto;

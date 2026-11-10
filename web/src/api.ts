@@ -25,7 +25,10 @@ export interface Range {
   to: number;
 }
 
-/** What `POST /api/review` takes: the comments, and the commit removed lines belong to. */
+/**
+ * What `POST /api/review` takes: the comments, the commit removed lines belong to, and a
+ * message for the whole review, empty for none.
+ */
 export interface Review {
   since: string | null;
   notes: {
@@ -36,6 +39,7 @@ export interface Review {
     text: string;
     suggestion: string | null;
   }[];
+  text: string;
 }
 
 export interface Commit {

@@ -395,7 +395,9 @@ lines of the file as it is. `Suggest change` fills an editor with the lines to r
 and only lines of the file as it is can be rewritten. The top of the page lists the
 comments saved, each scrolling the page to its lines on a tap. `Send review` types every
 comment into the session as one prompt, the way a reply from the chat is typed, so a
-guest's review goes behind the reminder and a session waiting on a dialog refuses it. The
+guest's review goes behind the reminder and a session waiting on a dialog refuses it.
+`Add message` beside it opens a sheet for a message, which opens the prompt in place of
+`Review:`, and `Send review` stays below the sheet to send it at once. The
 daemon first posts the prompt quoted under the session's head where the session posts
 between turns, and the turn it starts replies to that message, as a turn replies to the
 message that asked for it.

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   getFiletypeFromFileName,
   getSharedHighlighter,
@@ -55,15 +56,71 @@ export function useKeyboardReveal() {
 }
 
 /**
- * Telegram's main button sending the `count` comments `review` makes, hidden while the
- * editor is open, where the keyboard would lift it over the editor, and a send would
- * drop the draft. Closing the page asks first while it holds comments.
+ * A sheet sliding up over the dimmed page, closed by a tap outside it, Telegram's back
+ * button or Escape. It renders in the body, since the view it opens from scrolls and
+ * transforms.
  */
-export function useSending(
-  count: number,
-  editing: boolean,
-  review: () => Review,
-) {
+export function Sheet({
+  heading,
+  onClose,
+  children,
+}: {
+  heading: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const closed = useStableCallback(onClose);
+  useEffect(() => {
+    const pressed = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closed();
+      }
+    };
+    app.BackButton.onClick(closed);
+    app.BackButton.show();
+    window.addEventListener('keydown', pressed);
+    return () => {
+      app.BackButton.offClick(closed);
+      app.BackButton.hide();
+      window.removeEventListener('keydown', pressed);
+    };
+  }, [closed]);
+  return createPortal(
+    <div className="backdrop" onClick={onClose}>
+      <div
+        className="sheet"
+        role="dialog"
+        onClick={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        <div className="heading">{heading}</div>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * Telegram's main button sending the `count` comments `review` makes, with the message
+ * its secondary button opens a sheet to write. Both hide while the editor is open, where
+ * the keyboard would lift them over the editor, and a send would drop the draft. The main
+ * button stays over the message's sheet, so it sends what is written there. Closing the
+ * page asks first while it holds comments.
+ */
+export function Sending({
+  count,
+  editing,
+  review,
+}: {
+  count: number;
+  editing: boolean;
+  review: () => Omit<Review, 'text'>;
+}) {
+  const [text, setText] = useState('');
+  const [writing, setWriting] = useState(false);
+
   useEffect(() => {
     if (count > 0) {
       app.enableClosingConfirmation();
@@ -75,7 +132,7 @@ export function useSending(
   const send = useStableCallback(async () => {
     app.MainButton.showProgress();
     try {
-      await call('api/review', review());
+      await call('api/review', { ...review(), text: text.trim() });
       app.disableClosingConfirmation();
       app.close();
     } catch (error) {
@@ -89,18 +146,53 @@ export function useSending(
     const clicked = () => {
       void send();
     };
+    const opened = () => {
+      setWriting(true);
+    };
     app.MainButton.onClick(clicked);
+    app.SecondaryButton.onClick(opened);
     return () => {
       app.MainButton.offClick(clicked);
+      app.SecondaryButton.offClick(opened);
     };
   }, [send]);
 
+  const shown = count > 0 && !editing;
+  const written = text.trim() !== '';
   useEffect(() => {
     app.MainButton.setParams({
       text: `Send review (${String(count)})`,
-      is_visible: count > 0 && !editing,
+      is_visible: shown,
     });
-  }, [count, editing]);
+    app.SecondaryButton.setParams({
+      text: written ? 'Edit message' : 'Add message',
+      position: 'left',
+      is_visible: shown && !writing,
+    });
+  }, [count, shown, written, writing]);
+
+  return (
+    writing && (
+      <Sheet
+        heading="Message"
+        onClose={() => {
+          setWriting(false);
+        }}
+      >
+        <div className="editor message">
+          <textarea
+            autoFocus
+            rows={4}
+            value={text}
+            placeholder="A message to send with the comments"
+            onChange={(event) => {
+              setText(event.target.value);
+            }}
+          />
+        </div>
+      </Sheet>
+    )
+  );
 }
 
 /**

@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useMemo, useRef, useState } from 'react';
 import { parsePatchFiles } from '@pierre/diffs';
 import {
   CodeView,
@@ -25,12 +24,13 @@ import {
   Editor,
   NoteView,
   Overview,
+  Sending,
+  Sheet,
   THEMES,
   keepFocus,
   span,
   useKeyboardReveal,
   useScheme,
-  useSending,
   type Draft,
 } from './notes';
 
@@ -256,7 +256,6 @@ function Commits({
 /**
  * A sheet of starts: `HEAD`, which leaves the working tree alone, then the parent of
  * each commit the changes take in, newest first, then of each commit before the start.
- * It renders in the body, since the view it opens from scrolls and transforms.
  */
 function Starts({
   changes,
@@ -267,22 +266,6 @@ function Starts({
   onClose: () => void;
   onMove: (since: string) => void;
 }) {
-  const closed = useStableCallback(onClose);
-  useEffect(() => {
-    const pressed = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closed();
-      }
-    };
-    app.BackButton.onClick(closed);
-    app.BackButton.show();
-    window.addEventListener('keydown', pressed);
-    return () => {
-      app.BackButton.offClick(closed);
-      app.BackButton.hide();
-      window.removeEventListener('keydown', pressed);
-    };
-  }, [closed]);
   const date = (time: number) =>
     new Date(time * 1000).toLocaleString(undefined, {
       month: 'short',
@@ -330,34 +313,24 @@ function Starts({
       </>
     );
   const [head] = changes.commits;
-  return createPortal(
-    <div className="backdrop" onClick={onClose}>
-      <div
-        className="sheet"
-        role="dialog"
-        onClick={(event) => {
-          event.stopPropagation();
-        }}
-      >
-        <div className="heading">Changes from</div>
-        <div className="starts">
-          {head !== undefined && (
-            <div className="group">
-              {cell('head', head.hash, 'Working tree only')}
-            </div>
-          )}
-          {group(
-            'Included',
-            changes.commits.filter((commit) => commit.included),
-          )}
-          {group(
-            'Earlier',
-            changes.commits.filter((commit) => !commit.included),
-          )}
-        </div>
+  return (
+    <Sheet heading="Changes from" onClose={onClose}>
+      <div className="starts">
+        {head !== undefined && (
+          <div className="group">
+            {cell('head', head.hash, 'Working tree only')}
+          </div>
+        )}
+        {group(
+          'Included',
+          changes.commits.filter((commit) => commit.included),
+        )}
+        {group(
+          'Earlier',
+          changes.commits.filter((commit) => !commit.included),
+        )}
       </div>
-    </div>,
-    document.body,
+    </Sheet>
   );
 }
 
@@ -469,7 +442,7 @@ export function ChangesReview({
     return found;
   };
 
-  useSending(notes.size, editing !== null, () => ({
+  const review = () => ({
     since: changes.since,
     notes: [...notes.values()].map(({ span, quote, draft }) => {
       const fileDiff = diff(span.path);
@@ -482,7 +455,7 @@ export function ChangesReview({
         suggestion: draft.suggestion,
       };
     }),
-  }));
+  });
 
   const moved = (since: string) => {
     if (notes.size === 0 && editing === null) {
@@ -764,6 +737,7 @@ export function ChangesReview({
           )
         }
       />
+      <Sending count={notes.size} editing={editing !== null} review={review} />
     </main>
   );
 }

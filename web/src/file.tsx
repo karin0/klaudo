@@ -17,7 +17,7 @@ import {
   span,
   useKeyboardReveal,
   useScheme,
-  useSending,
+  Sending,
   type Draft,
 } from './notes';
 
@@ -72,7 +72,7 @@ export function FileReview({ shown }: { shown: Shown }) {
   const sorted = [...notes.values()].sort(
     (one, other) => one.from - other.from,
   );
-  useSending(notes.size, editing !== null, () => ({
+  const review = () => ({
     since: null,
     notes: sorted.map((note) => ({
       new: { path: shown.path, from: note.from, to: note.to },
@@ -81,7 +81,7 @@ export function FileReview({ shown }: { shown: Shown }) {
       text: note.text.trim(),
       suggestion: note.suggestion,
     })),
-  }));
+  });
 
   // A tap on a line number opens the editor there, and a tap on another while it is
   // open stretches it over the lines between.
@@ -243,6 +243,11 @@ export function FileReview({ shown }: { shown: Shown }) {
               />
             )
           }
+        />
+        <Sending
+          count={notes.size}
+          editing={editing !== null}
+          review={review}
         />
       </main>
     </>
