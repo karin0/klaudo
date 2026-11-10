@@ -198,7 +198,7 @@ function NoteView({
   onDelete: () => void;
 }) {
   return (
-    <div className="extension">
+    <div className="extension note">
       <div className="label">{span(note)}</div>
       {note.suggestion !== null && (
         <pre className="suggestion">
@@ -373,9 +373,11 @@ function Review({ shown }: { shown: Shown }) {
   useEffect(() => {
     app.MainButton.setParams({
       text: `Send review (${String(notes.size)})`,
-      is_visible: notes.size > 0,
+      // Hidden while the editor is open, where the keyboard would lift it over the
+      // editor, and a send would drop the draft.
+      is_visible: notes.size > 0 && editing === null,
     });
-  }, [notes]);
+  }, [notes, editing]);
 
   return (
     <>

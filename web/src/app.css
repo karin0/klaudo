@@ -120,6 +120,10 @@ button.primary {
   color: var(--accent-fg);
 }
 
+.note button {
+  padding-block: 5px;
+}
+
 button.danger {
   color: var(--danger);
 }
