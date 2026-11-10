@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::telegram::{ELLIPSIS, MAX_BYTES, Post, rich_markdown};
+use crate::web::Links;
 
 /// Fields that identify the invocation rather than describe it, dropped from the
 /// verbatim report an unrecognised event falls back to.
@@ -229,13 +230,16 @@ impl Event {
 
     /// What the message says under its title, in at most `room` bytes where the
     /// event carries more than a message holds.
-    fn body(&self, room: usize) -> String {
+    fn body(&self, room: usize, links: Option<Links>) -> String {
         match self.hook_event_name.as_str() {
             // What was asked is quoted, so a chat scrolled through tells the asks from
             // the answers at a glance.
             "UserPromptSubmit" => quote(self.prompt.as_deref().unwrap_or_default()),
             // What Claude Code answered is markdown, and reads as the markdown it is.
-            "Stop" => rich_markdown(self.last_assistant_message.as_deref().unwrap_or_default()),
+            "Stop" => rich_markdown(
+                self.last_assistant_message.as_deref().unwrap_or_default(),
+                links,
+            ),
             // `error` is only the error's type, such as `rate_limit`, while the message
             // the conversation shows says more, such as when a usage limit resets.
             "StopFailure" => prose(
@@ -525,10 +529,12 @@ pub fn compose(head: &Head, took: &str, tag: &str, body: &str) -> Post {
     }
 }
 
-pub fn message(event: &Event, head: &Head, took: &str) -> Post {
+/// The message an event posts, whose answer opens the files it links to through
+/// `links`.
+pub fn message(event: &Event, head: &Head, took: &str, links: Option<Links>) -> Post {
     let tag = event.tag();
     let title = compose(head, took, &tag, "").markdown.len();
-    compose(head, took, &tag, &event.body(MAX_BYTES - title))
+    compose(head, took, &tag, &event.body(MAX_BYTES - title, links))
 }
 
 #[cfg(test)]
@@ -754,7 +760,7 @@ mod tests {
             "last_assistant_message": "done",
         }));
         assert_eq!(
-            message(&stop, &p(), " 12s").markdown,
+            message(&stop, &p(), " 12s", None).markdown,
             "**p** `s` 12s  #claude\n\ndone"
         );
     }
@@ -767,7 +773,7 @@ mod tests {
             "prompt": "what does it do",
         }));
         assert_eq!(
-            message(&submit, &p(), "").markdown,
+            message(&submit, &p(), "", None).markdown,
             "**p** `s`\n\n>what does it do"
         );
     }
@@ -789,7 +795,7 @@ mod tests {
             "reason": "clear",
         }));
         assert_eq!(
-            message(&odd, &p(), "").markdown,
+            message(&odd, &p(), "", None).markdown,
             "**p** `s`  #claude #PreCompact\n\n\\{\"reason\":\"clear\"\\}"
         );
     }
@@ -806,6 +812,7 @@ mod tests {
                 })),
                 &p(),
                 "",
+                None,
             )
             .markdown
         };
@@ -855,7 +862,7 @@ mod tests {
             "last_assistant_message": "You've hit your session limit · resets 12:10am (Asia/Tokyo)",
         }));
         assert_eq!(
-            message(&failed, &p(), "").markdown,
+            message(&failed, &p(), "", None).markdown,
             "**p** `s`  #claude #failed\n\nYou've hit your session limit · resets 12:10am \\(Asia/Tokyo\\)"
         );
     }
@@ -868,7 +875,7 @@ mod tests {
             "reason": "overloaded",
         }));
         assert_eq!(
-            message(&failed, &p(), "").markdown,
+            message(&failed, &p(), "", None).markdown,
             "**p** `s`  #claude #failed\n\n\\{\"reason\":\"overloaded\"\\}"
         );
     }

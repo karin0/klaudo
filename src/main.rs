@@ -4,6 +4,7 @@ mod listen;
 mod process;
 mod telegram;
 mod tmux;
+mod web;
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -171,9 +172,11 @@ fn deliver(event: &Event, raw: &[u8]) {
             chat: telegram.chat(&directory),
             topic: None,
         };
+        let app = web::config().map(|config| config.app);
+        let links = web::Links::new(app.as_deref(), &event.session_id);
         telegram.post(
             place,
-            &hook::message(event, &head, ""),
+            &hook::message(event, &head, "", links),
             telegram::Sound::Ring,
             None,
         );

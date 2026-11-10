@@ -336,6 +336,41 @@ is enough for Claude to learn it.
 The command asks the daemon where the files go and uploads them itself, so its exit
 status says whether every file arrived.
 
+## Reviewing a file
+
+Claude Code links to the files it talks about, as in `[listen.rs:588](src/listen.rs#L588)`.
+Once `WEB_LISTEN` and `WEB_APP` are set, each inline link of an answer whose target has no
+scheme opens the file in a Telegram Mini App the daemon serves, at the lines a fragment
+`#L12` or `#L12-L20` names. The link is `WEB_APP` with
+`?startapp=<session>_<from>_<to>_<path in base64url>`, so it carries everything the page
+needs and still opens after a restart. A link whose parameter would pass the 512
+characters Telegram passes on stays as Claude Code wrote it. A relative path resolves in
+the session's directory. The hook rewrites the links of an answer it posts without a
+daemon too.
+
+On the page, a tap on a line number opens a comment there, and a tap on another
+stretches it over the lines between. `Suggest change` fills an editor with the lines to
+rewrite. `Send review` types every comment into the session as one prompt, the way a
+reply from the chat is typed, so a guest's review goes behind the reminder and a session
+waiting on a dialog refuses it. The daemon first posts the prompt quoted under the
+session's head where the session posts between turns, and the turn it starts replies to
+that message, as a turn replies to the message that asked for it.
+
+Telegram signs the `initData` it hands the page with a key derived from the bot token.
+It names who opened the page and carries the link's `startapp`, and the page passes it
+with every request. That signature is all that guards the files, so the page reaches as
+far as a reply could: the user reads any file the daemon can, and a guest only the
+sessions and the files inside `CHAT_PROJECTS`, with symlinks resolved. A signature older
+than a day is refused, and opening the link again signs a new one. A file past 1 MiB or
+not in UTF-8 is refused.
+
+The page is a React app in `web/`, which pnpm builds into `web/dist` for the binary to
+embed, so the page always matches the daemon serving it. It draws the file with
+`@git-diff-view/react` as one hunk of unchanged lines, which leaves room to show a diff.
+The server runs tokio and hyper on a thread of its own, and asks the main loop for what
+only the main loop knows, a session's directory and pane, through the channel the other
+input threads feed, so the rest of the daemon stays synchronous.
+
 ## Keystroke delivery
 
 Claude Code's own local messaging socket delivers text to a running session too, but
@@ -433,6 +468,13 @@ the `\;` inside single quotes. Both ssh connections need keys without a passphra
 inside tmux as `attach "$TMUX_PANE" "$(tmux display -p '#{socket_path}')"`, the program
 is tried without the chat.
 
+`WEB_LISTEN` is the address the Mini App is served on, such as `127.0.0.1:8080`, and
+`WEB_APP` its direct link, `https://t.me/<bot>/<app>`, which BotFather's `/newapp` creates
+for the bot. Either is set only with the other. Telegram opens a Mini App only over
+HTTPS, so a reverse proxy forwards the URL registered with BotFather to `WEB_LISTEN`, with
+any path prefix stripped, since the page asks for its files relative to itself. The
+page's script is over a megabyte, so the proxy should compress it.
+
 `TRACE_UPDATES`, set to `1`, logs every polled update as Telegram sent it.
 `API_BASE` defaults to `https://api.telegram.org`, and the tests point it at their own
 server.
@@ -496,7 +538,12 @@ the hook returns.
 
 ## Checks
 
-`./check.sh` runs shellcheck, formatting, clippy, the tests and a release build. The lint
-levels live in `Cargo.toml`, so a bare `cargo clippy` enforces the same set.
+`./check.sh` runs shellcheck, then installs, checks and builds `web/` with pnpm, then runs
+formatting, clippy, the tests and a release build. The binary embeds `web/dist`, so
+building it needs Node and pnpm. The lint levels live in `Cargo.toml`, so a bare
+`cargo clippy` enforces the same set. `web/` checks its formatting with Prettier, lints
+with oxlint running typescript-eslint's strict type-aware rules, and type-checks with
+tsc. `pnpm -C web dev` serves the page with a stand-in for the daemon and Telegram, and
+`/mock` there opens it as Telegram would, `/mock?dark` in the dark theme.
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
 against a server answering as Telegram does and a `tmux` that records how it was called.

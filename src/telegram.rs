@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -9,11 +10,13 @@ use kuriero::{
     Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction, SendMessage,
     SendRichMessage, Sent, SetMessageReaction, SetMyCommands, Update, User,
 };
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ureq::unversioned::multipart::{Form, Part};
+
+use crate::web::Links;
 
 /// An upload of a file is as large as the 50 MB Telegram accepts from a bot, over
 /// whatever uplink the machine has.
@@ -398,17 +401,22 @@ impl Telegram {
     /// own, sent in `CHAT_ID` or in the user's private chat with the bot, whose id is the
     /// user's, or a guest's, sent in `CHAT_ID`.
     pub fn accepts(&self, sender: Option<&User>, message: &Message) -> Option<Admitted> {
-        let sender = sender?;
         let place = Place::of(message);
-        let guest = if sender.id == self.user_id {
-            None
-        } else if self.guests.contains(&sender.id) {
-            Some(name(sender))
-        } else {
-            return None;
-        };
+        let guest = self.guest(sender?).ok()?;
         (place.chat == self.chat_id || (guest.is_none() && place.chat == self.user_id))
             .then_some(Admitted { place, guest })
+    }
+
+    /// The name of `person` as a guest, `None` for the user, or why the daemon answers
+    /// neither.
+    pub fn guest(&self, person: &User) -> Result<Option<String>, &'static str> {
+        if person.id == self.user_id {
+            Ok(None)
+        } else if self.guests.contains(&person.id) {
+            Ok(Some(name(person)))
+        } else {
+            Err("this is not open to you")
+        }
     }
 
     /// A plain message with a button on each row, each button carrying `(label, data)`.
@@ -615,11 +623,13 @@ pub fn blocks(markdown: &str) -> usize {
 
 /// `markdown` from Claude Code, escaped where Telegram reads it differently. Telegram
 /// opens a heading at a `#` that starts a line even with no space after it, so such a `#`
-/// in text is escaped.
-pub fn rich_markdown(markdown: &str) -> String {
+/// in text is escaped. With `links`, an inline link to a file opens it in the Mini App.
+pub fn rich_markdown(markdown: &str, links: Option<Links>) -> String {
     let mut written = String::with_capacity(markdown.len());
     let mut copied = 0;
     let mut line_start = false;
+    // The Mini App link of the file link being read, and where its text has reached.
+    let mut opening: Option<(String, usize)> = None;
     for (event, range) in Parser::new_ext(markdown, OPTIONS).into_offset_iter() {
         if line_start
             && matches!(event, Event::Text(_))
@@ -636,9 +646,59 @@ pub fn rich_markdown(markdown: &str) -> String {
                 | Event::SoftBreak
                 | Event::HardBreak
         );
+        match event {
+            Event::Start(Tag::Link {
+                link_type: LinkType::Inline,
+                dest_url,
+                ..
+            }) => {
+                opening = links
+                    .and_then(|links| links.to(&dest_url))
+                    .map(|link| (link, range.start + 1));
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some((link, text_end)) = opening.take()
+                    && let Some(destination) = destination(markdown, text_end)
+                {
+                    written.push_str(&markdown[copied..destination.start]);
+                    written.push_str(&link);
+                    copied = destination.end;
+                }
+            }
+            _ => {
+                if let Some((_, text_end)) = &mut opening {
+                    *text_end = range.end.max(*text_end);
+                }
+            }
+        }
     }
     written.push_str(&markdown[copied..]);
     written
+}
+
+/// Where the destination of an inline link is written, for a link whose text ends at
+/// `text_end`: inside `<` and `>`, or up to the first unescaped space or unbalanced `)`.
+fn destination(markdown: &str, text_end: usize) -> Option<Range<usize>> {
+    let rest = markdown.get(text_end..)?.strip_prefix("](")?;
+    let start = markdown.len() - rest.trim_start().len();
+    let rest = &markdown[start..];
+    if rest.starts_with('<') {
+        return Some(start..start + rest.find('>')? + 1);
+    }
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for (index, c) in rest.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(start..start + index),
+            ')' => depth -= 1,
+            c if c.is_whitespace() => return Some(start..start + index),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Where a machine's credentials live. It is the whole of where they come from, so a
@@ -789,11 +849,34 @@ mod tests {
     #[test]
     fn a_hash_starting_a_line_of_text_is_kept_from_opening_a_heading() {
         assert_eq!(
-            rich_markdown("#23 is fixed\nand #10\n#17 too\n\n- #20\n> #22"),
+            rich_markdown("#23 is fixed\nand #10\n#17 too\n\n- #20\n> #22", None),
             "\\#23 is fixed\nand #10\n\\#17 too\n\n- \\#20\n> \\#22"
         );
         let kept = "# Title\n\n\\#42 and `#x`\n\n```\n#!/bin/sh\n```\n\n| a |\n|---|\n| #1 |";
-        assert_eq!(rich_markdown(kept), kept.replace("| #1", "| \\#1"));
+        assert_eq!(rich_markdown(kept, None), kept.replace("| #1", "| \\#1"));
+    }
+
+    #[test]
+    fn an_inline_link_to_a_file_opens_it_in_the_mini_app() {
+        let links = Links::new(Some("https://t.me/b/a"), "s");
+        let opened = |path: &str| links.and_then(|links| links.to(path)).expect("a link");
+        let answer = "See [`listen.rs:588`](src/listen.rs#L588) and [the *docs*]( <README.md> \"t\").\n\
+                      [site](https://a.b) [ref][r] [](a(b)c.rs) ![shot](a.png)\n\n[r]: c.rs";
+        assert_eq!(
+            rich_markdown(answer, links),
+            format!(
+                "See [`listen.rs:588`]({}) and [the *docs*]( {} \"t\").\n\
+                 [site](https://a.b) [ref][r] []({}) ![shot](a.png)\n\n[r]: c.rs",
+                opened("src/listen.rs#L588"),
+                opened("README.md"),
+                opened("a(b)c.rs"),
+            )
+        );
+        assert_eq!(rich_markdown(answer, None), answer);
+        assert_eq!(
+            rich_markdown("#1 [x](a.rs)", links),
+            format!("\\#1 [x]({})", opened("a.rs"))
+        );
     }
 
     #[test]

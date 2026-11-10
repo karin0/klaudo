@@ -11,6 +11,7 @@ use crate::hook::{self, Event, Produced};
 use kuriero::Message;
 
 use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound};
+use crate::web::Links;
 
 use super::Machine;
 use super::chat::{NEW, unreminded};
@@ -152,13 +153,14 @@ impl Segment {
 
     /// The words, then the run they introduce, with the calls a reader follows in view
     /// while the segment is `live`.
-    fn text(&self, live: bool) -> String {
+    fn text(&self, live: bool, links: Option<Links>) -> String {
         let words = telegram::rich_markdown(
             &self
                 .said
                 .iter()
                 .flat_map(|(_, chunks)| chunks.values().map(String::as_str))
                 .collect::<String>(),
+            links,
         );
         match (words.as_str(), self.calls.as_slice()) {
             (_, []) => words,
@@ -259,12 +261,12 @@ impl Turn {
 
     /// When the message showing the open segment is due to be written next, which is
     /// only to move its clock while the chat already shows what the segment says.
-    pub(super) fn due(&self) -> Option<Instant> {
+    pub(super) fn due(&self, links: Option<Links>) -> Option<Instant> {
         let segment = self.segment.as_ref()?;
         let quiet = segment.heard + SETTLE;
         match &segment.written {
             None => Some((self.started + REWRITE).max(quiet)),
-            Some((written, at)) if *written == segment.text(true) => Some(*at + REFRESH),
+            Some((written, at)) if *written == segment.text(true, links) => Some(*at + REFRESH),
             Some((_, at)) => Some((*at + rewrite(self.thread.place.chat)).max(quiet)),
         }
     }
@@ -359,7 +361,7 @@ impl Machine {
                 event.prompt_id.as_deref()
             };
             let head = session.head(id, prompt);
-            let message = hook::message(event, &head, "");
+            let message = hook::message(event, &head, "", Links::new(self.app, id));
             let place = session.home(&self.telegram);
             // The phone's owner asked this, so it arrives without a sound.
             Thread {
@@ -461,6 +463,7 @@ impl Machine {
     /// A run that would overflow the message of the words introducing it goes on in one
     /// of its own, and the words keep theirs.
     fn part(&mut self, id: &str) {
+        let links = Links::new(self.app, id);
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
@@ -469,7 +472,7 @@ impl Machine {
             .as_mut()
             .filter(|segment| segment.said.is_some() && !segment.calls.is_empty())
             .filter(|segment| {
-                let text = segment.text(true);
+                let text = segment.text(true, links);
                 text.len() + FRAME > MAX_BYTES
                     || telegram::blocks(&text) + FRAME_BLOCKS > MAX_BLOCKS
             })
@@ -596,7 +599,7 @@ impl Machine {
         let Some(mut segment) = turn.segment.take() else {
             return;
         };
-        let text = segment.text(false);
+        let text = segment.text(false, Links::new(self.app, id));
         if text.is_empty() {
             return;
         }
@@ -643,7 +646,12 @@ impl Machine {
             return;
         };
         let head = session.head(id, Some(&turn.prompt_id));
-        let post = hook::compose(&head, &took(posted.elapsed), "", &segment.text(false));
+        let post = hook::compose(
+            &head,
+            &took(posted.elapsed),
+            "",
+            &segment.text(false, Links::new(self.app, id)),
+        );
         let thread = turn.thread;
         if posted.filed {
             self.telegram.refile(posted.chat, posted.message, &post);
@@ -704,7 +712,12 @@ impl Machine {
         session.done = Some(turn.prompt_id.clone());
         let head = session.head(id, Some(&turn.prompt_id));
         let closing = Closing {
-            answer: hook::message(event, &head, &took(turn.started.elapsed())),
+            answer: hook::message(
+                event,
+                &head,
+                &took(turn.started.elapsed()),
+                Links::new(self.app, id),
+            ),
             thread: turn.thread,
             live: turn.live,
             until: Instant::now() + CLOSE_WAIT,
@@ -782,7 +795,7 @@ impl Machine {
         let thread = typed.unwrap_or_else(|| self.thread(&self.sessions[id]));
         let answer = self.telegram.post(
             thread.place,
-            &hook::message(event, &head, ""),
+            &hook::message(event, &head, "", Links::new(self.app, id)),
             Sound::Ring,
             thread.prompt,
         );
@@ -823,7 +836,7 @@ impl Machine {
         let prompt = session.turn.as_ref().map(|turn| turn.prompt_id.clone());
         let head = session.head(id, prompt.as_deref());
         let thread = self.thread(session);
-        let message = hook::message(event, &head, "");
+        let message = hook::message(event, &head, "", Links::new(self.app, id));
         let posted = self
             .telegram
             .post(thread.place, &message, sound, thread.prompt);
@@ -843,7 +856,8 @@ impl Machine {
         let Some(turn) = session.turn.as_ref() else {
             return;
         };
-        if turn.due().is_none_or(|at| at > Instant::now()) {
+        let links = Links::new(self.app, id);
+        if turn.due(links).is_none_or(|at| at > Instant::now()) {
             return;
         }
         let elapsed = turn.started.elapsed();
@@ -851,7 +865,7 @@ impl Machine {
             .segment
             .as_ref()
             .expect("a segment falling due")
-            .text(true);
+            .text(true, links);
         let head = session.head(id, Some(&turn.prompt_id));
         let live = turn.live;
         let thread = turn.thread;
@@ -1114,7 +1128,7 @@ mod tests {
         chunks.insert(2, "third".to_owned());
         chunks.insert(0, "first ".to_owned());
         chunks.insert(1, "second ".to_owned());
-        assert_eq!(segment.text(true), "first second third");
+        assert_eq!(segment.text(true, None), "first second third");
         // The run the words introduce stands under them.
         segment.calls.push(Call {
             id: "toolu_1".to_owned(),
@@ -1126,7 +1140,7 @@ mod tests {
             outcome: Outcome::Summed(Duration::from_secs(1), String::new()),
         });
         assert_eq!(
-            segment.text(true),
+            segment.text(true, None),
             "first second third\n\n● **Read**  `a` **1s**"
         );
     }

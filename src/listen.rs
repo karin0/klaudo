@@ -7,6 +7,7 @@ mod chat;
 mod diff;
 mod price;
 mod render;
+mod review;
 mod rewind;
 mod transcript;
 mod turn;
@@ -15,6 +16,7 @@ mod usage;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::hook::{self, Event};
 use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::{self, Pane, Start};
+use crate::web::{self, Links};
 
 use chat::{ATTACH, COMMANDS, tilde};
 use render::{code, took};
@@ -107,6 +110,7 @@ enum Arrival {
     Locate(Question, UnixStream),
     Press(CallbackQuery),
     Chat(Message),
+    Page(review::Asked),
 }
 
 /// Where the files `klaudo send` uploads go, and the caption that addresses each of them.
@@ -148,6 +152,13 @@ pub fn run() {
     let poller = Arc::clone(&telegram);
     let updates = landed.clone();
     std::thread::spawn(move || poll(&poller, &updates, &commands, &guests, started));
+    let page = web::config();
+    if let Some(config) = &page {
+        let server = TcpListener::bind(config.listen)
+            .unwrap_or_else(|error| panic!("WEB_LISTEN {}: {error}", config.listen));
+        let (telegram, landed) = (Arc::clone(&telegram), landed.clone());
+        std::thread::spawn(move || review::serve(server, telegram, landed));
+    }
     std::thread::spawn(move || read(&listener, &landed));
 
     let running_file = directory.join("state.json");
@@ -189,6 +200,7 @@ pub fn run() {
         limits: None,
         attach,
         guest_push: crate::telegram::flag("GUEST_PUSH"),
+        app: page.map(|config| &*config.app.leak()),
     };
     // Whatever exited while nothing was listening.
     machine.sweep();
@@ -461,6 +473,9 @@ struct Machine {
     attach: Option<PathBuf>,
     /// Whether Claude may create commits and push them for a guest.
     guest_push: bool,
+    /// The Mini App link a file link in an answer opens, which lives as long as the
+    /// daemon.
+    app: Option<&'static str>,
 }
 
 /// A session the daemon has heard from: where it ran, which is where a reply to it
@@ -560,6 +575,7 @@ impl Machine {
             }
             Arrival::Press(press) => self.press(&press),
             Arrival::Chat(message) => self.chat(&message),
+            Arrival::Page(asked) => self.page(asked),
         }
     }
 
@@ -748,17 +764,17 @@ impl Machine {
             Some(Instant::now() + Duration::from_millis(at.saturating_sub(now)))
         });
         let turns = || {
-            self.sessions
-                .values()
-                .filter_map(|session| session.turn.as_ref())
+            self.sessions.iter().filter_map(|(id, session)| {
+                Some((Links::new(self.app, id), session.turn.as_ref()?))
+            })
         };
         let sweep =
             (turns().next().is_some() || !self.opening.is_empty()).then(|| self.swept + SWEEP);
         turns()
-            .flat_map(|turn| {
+            .flat_map(|(links, turn)| {
                 [
                     turn.pending.first().map(|(at, _)| *at + SETTLE),
-                    turn.due(),
+                    turn.due(links),
                     (!turn.dialog).then_some(turn.typing),
                     turn.stop_due(),
                 ]

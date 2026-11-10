@@ -83,7 +83,7 @@ pub(super) const NOTHING_RAN: &str = "no session has run here; `/new <directory>
 const CLOSED: &str = "that project is not open to guests";
 
 /// What a message to a session waiting on a dialog is answered with.
-const IN_DIALOG: &str = "that conversation waits on a dialog in its terminal, which the \
+pub(super) const IN_DIALOG: &str = "that conversation waits on a dialog in its terminal, which the \
     Enter after a reply would answer with its default choice. Answer it with /attach or \
     cancel it with /stop, then send this again.";
 

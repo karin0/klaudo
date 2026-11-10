@@ -4546,3 +4546,221 @@ fn cancel_closes_the_reply_box_in_its_topic() {
     assert!(made.iter().all(|call| call.label != "deleteMessage"));
     drop(daemon);
 }
+
+/// The Mini App a file link in an answer opens shows the file to whoever Telegram vouches
+/// for, within what a reply of theirs could reach.
+#[test]
+fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
+    let (temporary, _calls, port) = reviewing("review-file");
+    let root = temporary.path();
+    let (session, pid) = terminal(root);
+    let daemon = served(root, pid, port);
+    let page = |path: &str, data: &str| page(port, "GET", path, data, "");
+
+    let (status, index) = page("/", "");
+    assert_eq!(status, 200);
+    assert!(index.contains("./app.js"), "the page loads its script");
+
+    let (status, shown) = page("/api/file", &signed(OWNER, &link(SHARED, "src/a.rs")));
+    assert_eq!(status, 200, "{shown}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&shown).expect("a file"),
+        json!({"path": "src/a.rs", "content": "fn a() {}\nfn b() {}\n", "from": 2, "to": 2})
+    );
+    // The owner can read anything a shell of theirs could.
+    let (status, _) = page("/api/file", &signed(OWNER, &link(SHARED, "../outside")));
+    assert_eq!(status, 200);
+    // A guest reaches neither a session outside `CHAT_PROJECTS` nor a file outside them.
+    for (session, path) in [
+        ("fedcba9876543210", "project/src/a.rs"),
+        (SHARED, "../outside"),
+    ] {
+        let (status, refusal) = page("/api/file", &signed(GUEST, &link(session, path)));
+        assert_eq!(
+            (status, refusal.as_str()),
+            (409, "that project is not open to guests"),
+            "{session} {path}"
+        );
+    }
+    let (status, _) = page("/api/file", &signed(GUEST, &link(SHARED, "src/a.rs")));
+    assert_eq!(status, 200);
+    let stranger = signed(STRANGER, &link(SHARED, "src/a.rs"));
+    assert_eq!(page("/api/file", &stranger).0, 403);
+    let owner = signed(OWNER, &link(SHARED, "src/a.rs"));
+    let forged = owner.replace("first_name%22%3A%22Ann", "first_name%22%3A%22Bob");
+    assert_ne!(forged, owner);
+    assert_eq!(page("/api/file", &forged).0, 401);
+    assert_eq!(page("/api/file", "").0, 401);
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
+/// A review sent from the Mini App is typed into its session behind a quote of it in the
+/// chat, which the turn it starts replies to, and the answer's file links open the page.
+#[test]
+fn a_review_from_the_mini_app_is_typed_into_its_session() {
+    let (temporary, calls, port) = reviewing("review");
+    let root = temporary.path();
+    let (session, pid) = terminal(root);
+    let daemon = served(root, pid, port);
+
+    let owner = signed(OWNER, &link(SHARED, "src/a.rs"));
+    let review = json!([{"path": "src/a.rs", "from": 2, "to": 2, "original": "fn b() {}",
+        "text": "rename it", "suggestion": null}]);
+    let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
+    assert_eq!(status, 204, "{refusal}");
+    let prompt = "Review:\n\nsrc/a.rs:2\n> fn b() {}\nrename it";
+    let typed = root.join("typed");
+    wait_for(
+        || std::fs::read_to_string(&typed).is_ok_and(|typed| typed == prompt),
+        "the review was never typed",
+    );
+    let made = collect(&calls, |call| call.label == "sendRichMessage silent");
+    let quoted = made.last().expect("the review in the chat");
+    assert_eq!(quoted.chat, Some(GROUP));
+    assert_eq!(
+        quoted.markdown,
+        "**project** `01234567`\n\n>Review:\n>\n>src/a\\.rs:2\n\
+         >\\> fn b\\(\\) \\{\\}\n>rename it"
+    );
+
+    for event in [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": prompt}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "Renamed [b](src/a.rs#L2)."}),
+    ] {
+        let mut event = event;
+        event["session_id"] = json!(SHARED);
+        event["cwd"] = json!(project(root));
+        event["prompt_id"] = json!("aaaaaaaa-1111");
+        hook_in_pane(root, &event);
+    }
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    let reaction = made
+        .iter()
+        .find(|call| call.label == "setMessageReaction")
+        .expect("the review marked as read");
+    assert_eq!(reaction.target, Some(quoted.id));
+    let answer = made.last().expect("the answer");
+    assert_eq!(answer.reply, replying_to(quoted.id));
+    let opening = format!(
+        "Renamed [b](https://t.me/klaudo_bot/review?startapp={}).",
+        link(SHARED, "src/a.rs")
+    );
+    assert!(answer.markdown.ends_with(&opening), "{}", answer.markdown);
+
+    // The hooks reported from a process the pane does not hold, so the pane no longer
+    // holds the session, and a review now is refused and its quote taken back.
+    let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
+    assert_eq!(status, 409);
+    assert!(
+        refusal.starts_with("that terminal no longer holds the session"),
+        "{refusal}"
+    );
+    let made = collect(&calls, |call| call.label == "deleteMessage");
+    let posted = made
+        .iter()
+        .find(|call| call.label == "sendRichMessage silent")
+        .expect("the refused review in the chat");
+    assert_eq!(made.last().and_then(|call| call.target), Some(posted.id));
+    drop(daemon);
+    let mut session = session;
+    let _ = session.kill();
+    let _ = session.wait();
+}
+
+/// The session in `CHAT_PROJECTS` that `guested` seeds.
+const SHARED: &str = "0123456789abcdef";
+
+/// A test whose env file has the daemon serve the Mini App on a free port, with a file
+/// `src/a.rs` in the project and one outside it.
+fn reviewing(name: &str) -> (TempDir, Receiver<Call>, u16) {
+    let (temporary, calls, _chat) = prepare(name);
+    let root = temporary.path();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|free| free.local_addr())
+        .expect("a free port")
+        .port();
+    let mut env = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("config/klaudo/env"))
+        .expect("credentials");
+    writeln!(
+        env,
+        "WEB_LISTEN=127.0.0.1:{port}\nWEB_APP=https://t.me/klaudo_bot/review"
+    )
+    .expect("the page's settings");
+    std::fs::create_dir(project(root).join("src")).expect("a source directory");
+    std::fs::write(project(root).join("src/a.rs"), "fn a() {}\nfn b() {}\n").expect("a file");
+    std::fs::write(root.join("outside"), "kept from guests\n").expect("a file outside");
+    (temporary, calls, port)
+}
+
+/// The daemon of `guested`, once it serves the page on `port`.
+fn served(root: &Path, pid: u32, port: u16) -> Daemon {
+    let daemon = guested(root, pid);
+    wait_for(
+        || TcpStream::connect(("127.0.0.1", port)).is_ok(),
+        "the daemon never served the page",
+    );
+    daemon
+}
+
+/// The `startapp` parameter of a link to line 2 of `path` in `session`.
+fn link(session: &str, path: &str) -> String {
+    use base64::Engine;
+    let path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+    format!("{session}_2_2_{path}")
+}
+
+/// The `initData` Telegram hands the Mini App of the test's bot when `user` opens it from
+/// a link carrying `start`, signed with the key Telegram derives from the bot's token.
+fn signed(user: i64, start: &str) -> String {
+    use ring::hmac;
+    let fields = [
+        ("auth_date", now().to_string()),
+        ("query_id", "AAE".to_owned()),
+        ("start_param", start.to_owned()),
+        ("user", json!({"id": user, "first_name": "Ann"}).to_string()),
+    ];
+    let checked = fields
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let derived = hmac::sign(
+        &hmac::Key::new(hmac::HMAC_SHA256, b"WebAppData"),
+        b"111111:secret",
+    );
+    let key = hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref());
+    let hash = hmac::sign(&key, checked.as_bytes())
+        .as_ref()
+        .iter()
+        .fold(String::new(), |hash, byte| format!("{hash}{byte:02x}"));
+    form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(fields)
+        .append_pair("hash", &hash)
+        .finish()
+}
+
+/// What the page's server answers a request, as its status and its body.
+fn page(port: u16, method: &str, path: &str, data: &str, body: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("the page's server");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: tma {data}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("a request");
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).expect("an answer");
+    let (head, body) = answer.split_once("\r\n\r\n").expect("a head and a body");
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .expect("a status");
+    (status, body.to_owned())
+}
