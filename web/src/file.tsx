@@ -60,14 +60,13 @@ export function FileReview({ shown }: { shown: Shown }) {
   const dragging = useRef(false);
   const [draft, setDraft] = useState<Draft>(EMPTY);
 
-  const lines = useMemo(
-    () => shown.content.replace(/\n$/, '').split('\n'),
-    [shown],
-  );
+  // The code view would draw the empty text after a final line break as one more line.
+  const text = shown.content.replace(/\n$/, '');
+  const lines = useMemo(() => text.split('\n'), [text]);
   const original = ({ from, to }: Range) => lines.slice(from - 1, to);
   const file = useMemo(
-    () => ({ name: shown.path, contents: shown.content }),
-    [shown],
+    () => ({ name: shown.path, contents: text }),
+    [shown.path, text],
   );
 
   const sorted = [...notes.values()].sort(
