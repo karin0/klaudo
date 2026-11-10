@@ -1880,6 +1880,57 @@ fn a_new_conversation_opens_in_a_project_picked_from_a_menu() {
     drop(daemon);
 }
 
+/// A bare name given to `/new` stands for the most recent project of the chat with that
+/// name, or else for the directory of that name in home.
+#[test]
+fn a_bare_name_opens_in_the_most_recent_project_of_that_name() {
+    let (temporary, calls, chat) = prepare("named");
+    let root = temporary.path();
+    let home = root.join("home");
+    for dir in [
+        root.join("a/klaudo"),
+        root.join("b/klaudo"),
+        home.join("notes"),
+    ] {
+        std::fs::create_dir_all(dir).expect("a directory");
+    }
+    let session = |id: &str, dir: PathBuf, at: u64| {
+        json!({
+            "id": id,
+            "dir": dir,
+            "pid": std::process::id(),
+            "pane": null,
+            "idle_since": 0,
+            "trail": {"prompt": "", "last": {"place": {"chat": OWNER, "topic": null}, "message": 5, "at": at}},
+        })
+    };
+    seed_state(
+        root,
+        &json!([
+            session("aaaaaaaaaaaaaaaa", root.join("a/klaudo"), 2000),
+            session("bbbbbbbbbbbbbbbb", root.join("b/klaudo"), 1000),
+        ]),
+    );
+    let mut command = klaudo(root);
+    command.env("HOME", &home);
+    let daemon = run_daemon(root, command);
+    let anchored = |name: &str| {
+        chat.says(OWNER, OWNER, &format!("/new {name}"));
+        let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+        made.last().expect("the answer").markdown.replace('\\', "")
+    };
+
+    let a = root.join("a/klaudo").display().to_string();
+    assert_eq!(anchored("klaudo"), format!("**klaudo** `new`\n\n{a}"));
+    let notes = home.join("notes").canonicalize().expect("a directory");
+    assert_eq!(
+        anchored("notes"),
+        format!("**notes** `new`\n\n{}", notes.display())
+    );
+    assert_eq!(anchored("nowhere"), "`nowhere` is not a directory");
+    drop(daemon);
+}
+
 /// `/clear` posts the anchor of a new conversation in the project of the session a
 /// message would reach, and with none, says so.
 #[test]

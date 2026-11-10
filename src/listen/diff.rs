@@ -11,7 +11,7 @@ use crate::telegram::{Admitted, Sound};
 use crate::web::Links;
 
 use super::Machine;
-use super::chat::{NEW, expand, tilde};
+use super::chat::{NEW, tilde};
 use super::render::code;
 use super::turn::review;
 
@@ -38,7 +38,7 @@ impl Machine {
         };
         let held = if argument.is_empty() {
             dir.to_owned()
-        } else if let Some(held) = expand(argument) {
+        } else if let Some(held) = self.located(place.chat, argument) {
             held
         } else {
             return self.say(place, &format!("{} is not a directory", code(argument)));

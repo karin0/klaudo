@@ -183,7 +183,9 @@ works on the same files as the original.
 
 `/new <directory>` posts an anchor, and replying to it opens a window running `claude`
 there with the reply as its first prompt. `/new` alone offers a menu of the chat's
-projects, led by the project of the session the message would reach. The windows live
+projects, led by the project of the session the message would reach. A directory given
+with no `~` or `/` in front is the most recent project of the chat with that name, or
+else the path from home. The windows live
 in the tmux session `klaudo`, so `tmux attach -t klaudo` reaches a conversation that
 began on the phone. The first window starts a tmux server when none is running, and
 that server stays in the daemon's cgroup, where a restart of the daemon kills it with

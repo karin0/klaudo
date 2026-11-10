@@ -1,5 +1,6 @@
 //! Messages and presses from the chat, and the terminals they are typed into.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -469,6 +470,20 @@ impl Machine {
         projects
     }
 
+    /// The directory an argument of `/new` or `/diff` in `chat` stands for: a path from
+    /// `~` or `/` as typed, or else the most recent project of the chat the argument
+    /// names, or else the path from home.
+    pub(super) fn located(&self, chat: i64, argument: &str) -> Option<PathBuf> {
+        if argument.is_empty() || argument.starts_with(['~', '/']) {
+            return expand(argument);
+        }
+        let named = self
+            .projects(chat, None)
+            .into_iter()
+            .find(|project| project.file_name() == Some(OsStr::new(argument)));
+        named.or_else(|| expand(&format!("~/{argument}")))
+    }
+
     /// Every session the daemon knows of, running or exited, with where it ran and its
     /// trail.
     pub(super) fn known(&self) -> impl Iterator<Item = (&str, &Path, &Trail)> {
@@ -798,7 +813,10 @@ impl Machine {
     /// is started yet, so an anchor left alone costs nothing.
     fn anchor(&self, from: &Admitted, argument: &str) -> Option<i64> {
         let place = from.place;
-        let Some(cwd) = expand(argument).filter(|cwd| cwd.is_dir()) else {
+        let Some(cwd) = self
+            .located(place.chat, argument)
+            .filter(|cwd| cwd.is_dir())
+        else {
             self.say(place, &format!("{} is not a directory", code(argument)));
             return None;
         };
@@ -1202,7 +1220,7 @@ pub(super) fn tilde(dir: &Path) -> String {
 
 /// A directory as it would be typed in the chat, where a leading `~` is the only shell
 /// spelling worth honouring because nothing here runs a shell.
-pub(super) fn expand(argument: &str) -> Option<PathBuf> {
+fn expand(argument: &str) -> Option<PathBuf> {
     if argument.is_empty() {
         return None;
     }
