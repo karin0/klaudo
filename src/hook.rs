@@ -468,12 +468,13 @@ fn fold(text: &str, credit: &str, room: usize) -> String {
 }
 
 /// A block quotation, which every line carries its own marker of because a line without
-/// one ends the quote.
+/// one ends the quote. Telegram joins the lines of a paragraph with a space, so each line
+/// ends in the two spaces of a hard break, which the end of a paragraph ignores.
 pub fn quote(text: &str) -> String {
     text.lines()
         .map(|line| format!(">{}", prose(line)))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("  \n")
 }
 
 fn name(dir: &Path) -> String {
@@ -780,7 +781,7 @@ mod tests {
 
     #[test]
     fn every_line_of_a_quoted_prompt_carries_its_own_marker() {
-        assert_eq!(quote("one\ntwo"), ">one\n>two");
+        assert_eq!(quote("one\ntwo"), ">one  \n>two");
         assert_eq!(quote(""), "");
         // A prompt reads as it was typed, not as the markdown it happens to carry.
         assert_eq!(quote("run *.rs & <b>"), r">run \*\.rs &amp; &lt;b\>");

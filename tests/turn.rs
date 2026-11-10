@@ -4644,8 +4644,8 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
     assert_eq!(quoted.chat, Some(GROUP));
     assert_eq!(
         quoted.markdown,
-        "**project** `01234567`\n\n>Review:\n>\n>src/a\\.rs:2\n\
-         >\\> fn b\\(\\) \\{\\}\n>rename it"
+        "**project** `01234567`\n\n>Review:  \n>  \n>src/a\\.rs:2  \n\
+         >\\> fn b\\(\\) \\{\\}  \n>rename it"
     );
 
     for event in [
