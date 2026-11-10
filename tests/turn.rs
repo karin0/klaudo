@@ -731,6 +731,75 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
     drop(daemon);
 }
 
+/// Narration fires no hook, and Claude Code writes it to the transcript ahead of the tool
+/// call it introduces, so the chat shows it above that call as the words of a message.
+#[test]
+fn narration_stands_above_the_tool_call_it_introduces() {
+    let (temporary, calls, _chat) = prepare("narration");
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let transcript = root.join("transcript.jsonl");
+    std::fs::write(&transcript, "").expect("the transcript");
+    let send = |event: serde_json::Value| {
+        let mut event = event;
+        event["session_id"] = json!("0123456789abcdef");
+        event["cwd"] = json!(project(root));
+        event["transcript_path"] = json!(transcript);
+        hook(root, &event);
+        std::thread::sleep(Duration::from_millis(400));
+    };
+    let narrate = |text: &str, call: &str| {
+        let block = |content: serde_json::Value| json!({"type": "assistant", "message": {"id": "m", "content": [content]}});
+        let lines = [
+            block(json!({"type": "thinking", "thinking": "", "signature": "r"})),
+            block(json!({"type": "thinking", "thinking": text, "signature": "n"})),
+            block(json!({"type": "tool_use", "id": call, "name": "Read", "input": {}})),
+        ];
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("the transcript");
+        for line in lines {
+            writeln!(file, "{line}").expect("a line");
+        }
+    };
+    let read = |call: &str, path: &str| {
+        send(json!({"hook_event_name": "PreToolUse", "tool_use_id": call,
+                    "tool_name": "Read", "tool_input": {"file_path": path}}));
+        send(
+            json!({"hook_event_name": "PostToolUse", "tool_use_id": call,
+                    "tool_name": "Read", "duration_ms": 12,
+                    "tool_response": {"file": {"numLines": 120}}}),
+        );
+    };
+
+    send(json!({"hook_event_name": "UserPromptSubmit", "prompt": "find the bug"}));
+    narrate("I start from `main`.\n\n", "t1");
+    read("t1", "/src/main.rs");
+    narrate("It calls `listen`.", "t2");
+    read("t2", "/src/listen.rs");
+    send(json!({"hook_event_name": "Stop", "last_assistant_message": "found"}));
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    assert_eq!(
+        holding(&made),
+        [
+            ("silent", ">find the bug"),
+            (
+                "silent",
+                "I start from `main`.\n\n● **Read**  `/src/main.rs` **12ms**  \n⎿ 120 lines"
+            ),
+            (
+                "silent",
+                "It calls `listen`.\n\n● **Read**  `/src/listen.rs` **12ms**  \n⎿ 120 lines"
+            ),
+            ("ring", "found"),
+        ]
+        .map(|(sound, body)| (sound, body.to_owned()))
+    );
+    drop(daemon);
+}
+
 /// `PostToolUse` carries the tool's whole output, which can run to megabytes, and the
 /// call still shows as finished.
 #[test]

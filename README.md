@@ -92,8 +92,11 @@ Claude Code fires `MessageDisplay` for the words introducing a tool call about a
 after that call's `PreToolUse`, and `PreToolUse` names no message, so nothing orders the
 two. A call therefore waits a tenth of a second before it is filed. A flush or a tool
 outcome arriving later than that is written into the message its segment became, which
-is why a turn keeps its segments until it ends. Narration Claude Code shows is a
-thinking block in the transcript, fires no `MessageDisplay`, and stays out of the chat.
+is why a turn keeps its segments until it ends. The narration Claude Code shows above
+a tool call fires no hook. Claude Code writes it to the transcript as a thinking block
+ahead of the call, and writes the model's reasoning empty, so a call being filed reads
+the transcript's new lines for its narration, which opens a segment as a message's words
+do.
 
 `/compact` runs no turn, so its `PostCompact` is the answer to it, tagged
 `#claude #compact`. A compaction Claude Code starts itself is a silent `#compact` message

@@ -428,9 +428,14 @@ impl Machine {
         else {
             return;
         };
-        if !self.turn(id, event) {
-            return;
+        if self.turn(id, event) {
+            self.heard(id, message_id, index, delta.clone());
         }
+    }
+
+    /// Text of the assistant message `message_id` reaching its segment, which a message
+    /// starting opens.
+    fn heard(&mut self, id: &str, message_id: &str, index: u32, delta: String) {
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
@@ -440,7 +445,7 @@ impl Machine {
             .find(|sealed| sealed.holds(message_id))
         {
             if let Some((_, chunks)) = &mut segment.said {
-                chunks.insert(index, delta.clone());
+                chunks.insert(index, delta);
             }
             self.amend(id, message_id);
             return;
@@ -458,9 +463,9 @@ impl Machine {
         let segment = turn.segment.get_or_insert_with(Segment::new);
         segment
             .said
-            .get_or_insert_with(|| (message_id.clone(), BTreeMap::new()))
+            .get_or_insert_with(|| (message_id.to_owned(), BTreeMap::new()))
             .1
-            .insert(index, delta.clone());
+            .insert(index, delta);
         segment.heard = Instant::now();
         self.part(id);
     }
@@ -524,25 +529,32 @@ impl Machine {
 
     /// Files the calls that have waited long enough. They join the open segment, under
     /// the words that introduce them, so a turn that talked, worked and talked again
-    /// leaves two messages in the chat, the first of them holding the run.
+    /// leaves two messages in the chat, the first of them holding the run. Narration
+    /// fires no hook, so the transcript is read for the narration above each call, which
+    /// opens a segment as the words of an assistant message do.
     pub(super) fn place(&mut self, id: &str) {
-        let Some(turn) = self.turn_mut(id) else {
-            return;
-        };
-        let ready = turn
-            .pending
-            .iter()
-            .take_while(|(at, _)| at.elapsed() >= SETTLE)
-            .count();
-        if ready == 0 {
-            return;
+        while let Some(call) = self.turn_mut(id).and_then(|turn| {
+            turn.pending
+                .first()
+                .is_some_and(|(at, _)| at.elapsed() >= SETTLE)
+                .then(|| turn.pending.remove(0).1)
+        }) {
+            let narration = self
+                .sessions
+                .get_mut(id)
+                .and_then(|session| session.transcript.as_mut())
+                .and_then(|transcript| transcript.narration(&call.id));
+            if let Some(narration) = narration {
+                self.heard(id, &call.id, 0, narration);
+            }
+            if let Some(turn) = self.turn_mut(id) {
+                turn.segment
+                    .get_or_insert_with(Segment::new)
+                    .calls
+                    .push(call);
+            }
+            self.part(id);
         }
-        let filed: Vec<Call> = turn.pending.drain(..ready).map(|(_, call)| call).collect();
-        turn.segment
-            .get_or_insert_with(Segment::new)
-            .calls
-            .extend(filed);
-        self.part(id);
     }
 
     /// How a call went, which reaches the run it belongs to, and the message that run

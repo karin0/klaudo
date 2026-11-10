@@ -1,6 +1,6 @@
 //! The transcript Claude Code writes of a session, the one record of an interruption, of
-//! the context of a session that draws no status line and of the tokens each call spent,
-//! and the conversation a rewound copy starts from.
+//! the narration above a tool call, of the context of a session that draws no status line
+//! and of the tokens each call spent, and the conversation a rewound copy starts from.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -34,6 +34,10 @@ pub(super) struct Transcript {
     /// Whether the end of the turn has been read, which Claude Code writes once the Stop
     /// hooks have run, together with the turn's last call.
     closed: bool,
+    /// The narration read above each tool call by the call's id, and the narration read
+    /// whose call has not been.
+    narrations: HashMap<String, String>,
+    narrating: Option<String>,
 }
 
 /// How far a transcript has been read, and the call it last counted the cost of.
@@ -73,6 +77,8 @@ impl Transcript {
             since: now_millis(),
             spent: Spent::Nothing,
             closed: false,
+            narrations: HashMap::new(),
+            narrating: None,
         }
     }
 
@@ -106,6 +112,12 @@ impl Transcript {
         self.closed
     }
 
+    /// The narration Claude Code showed above the tool call `id` of the main conversation.
+    pub(super) fn narration(&mut self, id: &str) -> Option<String> {
+        self.read();
+        self.narrations.remove(id)
+    }
+
     /// The turn has ended, so the next call starts another.
     pub(super) fn ended(&mut self) {
         self.read();
@@ -113,6 +125,8 @@ impl Transcript {
         self.opening = true;
         self.since = now_millis();
         self.closed = false;
+        self.narrations.clear();
+        self.narrating = None;
     }
 
     fn read(&mut self) {
@@ -129,11 +143,36 @@ impl Transcript {
         self.closed |= appended
             .iter()
             .any(|entry| entry["subtype"] == "stop_hook_summary" && !before(entry, self.since));
+        for entry in appended.iter().filter(|entry| entry["type"] == "assistant") {
+            self.narrate(entry);
+        }
         for subagent in subagents(&self.path) {
             let tail = self.subagents.entry(subagent.clone()).or_default();
             let (appended, read) = entries(&subagent, tail.read);
             tail.read = read;
             self.spent = charge(self.spent, &mut tail.call, &appended, self.since);
+        }
+    }
+
+    /// Claude Code writes each block of an assistant message as an entry of its own. A
+    /// thinking block with text is narration, shown above the tool call after it, while
+    /// the model's own reasoning is written empty.
+    fn narrate(&mut self, entry: &Value) {
+        for block in entry["message"]["content"].as_array().into_iter().flatten() {
+            match block["type"].as_str() {
+                Some("thinking") => {
+                    let text = block["thinking"].as_str().unwrap_or_default().trim();
+                    if !text.is_empty() {
+                        self.narrating = Some(text.to_owned());
+                    }
+                }
+                Some("tool_use") => {
+                    if let (Some(id), Some(text)) = (block["id"].as_str(), self.narrating.take()) {
+                        self.narrations.insert(id.to_owned(), text);
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -421,6 +460,45 @@ mod tests {
         .expect("a prompt");
         assert_eq!(transcript.tokens(), Some(2));
         assert_eq!(transcript.tokens(), Some(2));
+    }
+
+    #[test]
+    fn narration_belongs_to_the_tool_call_after_it() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let path = directory.path().join("transcript.jsonl");
+        let mut file = File::create(&path).expect("a transcript");
+        let mut transcript = Transcript::new(path);
+        let block =
+            |content: Value| json!({"type": "assistant", "message": {"content": [content]}});
+        let thinking = |text: &str| block(json!({"type": "thinking", "thinking": text}));
+        let call = |id: &str| block(json!({"type": "tool_use", "id": id}));
+        for entry in [
+            thinking(" a\n\n"),
+            thinking(""),
+            call("t1"),
+            call("t2"),
+            thinking("b"),
+        ] {
+            writeln!(file, "{entry}").expect("a line");
+        }
+        assert_eq!(transcript.narration("t1").as_deref(), Some("a"));
+        assert_eq!(
+            transcript.narration("t1"),
+            None,
+            "a narration is shown once"
+        );
+        assert_eq!(transcript.narration("t2"), None);
+        // The call after a narration may be written by a later read.
+        writeln!(file, "{}", call("t3")).expect("a line");
+        assert_eq!(transcript.narration("t3").as_deref(), Some("b"));
+
+        writeln!(file, "{}\n{}", thinking("c"), call("t4")).expect("lines");
+        transcript.ended();
+        assert_eq!(
+            transcript.narration("t4"),
+            None,
+            "a turn's narration ends with it"
+        );
     }
 
     /// The entries of the copy rewinding `lines` to `turn` makes, by their uuids, and the
