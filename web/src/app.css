@@ -8,6 +8,9 @@
   --border: var(--tg-theme-section-separator-color, #d1d9e0);
   --accent: var(--tg-theme-button-color, #1f883d);
   --accent-fg: var(--tg-theme-button-text-color, #fff);
+  --link: var(--tg-theme-link-color, #2481cc);
+  --danger: var(--tg-theme-destructive-text-color, #d14e4e);
+  --section: var(--tg-theme-section-header-text-color, #6d6d72);
   --target: rgba(212, 167, 44, 0.25);
   --safe-bottom: var(--tg-safe-area-inset-bottom, 0px);
 }
@@ -58,6 +61,12 @@ footer {
   font-weight: normal;
 }
 
+.label {
+  color: var(--section);
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .status {
   padding: 12px;
 }
@@ -86,10 +95,11 @@ footer {
 .editor textarea {
   box-sizing: border-box;
   width: 100%;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  outline: none;
+  background: var(--card);
   color: var(--fg);
   font:
     16px system-ui,
@@ -116,24 +126,28 @@ footer {
 }
 
 button {
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--card);
-  color: var(--fg);
+  padding: 8px 6px;
+  border: none;
+  background: none;
+  color: var(--link);
   font:
-    15px system-ui,
+    500 15px system-ui,
     sans-serif;
 }
 
 button.primary {
-  border-color: var(--accent);
+  padding: 8px 18px;
+  border-radius: 10px;
   background: var(--accent);
   color: var(--accent-fg);
 }
 
+button.danger {
+  color: var(--danger);
+}
+
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
 }
 
 /* A grid stretches each row's background across the longest line. */

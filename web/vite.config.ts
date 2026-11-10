@@ -11,6 +11,9 @@ const THEMES = {
     section_separator_color: '#e7e7e7',
     button_color: '#3390ec',
     button_text_color: '#ffffff',
+    link_color: '#3390ec',
+    destructive_text_color: '#e53935',
+    section_header_text_color: '#3390ec',
   },
   dark: {
     bg_color: '#212121',
@@ -20,6 +23,9 @@ const THEMES = {
     section_separator_color: '#303030',
     button_color: '#8774e1',
     button_text_color: '#ffffff',
+    link_color: '#8774e1',
+    destructive_text_color: '#ff595a',
+    section_header_text_color: '#8774e1',
   },
 };
 

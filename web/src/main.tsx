@@ -144,7 +144,7 @@ function Editor({
   }, [suggesting]);
   return (
     <div ref={box} className="extension editor">
-      <div className="hint">{span(range)}</div>
+      <div className="label">{span(range)}</div>
       {suggestion !== null && (
         <textarea
           className="code"
@@ -200,11 +200,13 @@ function NoteView({
   return (
     <div className="extension">
       <div className="buttons">
-        <span className="hint grow">{span(note)}</span>
+        <span className="label grow">{span(note)}</span>
         <button disabled={onEdit === null} onClick={onEdit ?? undefined}>
           Edit
         </button>
-        <button onClick={onDelete}>Delete</button>
+        <button className="danger" onClick={onDelete}>
+          Delete
+        </button>
       </div>
       {note.suggestion !== null && (
         <pre className="suggestion">
