@@ -609,9 +609,9 @@ the hook returns.
 formatting, clippy, the tests and a release build. The binary embeds `web/dist`, so
 building it needs Node and pnpm. The lint levels live in `Cargo.toml`, so a bare
 `cargo clippy` enforces the same set. `web/` checks its formatting with Prettier, lints
-with oxlint running typescript-eslint's strict type-aware rules, and type-checks with
-tsc. `pnpm -C web dev` serves the page with a stand-in for the daemon and Telegram, and
-`/mock` there opens it as a link to files would, `/mock?changes` as a link to changes, and
-`dark` in either query in the dark theme.
+with oxlint running typescript-eslint's strict type-aware rules, type-checks with tsc,
+and runs its tests with Vitest. `pnpm -C web dev` serves the page with a stand-in for the
+daemon and Telegram, and `/mock` there opens it as a link to files would, `/mock?changes`
+as a link to changes, and `dark` in either query in the dark theme.
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
 against a server answering as Telegram does and a `tmux` that records how it was called.
