@@ -371,8 +371,10 @@ stays as Claude Code wrote it when even that is too long. Telegram opened the pa
 parameter of 1024 characters and refused one of 2048. A relative path resolves in the session's directory. An
 answer the hook posts without a daemon keeps its links as Claude Code wrote them.
 
-A turn of a session in a git working tree that changed anything there ends with a link
-to the changes, as in `[Review changes: 3 commits, 5 files](https://t.me/<bot>?startapp=<session>_<commit>_<path in base64url>)`.
+A turn of a session in a git working tree that changed a tracked file there ends with a
+link to the changes, as in `[Review changes: 3 commits, 5 files, +120 -30](https://t.me/<bot>?startapp=<session>_<commit>_<path in base64url>)`.
+The link counts tracked files alone, since a session usually commits the files it
+creates, while a user may keep files of their own untracked.
 The page shows the working tree holding the path, which resolves in the session's
 directory and is `.` for a turn. The link is in the answer's text, since the daemon
 rewrites a message without its buttons, and an answer split over several messages would

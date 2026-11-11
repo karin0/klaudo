@@ -1117,16 +1117,21 @@ pub(super) fn review(
     )))
 }
 
-/// How a review link counts its changes, as `3 commits, 5 files`.
-fn counted(&Summary { commits, files }: &Summary) -> String {
+/// How a review link counts its changes, as `3 commits, 5 files, +120 -30`.
+fn counted(summary: &Summary) -> String {
     let plural =
         |count: usize, noun: &str| format!("{count} {noun}{}", if count == 1 { "" } else { "s" });
-    let files = plural(files, "file");
-    if commits == 0 {
-        files
+    let commits = if summary.commits == 0 {
+        String::new()
     } else {
-        format!("{}, {files}", plural(commits, "commit"))
-    }
+        format!("{}, ", plural(summary.commits, "commit"))
+    };
+    format!(
+        "{commits}{}, +{} -{}",
+        plural(summary.files, "file"),
+        summary.added,
+        summary.removed
+    )
 }
 
 /// The chat message that carried a prompt, when the daemon is the one that typed it.

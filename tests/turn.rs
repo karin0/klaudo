@@ -4368,7 +4368,10 @@ fn diff_links_the_unpushed_changes_of_a_directory() {
     git(&other, &["init", "-q"]);
     git(&other, &["commit", "-q", "--allow-empty", "-m", "first"]);
     let head = git(&other, &["rev-parse", "HEAD"]);
-    std::fs::write(other.join("n"), "new\n").expect("an untracked file");
+    std::fs::write(other.join("n"), "new\n").expect("a new file");
+    // An untracked file counts for nothing, so the link takes in only an added one.
+    std::fs::write(other.join("u"), "untracked\n").expect("an untracked file");
+    git(&other, &["add", "n"]);
     let (session, pid) = terminal(root);
     let daemon = served(root, pid, port);
     let said = |text: &str| {
@@ -4392,7 +4395,7 @@ fn diff_links_the_unpushed_changes_of_a_directory() {
         said("/diff"),
         format!(
             "**project** `01234567`\n\n\
-             [Review changes: 1 commit, 1 file](https://t.me/klaudo_bot?startapp={start}) in `{}`",
+             [Review changes: 1 commit, 1 file, +1 -1](https://t.me/klaudo_bot?startapp={start}) in `{}`",
             shown(&project)
         )
     );
@@ -4406,7 +4409,7 @@ fn diff_links_the_unpushed_changes_of_a_directory() {
         said(&format!("/diff {}", other.display())),
         format!(
             "**project** `01234567`\n\n\
-             [Review changes: 1 file](https://t.me/klaudo_bot?startapp={start}) in `{}`",
+             [Review changes: 1 file, +1 -0](https://t.me/klaudo_bot?startapp={start}) in `{}`",
             shown(&other)
         )
     );
@@ -4415,7 +4418,7 @@ fn diff_links_the_unpushed_changes_of_a_directory() {
     let opened: serde_json::Value = serde_json::from_str(&opened).expect("changes");
     let patch = opened["patch"].as_str().expect("a patch");
     assert!(
-        patch.contains("+++ b/n\n@@ -0,0 +1,1 @@\n+new\n"),
+        patch.contains("+++ b/u\n@@ -0,0 +1,1 @@\n+untracked\n"),
         "{patch}"
     );
 
@@ -5164,7 +5167,8 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
     );
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let answer = made.last().expect("the answer");
-    let linked = format!("[Review changes: 2 files](https://t.me/klaudo_bot?startapp={start})");
+    let linked =
+        format!("[Review changes: 1 file, +1 -1](https://t.me/klaudo_bot?startapp={start})");
     assert!(answer.markdown.contains(&linked), "{}", answer.markdown);
     // A file link of the turn shows the file's changes since the turn started.
     let file = format!("{SHARED}_0_1_{head}_{}", base64url("src/a.rs#L2"));

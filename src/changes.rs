@@ -28,11 +28,14 @@ pub struct Start {
     pub head: String,
 }
 
-/// How much changed since a start, as its link counts it.
+/// How much the tracked files changed since a start, as its link counts it.
 #[derive(Debug, PartialEq)]
 pub struct Summary {
     pub commits: usize,
     pub files: usize,
+    /// The lines added, a binary file counting none.
+    pub added: usize,
+    pub removed: usize,
 }
 
 /// A commit of the list the page moves the start along.
@@ -113,7 +116,7 @@ pub fn verify(top: &Path, since: &str) -> Result<(), String> {
     .map_err(|_| format!("{since} is no commit of this repository"))
 }
 
-/// The commits and files changed since `since`, which `Stop` counts for its link.
+/// The commits, files and lines changed since `since`, which `Stop` counts for its link.
 pub fn summary(top: &Path, since: &str) -> Result<Summary, String> {
     let commits = text(&run(git(top).args([
         "rev-list",
@@ -126,15 +129,42 @@ pub fn summary(top: &Path, since: &str) -> Result<Summary, String> {
     .map_err(|error| format!("git rev-list --count: {error}"))?;
     // `--numstat` reads the content of a file whose modification time alone changed,
     // where `--name-only` would count it.
-    let changed = run(git(top).args(["diff-index", "--numstat", "-z", "-M", since]))?;
-    let changed = changed
-        .split(|byte| *byte == 0)
-        .filter(|field| field.contains(&b'\t'))
-        .count();
-    Ok(Summary {
+    let changed = text(&run(git(top).args([
+        "diff-index",
+        "--numstat",
+        "-z",
+        "-M",
+        since,
+    ]))?);
+    let mut summary = Summary {
         commits,
-        files: changed + untracked(top)?.len(),
-    })
+        files: 0,
+        added: 0,
+        removed: 0,
+    };
+    // A binary file counts its lines as `-`.
+    let lines = |count: &str| match count {
+        "-" => Ok(0),
+        count => count
+            .parse::<usize>()
+            .map_err(|error| format!("git diff-index --numstat: {error}")),
+    };
+    let mut fields = changed.split('\0');
+    while let Some(field) = fields.next() {
+        let mut parts = field.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        // A renamed file leaves its path empty, and its two paths follow as fields.
+        if path.is_empty() {
+            fields.nth(1);
+        }
+        summary.files += 1;
+        summary.added += lines(added)?;
+        summary.removed += lines(removed)?;
+    }
+    Ok(summary)
 }
 
 /// The changes since `since`, which `verify` passed, as a git patch, untracked files as
@@ -360,6 +390,29 @@ mod tests {
     }
 
     #[test]
+    fn a_summary_counts_the_lines_of_tracked_files_alone() {
+        let temporary = tempfile::tempdir().expect("a directory");
+        let dir = temporary.path();
+        let (_, second) = repository(dir);
+        let git = |args: &[&str]| run(git(dir).args(args)).expect("git runs");
+        // Paths holding tabs still read as the paths of a renamed file.
+        git(&["mv", "a", "moved\tto\there"]);
+        fs::write(dir.join("moved\tto\there"), "1\ntwo\n3\n4\n").expect("an edit");
+        fs::write(dir.join("binary"), b"\0\x01").expect("a file");
+        git(&["add", "binary"]);
+        fs::write(dir.join("untracked"), "u\n").expect("a file");
+        assert_eq!(
+            summary(dir, &second),
+            Ok(Summary {
+                commits: 0,
+                files: 2,
+                added: 1,
+                removed: 0
+            })
+        );
+    }
+
+    #[test]
     fn changes_since_a_commit_take_in_its_successors_and_untracked_files() {
         let temporary = tempfile::tempdir().expect("a directory");
         let dir = temporary.path();
@@ -380,7 +433,9 @@ mod tests {
             summary(dir, &second),
             Ok(Summary {
                 commits: 0,
-                files: 0
+                files: 0,
+                added: 0,
+                removed: 0
             })
         );
 
@@ -391,7 +446,9 @@ mod tests {
             summary(dir, &first),
             Ok(Summary {
                 commits: 1,
-                files: 3
+                files: 1,
+                added: 1,
+                removed: 1
             })
         );
         verify(dir, &first).expect("a commit of the repository");
