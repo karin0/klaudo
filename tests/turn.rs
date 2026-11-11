@@ -2667,6 +2667,7 @@ fn drained(calls: &Receiver<Call>) -> Vec<Call> {
 
 /// Consecutive rewrites of one message collapse, because how many a segment takes is a
 /// matter of how fast the deltas arrived.
+#[track_caller]
 fn collect(calls: &Receiver<Call>, done: impl Fn(&Call) -> bool) -> Vec<Call> {
     let deadline = Instant::now() + PATIENCE;
     let mut made: Vec<Call> = Vec::new();
@@ -3689,13 +3690,22 @@ fn project(root: &Path) -> PathBuf {
     root.join("project")
 }
 
-/// The daemon, killed when the test drops it.
-struct Daemon(Child);
+/// The daemon, killed when the test drops it. Its log goes to `log.txt` under the test's
+/// root, which a failing test prints, since the tests run at once and the logs of their
+/// daemons would otherwise mix.
+struct Daemon {
+    child: Child,
+    log: PathBuf,
+}
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if std::thread::panicking() {
+            let log = std::fs::read_to_string(&self.log).unwrap_or_default();
+            eprintln!("the daemon's log:\n{log}");
+        }
     }
 }
 
@@ -3703,18 +3713,21 @@ fn daemon(root: &Path) -> Daemon {
     run_daemon(root, klaudo(root))
 }
 
-/// The daemon, writing its log to `log.txt` under `root`.
-fn logging_daemon(root: &Path) -> Daemon {
-    let mut command = klaudo(root);
-    command.stderr(std::fs::File::create(root.join("log.txt")).expect("the log"));
-    run_daemon(root, command)
-}
-
 fn run_daemon(root: &Path, mut command: Command) -> Daemon {
-    let child = command.arg("listen").spawn().expect("run the daemon");
+    let log = root.join("log.txt");
+    let file = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .expect("the log");
+    let child = command
+        .arg("listen")
+        .stderr(file)
+        .spawn()
+        .expect("run the daemon");
     let socket = root.join("run/klaudo/listen.sock");
     wait_for(|| socket.exists(), "the daemon never bound its socket");
-    Daemon(child)
+    Daemon { child, log }
 }
 
 fn klaudo(root: &Path) -> Command {
@@ -3787,6 +3800,7 @@ fn report(mut command: Command, event: &serde_json::Value) {
     assert!(client.wait().expect("wait").success(), "the hook failed");
 }
 
+#[track_caller]
 fn wait_for(ready: impl Fn() -> bool, complaint: &str) {
     let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
@@ -4506,7 +4520,7 @@ fn diff_needs_the_review_page() {
 fn a_turn_ends_with_a_status_line() {
     let (temporary, calls, _chat) = prepare("line");
     let root = temporary.path();
-    let daemon = logging_daemon(root);
+    let daemon = daemon(root);
     let turn = |prompt: &str, line: &str| {
         for mut event in [
             json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
@@ -5218,7 +5232,7 @@ fn a_daemon_serving_the_page_stops_when_the_bot_has_no_main_mini_app() {
     let (temporary, _calls, chat, _port) = reviewing("no-mini-app");
     chat.main_app.store(false, Ordering::Relaxed);
     let root = temporary.path();
-    let mut daemon = logging_daemon(root);
+    let mut daemon = daemon(root);
     wait_for(
         || {
             std::fs::read_to_string(root.join("log.txt"))
@@ -5226,7 +5240,7 @@ fn a_daemon_serving_the_page_stops_when_the_bot_has_no_main_mini_app() {
         },
         "the daemon never told why it stopped",
     );
-    assert!(!daemon.0.wait().expect("the daemon's exit").success());
+    assert!(!daemon.child.wait().expect("the daemon's exit").success());
 }
 
 /// The session in `CHAT_PROJECTS` that `guested` seeds.
