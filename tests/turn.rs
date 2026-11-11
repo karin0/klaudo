@@ -4385,7 +4385,7 @@ fn usage_is_answered_from_the_status_lines() {
 /// directory it names, which the page then shows.
 #[test]
 fn diff_links_the_unpushed_changes_of_a_directory() {
-    let (temporary, calls, chat, port) = reviewing("diff");
+    let (temporary, calls, chat) = reviewing("diff");
     let root = temporary.path();
     let project = project(root);
     let other = root.join("other");
@@ -4417,7 +4417,7 @@ fn diff_links_the_unpushed_changes_of_a_directory() {
     std::fs::write(other.join("u"), "untracked\n").expect("an untracked file");
     git(&other, &["add", "n"]);
     let (session, pid) = terminal(root);
-    let daemon = served(root, pid, port);
+    let (daemon, port) = served(root, pid);
     let said = |text: &str| {
         chat.replies(GROUP, OWNER, text, &from_session("01234567"));
         let made = collect(&calls, |call| call.label == "sendRichMessage silent");
@@ -4942,10 +4942,10 @@ fn cancel_closes_the_reply_box_in_its_topic() {
 /// for, within what a reply of theirs could reach.
 #[test]
 fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
-    let (temporary, _calls, _chat, port) = reviewing("review-file");
+    let (temporary, _calls, _chat) = reviewing("review-file");
     let root = temporary.path();
     let (session, pid) = terminal(root);
-    let daemon = served(root, pid, port);
+    let (daemon, port) = served(root, pid);
     let page = |path: &str, data: &str| page(port, "GET", path, data, "");
 
     let (status, index) = page("/", "");
@@ -5040,10 +5040,10 @@ fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
 /// chat, which the turn it starts replies to, and the answer's file links open the page.
 #[test]
 fn a_review_from_the_mini_app_is_typed_into_its_session() {
-    let (temporary, calls, _chat, port) = reviewing("review");
+    let (temporary, calls, _chat) = reviewing("review");
     let root = temporary.path();
     let (session, pid) = terminal(root);
-    let daemon = served(root, pid, port);
+    let (daemon, port) = served(root, pid);
 
     let owner = signed(OWNER, &link(SHARED, "src/a.rs"));
     let review = json!({"since": null, "notes": [{"new": {"path": "src/a.rs", "from": 2, "to": 2},
@@ -5113,7 +5113,7 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
 /// App shows since the turn's start, and whose removed lines a review names as of it.
 #[test]
 fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
-    let (temporary, calls, _chat, port) = reviewing("review-changes");
+    let (temporary, calls, _chat) = reviewing("review-changes");
     let root = temporary.path();
     let project = project(root);
     let git = |args: &[&str]| {
@@ -5133,7 +5133,7 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
     git(&["commit", "-qm", "first"]);
     let head = git(&["rev-parse", "HEAD"]);
     let (session, pid) = terminal(root);
-    let daemon = served(root, pid, port);
+    let (daemon, port) = served(root, pid);
 
     std::fs::write(project.join("src/a.rs"), "fn a() {}\nfn c() {}\n").expect("an edit");
     std::fs::write(project.join("src/n.rs"), "fn n() {}\n").expect("a new file");
@@ -5229,7 +5229,7 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
 /// set to serve the page stops.
 #[test]
 fn a_daemon_serving_the_page_stops_when_the_bot_has_no_main_mini_app() {
-    let (temporary, _calls, chat, _port) = reviewing("no-mini-app");
+    let (temporary, _calls, chat) = reviewing("no-mini-app");
     chat.main_app.store(false, Ordering::Relaxed);
     let root = temporary.path();
     let mut daemon = daemon(root);
@@ -5246,40 +5246,68 @@ fn a_daemon_serving_the_page_stops_when_the_bot_has_no_main_mini_app() {
 /// The session in `CHAT_PROJECTS` that `guested` seeds.
 const SHARED: &str = "0123456789abcdef";
 
-/// A test whose env file has the daemon serve the bot's main Mini App on a free port,
-/// with a file `src/a.rs` in the project and one outside it.
-fn reviewing(name: &str) -> (TempDir, Receiver<Call>, Chat, u16) {
+/// A test whose env file has the daemon serve the bot's main Mini App on a port the
+/// kernel picks, with a file `src/a.rs` in the project and one outside it.
+fn reviewing(name: &str) -> (TempDir, Receiver<Call>, Chat) {
     let (temporary, calls, chat) = prepare(name);
     chat.main_app.store(true, Ordering::Relaxed);
     let root = temporary.path();
-    let port = TcpListener::bind("127.0.0.1:0")
-        .and_then(|free| free.local_addr())
-        .expect("a free port")
-        .port();
     let mut env = std::fs::OpenOptions::new()
         .append(true)
         .open(root.join("config/klaudo/env"))
         .expect("credentials");
     writeln!(
         env,
-        "WEB_LISTEN=127.0.0.1:{port}\nINIT_DATA_KEY={}",
+        "WEB_LISTEN=127.0.0.1:0\nINIT_DATA_KEY={}",
         telegram_public_key()
     )
     .expect("the page's settings");
     std::fs::create_dir(project(root).join("src")).expect("a source directory");
     std::fs::write(project(root).join("src/a.rs"), "fn a() {}\nfn b() {}\n").expect("a file");
     std::fs::write(root.join("outside"), "kept from guests\n").expect("a file outside");
-    (temporary, calls, chat, port)
+    (temporary, calls, chat)
 }
 
-/// The daemon of `guested`, once it serves the page on `port`.
-fn served(root: &Path, pid: u32, port: u16) -> Daemon {
+/// The daemon of `guested`, once it serves the page, and the port it serves it on.
+fn served(root: &Path, pid: u32) -> (Daemon, u16) {
     let daemon = guested(root, pid);
     wait_for(
-        || TcpStream::connect(("127.0.0.1", port)).is_ok(),
+        || listening(&daemon).is_some(),
         "the daemon never served the page",
     );
-    daemon
+    let port = listening(&daemon).expect("the page's port");
+    (daemon, port)
+}
+
+/// The port of the socket `daemon` listens on, which the kernel picked as it bound port 0,
+/// since a port a test picked could be taken before the daemon bound it. The socket is the
+/// one whose inode is among the daemon's descriptors and that its TCP table lists in state
+/// `0A`, listening.
+fn listening(daemon: &Daemon) -> Option<u16> {
+    let pid = daemon.child.id();
+    let inodes: Vec<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .ok()?
+        .filter_map(|fd| std::fs::read_link(fd.ok()?.path()).ok())
+        .filter_map(|target| {
+            let target = target.to_str()?;
+            Some(
+                target
+                    .strip_prefix("socket:[")?
+                    .strip_suffix(']')?
+                    .to_owned(),
+            )
+        })
+        .collect();
+    let table = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).ok()?;
+    table.lines().skip(1).find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (_, port) = fields.get(1)?.rsplit_once(':')?;
+        (fields.get(3) == Some(&"0A")
+            && inodes
+                .iter()
+                .any(|inode| fields.get(9) == Some(&inode.as_str())))
+        .then(|| u16::from_str_radix(port, 16).ok())?
+    })
 }
 
 /// The `startapp` parameter of a message's one link, to line 2 of `path` in `session`,
