@@ -1085,7 +1085,7 @@ pub(super) fn review(
     }
     let link = links
         .changes(since, path)
-        .ok_or("the link would pass the 512 characters Telegram passes on")?;
+        .ok_or("the link would be longer than Telegram passes on")?;
     Ok(Some(format!(
         "[Review changes: {}]({link})",
         counted(&summary)

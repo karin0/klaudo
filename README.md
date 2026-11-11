@@ -365,9 +365,9 @@ the list. The link is `https://t.me/<bot>` with
 `?startapp=<session>_<file>_<lines>_<files in base64url>`, where the files are listed
 once each with the fragments of their links, so it carries everything the page needs and
 still opens after a restart. The daemon reads the bot's username from `getMe` when it
-starts. A link whose parameter would pass 512 characters, which tma.js documents as the
-longest Telegram passes on, opens its own file alone, and stays as Claude Code wrote it
-when even that is too long. A relative path resolves in the session's directory. An
+starts. A link whose parameter would pass 1024 characters opens its own file alone, and
+stays as Claude Code wrote it when even that is too long. Telegram opened the page from a
+parameter of 1024 characters and refused one of 2048. A relative path resolves in the session's directory. An
 answer the hook posts without a daemon keeps its links as Claude Code wrote them.
 
 A turn of a session in a git working tree that changed anything there ends with a link

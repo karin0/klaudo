@@ -11,8 +11,9 @@ use serde::Serialize;
 use crate::changes;
 use crate::telegram::setting;
 
-/// The longest `startapp` parameter Telegram passes on, as tma.js documents it.
-const PARAMETER_MAX: usize = 512;
+/// The longest `startapp` parameter measured to reach the page, since Telegram refused
+/// one of 2048 characters.
+const PARAMETER_MAX: usize = 1024;
 
 /// Where the daemon serves the page, or `None` when the env file has it serve none.
 pub fn listen() -> Option<SocketAddr> {
@@ -352,7 +353,7 @@ mod tests {
 
     #[test]
     fn a_link_whose_page_is_too_long_for_telegram_opens_its_file_alone() {
-        let long = "a/".repeat(170);
+        let long = "a/".repeat(365);
         let opened = opened(&[&long, "src/listen/b.rs#L2"]);
         assert_eq!(opened[0], Some(target(&[linked(&long, &[])], 0, None)));
         let short = [linked("src/listen/b.rs", &[(2, 2)])];
@@ -391,8 +392,8 @@ mod tests {
 
     #[test]
     fn a_link_too_long_for_telegram_stays_as_it_was() {
-        assert!(links().files(&[&"a/".repeat(170)])[0].is_some());
-        assert_eq!(links().files(&[&"a/".repeat(180)]), [None]);
+        assert!(links().files(&[&"a/".repeat(365)])[0].is_some());
+        assert_eq!(links().files(&[&"a/".repeat(375)]), [None]);
     }
 
     #[test]
