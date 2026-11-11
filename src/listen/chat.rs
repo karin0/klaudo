@@ -229,16 +229,16 @@ impl Machine {
             Ok(attached) => attached,
             Err(error) => return self.say(place, &error),
         };
-        if text.is_empty() && files.is_empty() {
+        if text.shown.is_empty() && files.is_empty() {
             return;
         }
         let carrier = message.id;
         let replied = message.replied.as_deref();
-        if files.is_empty() && self.commanded(&from, &text, carrier, replied) {
+        if files.is_empty() && self.commanded(&from, &text.shown, carrier, replied) {
             return;
         }
         let ask = Ask {
-            text: unaddressed(&text),
+            text: unaddressed(&text.marked),
             files,
             place,
             message: carrier,
@@ -296,15 +296,17 @@ impl Machine {
     /// The text of `parts`, a message or the messages of an album, and the file each
     /// carries, saved under the daemon's state directory. Telegram puts an album's
     /// caption on one of its messages.
-    fn attached(&self, parts: &[Message]) -> Result<(String, Vec<PathBuf>), String> {
+    fn attached(&self, parts: &[Message]) -> Result<(Written, Vec<PathBuf>), String> {
         let text = parts
             .iter()
             .find_map(|part| {
-                Some(part.text.as_deref().or(part.caption.as_deref())?.trim())
-                    .filter(|text| !text.is_empty())
+                let (text, entities) = match &part.text {
+                    Some(text) => (text, &part.entities),
+                    None => (part.caption.as_ref()?, &part.caption_entities),
+                };
+                Some(Written::new(text, entities)).filter(|text| !text.shown.is_empty())
             })
-            .unwrap_or_default()
-            .to_owned();
+            .unwrap_or_default();
         let files = parts
             .iter()
             .filter_map(|part| self.keep(part).transpose())
@@ -951,7 +953,7 @@ impl Machine {
             return;
         }
         let ask = Ask {
-            text: unaddressed(&text),
+            text: unaddressed(&text.marked),
             files,
             place,
             message: asked.id,
@@ -1122,6 +1124,90 @@ fn coded(text: Option<&str>, entities: &[Entity]) -> Option<String> {
     String::from_utf16(text.get(code.offset..code.offset + code.length)?).ok()
 }
 
+/// The text of a message from the chat as its sender sees it, which the daemon's own
+/// commands read so that a path written as code still names the path, and as markdown,
+/// which writes back the links, code and code blocks Telegram keeps apart from the text.
+#[derive(Default)]
+struct Written {
+    shown: String,
+    marked: String,
+}
+
+impl Written {
+    /// Entities count UTF-16 code units, and a span may lie inside another.
+    fn new(text: &str, entities: &[Entity]) -> Self {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let unit = |at: usize| units.get(at).copied();
+        let newline = u16::from(b'\n');
+        // Each mark goes in at an offset, where a span closes before another opens, and an
+        // outer span opens before and closes after a span inside it. Of two spans over the
+        // same units, the first listed is the outer.
+        let mut marks: Vec<((usize, bool, usize, usize), String)> = Vec::new();
+        for (index, entity) in entities.iter().enumerate() {
+            let (start, end) = (entity.offset, entity.offset + entity.length);
+            let Some(inside) = units.get(start..end).map(String::from_utf16_lossy) else {
+                continue;
+            };
+            let (open, close) = match (entity.kind.as_str(), &entity.url) {
+                ("text_link", Some(url)) => ("[".to_owned(), format!("]({url})")),
+                ("code", _) => {
+                    let ticks = "`".repeat(longest_run(&inside) + 1);
+                    // A space each side keeps a backtick at an end out of the fence.
+                    let pad = if inside.starts_with('`') || inside.ends_with('`') {
+                        " "
+                    } else {
+                        ""
+                    };
+                    (format!("{ticks}{pad}"), format!("{pad}{ticks}"))
+                }
+                ("pre", _) => {
+                    let ticks = "`".repeat((longest_run(&inside) + 1).max(3));
+                    let before = if start > 0 && unit(start - 1) != Some(newline) {
+                        "\n"
+                    } else {
+                        ""
+                    };
+                    let last = if inside.ends_with('\n') { "" } else { "\n" };
+                    let after = if unit(end).is_some_and(|next| next != newline) {
+                        "\n"
+                    } else {
+                        ""
+                    };
+                    let language = entity.language.as_deref().unwrap_or_default();
+                    (
+                        format!("{before}{ticks}{language}\n"),
+                        format!("{last}{ticks}{after}"),
+                    )
+                }
+                _ => continue,
+            };
+            marks.push(((start, true, usize::MAX - end, index), open));
+            marks.push(((end, false, usize::MAX - start, usize::MAX - index), close));
+        }
+        marks.sort_by_key(|(key, _)| *key);
+        let mut marked = Vec::with_capacity(units.len());
+        let mut at = 0;
+        for ((offset, ..), mark) in marks {
+            marked.extend_from_slice(&units[at..offset]);
+            marked.extend(mark.encode_utf16());
+            at = offset;
+        }
+        marked.extend_from_slice(&units[at..]);
+        Self {
+            shown: text.trim().to_owned(),
+            marked: String::from_utf16_lossy(&marked).trim().to_owned(),
+        }
+    }
+}
+
+/// The length of the longest run of backticks in `text`.
+fn longest_run(text: &str) -> usize {
+    text.split(|char| char != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0)
+}
+
 fn body(message: &Message) -> Option<String> {
     let body = plain(paragraph(message, 1)?);
     let body = body.trim();
@@ -1262,6 +1348,133 @@ mod tests {
             " 12s ",
             {"type": "hashtag", "text": "#claude", "hashtag": "claude"},
         ])
+    }
+
+    /// The text of `text` with `entities` as markdown.
+    fn marked(text: &str, entities: Value) -> String {
+        let entities: Vec<Entity> = serde_json::from_value(entities).expect("entities");
+        Written::new(text, &entities).marked
+    }
+
+    #[test]
+    fn a_message_is_typed_with_its_links_and_code_as_markdown() {
+        let text = " inside back ` tick Link @claude_bot ";
+        let entities = serde_json::json!([
+            {"type": "code", "offset": 1, "length": 6},
+            {"type": "text_link", "offset": 20, "length": 4, "url": "https://u-uz.co.jp"},
+            {"type": "mention", "offset": 25, "length": 11},
+        ]);
+        let entities: Vec<Entity> = serde_json::from_value(entities).expect("entities");
+        let written = Written::new(text, &entities);
+        assert_eq!(written.shown, "inside back ` tick Link @claude_bot");
+        assert_eq!(
+            written.marked,
+            "`inside` back ` tick [Link](https://u-uz.co.jp) @claude_bot"
+        );
+        // Offsets count UTF-16 units, of which 🐱 takes two.
+        assert_eq!(
+            marked(
+                "🐱 猫 x",
+                serde_json::json!([{"type": "code", "offset": 5, "length": 1}])
+            ),
+            "🐱 猫 `x`"
+        );
+        assert_eq!(
+            marked(
+                "bold",
+                serde_json::json!([{"type": "bold", "offset": 0, "length": 4}])
+            ),
+            "bold"
+        );
+    }
+
+    #[test]
+    fn code_holding_backticks_is_fenced_by_a_longer_run() {
+        assert_eq!(
+            marked(
+                "a `` b",
+                serde_json::json!([{"type": "code", "offset": 0, "length": 6}])
+            ),
+            "```a `` b```"
+        );
+        assert_eq!(
+            marked(
+                "`a`",
+                serde_json::json!([{"type": "code", "offset": 0, "length": 3}])
+            ),
+            "`` `a` ``"
+        );
+        assert_eq!(
+            marked(
+                "```\nx",
+                serde_json::json!([{"type": "pre", "offset": 0, "length": 5}])
+            ),
+            "````\n```\nx\n````"
+        );
+    }
+
+    #[test]
+    fn a_code_block_takes_lines_of_its_own() {
+        assert_eq!(
+            marked(
+                "see fn main() {} here",
+                serde_json::json!([
+                    {"type": "pre", "offset": 4, "length": 12, "language": "rust"},
+                ])
+            ),
+            "see \n```rust\nfn main() {}\n```\n here"
+        );
+        assert_eq!(
+            marked(
+                "see\nx = 1\n",
+                serde_json::json!([{"type": "pre", "offset": 4, "length": 6}])
+            ),
+            "see\n```\nx = 1\n```"
+        );
+    }
+
+    #[test]
+    fn a_span_inside_another_stays_inside_it() {
+        assert_eq!(
+            marked(
+                "run cargo now",
+                serde_json::json!([
+                    {"type": "text_link", "offset": 0, "length": 13, "url": "https://a.b/"},
+                    {"type": "code", "offset": 4, "length": 5},
+                ])
+            ),
+            "[run `cargo` now](https://a.b/)"
+        );
+        assert_eq!(
+            marked(
+                "cargo",
+                serde_json::json!([
+                    {"type": "text_link", "offset": 0, "length": 5, "url": "https://a.b/"},
+                    {"type": "code", "offset": 0, "length": 5},
+                ])
+            ),
+            "[`cargo`](https://a.b/)"
+        );
+        assert_eq!(
+            marked(
+                "cargo now",
+                serde_json::json!([
+                    {"type": "code", "offset": 0, "length": 5},
+                    {"type": "text_link", "offset": 0, "length": 9, "url": "https://a.b/"},
+                ])
+            ),
+            "[`cargo` now](https://a.b/)"
+        );
+        assert_eq!(
+            marked(
+                "ab",
+                serde_json::json!([
+                    {"type": "code", "offset": 0, "length": 1},
+                    {"type": "text_link", "offset": 1, "length": 1, "url": "https://a.b/"},
+                ])
+            ),
+            "`a`[b](https://a.b/)"
+        );
     }
 
     #[test]

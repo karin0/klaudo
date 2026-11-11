@@ -152,7 +152,9 @@ stays in its topic.
 The text travels through a tmux paste buffer, so newlines, quotes and non-ASCII arrive
 as typed. It is pasted in pieces of at most three lines and 700 UTF-16 units, because
 Claude Code folds a longer paste into a `[Pasted text #N]` placeholder and submits it
-wrapped as text the user did not write. A message whose text reached an input box gets
+wrapped as text the user did not write. Telegram keeps the address of a link and the
+marks of code apart from a message's text, so the daemon writes links, code and code
+blocks back into the text as markdown. A message whose text reached an input box gets
 a 👀 reaction once Claude Code reports the prompt.
 
 A photo or a file sent in the chat is saved under `$XDG_STATE_HOME/klaudo/files/`, and
