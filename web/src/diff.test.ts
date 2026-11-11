@@ -139,6 +139,13 @@ describe('excerpt', () => {
     expandsTo(diff, text, text);
   });
 
+  test('collapses the whole of an unchanged file whose ranges lie past its end', () => {
+    const text = lines(1, 40).join('');
+    const diff = cut(text, text, [{ from: 60, to: 60 }]);
+    expect(diff.hunks).toEqual([]);
+    expandsTo(diff, text, text);
+  });
+
   test('shows an empty file as no hunks', () => {
     const diff = cut('', '', WHOLE);
     expect(diff.hunks).toEqual([]);

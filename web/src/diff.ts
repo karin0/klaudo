@@ -111,8 +111,7 @@ export function excerpt(
   marked: readonly Range[],
   context: number,
 ): FileDiffMetadata {
-  const whole = parseDiffFromFile(oldFile, newFile);
-  const all = rows(whole);
+  const all = rows(parseDiffFromFile(oldFile, newFile));
   // How far each row is from the nearest change, looking both ways.
   const distance = all.map(() => Infinity);
   for (const order of [[...all.keys()], [...all.keys()].reverse()]) {
@@ -136,9 +135,6 @@ export function excerpt(
             row.line >= from - context && row.line <= to + context,
         )),
   );
-  if (!kept.includes(true)) {
-    return whole;
-  }
   // A hunk header counts from the line before a side it takes no line of.
   const start = (at: number, count: number) =>
     `${String(count === 0 ? at : at + 1)},${String(count)}`;
