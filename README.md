@@ -356,13 +356,18 @@ status says whether every file arrived.
 ## Reviews
 
 Claude Code links to the files it talks about, as in `[listen.rs:588](src/listen.rs#L588)`.
-Once `WEB_LISTEN` is set, each inline link of an answer whose target has no scheme opens
-the file in the bot's main Mini App, which the daemon serves, at the lines a fragment
-`#L12` or `#L12-L20` names. The link is `https://t.me/<bot>` with
-`?startapp=<session>_<from>_<to>_<path in base64url>`, so it carries everything the page
-needs and still opens after a restart. The daemon reads the bot's username from `getMe`
-when it starts. A link whose parameter would pass the 512 characters Telegram passes on
-stays as Claude Code wrote it. A relative path resolves in the session's directory. An
+Once `WEB_LISTEN` is set, each inline link of a message whose target has no scheme opens
+a page of every file the message links to in the bot's main Mini App, which the daemon
+serves. The page opens at the link's own file and at the lines a fragment `#L12` or
+`#L12-L20` names, and tints the lines of every link. It also lists the files, each
+scrolling the page to itself on a tap, and a file the visitor cannot read shows why in
+the list. The link is `https://t.me/<bot>` with
+`?startapp=<session>_<file>_<lines>_<files in base64url>`, where the files are listed
+once each with the fragments of their links, so it carries everything the page needs and
+still opens after a restart. The daemon reads the bot's username from `getMe` when it
+starts. A link whose parameter would pass 512 characters, which tma.js documents as the
+longest Telegram passes on, opens its own file alone, and stays as Claude Code wrote it
+when even that is too long. A relative path resolves in the session's directory. An
 answer the hook posts without a daemon keeps its links as Claude Code wrote them.
 
 A turn of a session in a git working tree that changed anything there ends with a link
@@ -599,7 +604,7 @@ building it needs Node and pnpm. The lint levels live in `Cargo.toml`, so a bare
 `cargo clippy` enforces the same set. `web/` checks its formatting with Prettier, lints
 with oxlint running typescript-eslint's strict type-aware rules, and type-checks with
 tsc. `pnpm -C web dev` serves the page with a stand-in for the daemon and Telegram, and
-`/mock` there opens it as a file link would, `/mock?changes` as a link to changes, and
+`/mock` there opens it as a link to files would, `/mock?changes` as a link to changes, and
 `dark` in either query in the dark theme.
 `tests/turn.rs` drives the hook chain end to end in a throwaway runtime directory,
 against a server answering as Telegram does and a `tmux` that records how it was called.

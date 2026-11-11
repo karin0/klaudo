@@ -30,7 +30,7 @@ use tokio::sync::oneshot;
 use crate::changes::{self, Changes};
 use crate::hook;
 use crate::telegram::{Sound, Telegram};
-use crate::web::{Opens, Target};
+use crate::web::{self, Opens, Target};
 
 use super::chat::{IN_DIALOG, unseen};
 use super::turn::Ask;
@@ -64,12 +64,12 @@ pub(super) struct Visit {
 
 /// What the page asks of the machine, with where its answer goes.
 pub(super) enum Asked {
-    /// The file `path` names in the session's directory, which the machine resolves
-    /// and checks against what the visitor may see.
-    File {
+    /// The files `paths` name in the session's directory, which the machine resolves
+    /// and checks against what the visitor may see, once the visitor may see the session.
+    Files {
         visit: Visit,
-        path: String,
-        answer: oneshot::Sender<Result<PathBuf, String>>,
+        paths: Vec<String>,
+        answer: oneshot::Sender<Result<Vec<Result<PathBuf, String>>, String>>,
     },
     /// The working tree holding the directory `path` names in the session's directory,
     /// once the visitor may see all of it.
@@ -123,17 +123,34 @@ struct Lines {
     to: usize,
 }
 
-/// What a link opens, as the page draws it.
+/// What a link opens, as the page draws it: the files a message links to with the
+/// link's own file and lines among them, or changes.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Opened {
-    File {
-        path: String,
-        content: String,
-        from: usize,
-        to: usize,
+    Files {
+        files: Vec<Shown>,
+        file: usize,
+        lines: Option<web::Lines>,
     },
     Changes(Changes),
+}
+
+/// A file a message links to, with the lines its links name, and its text or the
+/// reason the visitor cannot read it.
+#[derive(Serialize)]
+struct Shown {
+    path: String,
+    lines: Vec<web::Lines>,
+    #[serde(flatten)]
+    read: Read,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Read {
+    Content(String),
+    Refusal(String),
 }
 
 /// A changed file as of the start and as it is, for the page to show the lines around a
@@ -255,14 +272,23 @@ impl Server {
     async fn open(&self, request: &Request<Incoming>) -> Result<Response<Full<Bytes>>, Refusal> {
         let (visit, target) = self.visitor(request)?;
         let opened = match target.opens {
-            Opens::File { path, from, to } => {
-                let file = self.file(visit, path.clone()).await?;
-                Opened::File {
-                    content: read(&file, &path)?,
-                    path,
-                    from,
-                    to,
-                }
+            Opens::Files { files, file, lines } => {
+                let paths = files.iter().map(|linked| linked.path.clone()).collect();
+                let found = self.files(visit, paths).await?;
+                let files = files
+                    .into_iter()
+                    .zip(found)
+                    .map(|(linked, found)| Shown {
+                        read: found
+                            .and_then(|file| {
+                                read(&file, &linked.path).map_err(|(_, reason)| reason)
+                            })
+                            .map_or_else(Read::Refusal, Read::Content),
+                        path: linked.path,
+                        lines: linked.lines,
+                    })
+                    .collect();
+                Opened::Files { files, file, lines }
             }
             Opens::Changes { since, path } => {
                 let since = parameter(request, "since").unwrap_or(since);
@@ -297,8 +323,11 @@ impl Server {
         let prev = parameter(request, "prev").ok_or_else(|| missing("prev"))?;
         let Tree { top, .. } = self.tree(visit.clone(), held).await?;
         let file = self
-            .file(visit, top.join(&path).display().to_string())
-            .await?;
+            .files(visit, vec![top.join(&path).display().to_string()])
+            .await?
+            .pop()
+            .expect("a file for the path asked")
+            .map_err(|reason| (StatusCode::CONFLICT, reason))?;
         let new = read(&file, &path)?;
         let old = blocking(move || {
             changes::verify(&top, &since)?;
@@ -321,11 +350,15 @@ impl Server {
         Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
     }
 
-    async fn file(&self, visit: Visit, path: String) -> Result<PathBuf, Refusal> {
+    async fn files(
+        &self,
+        visit: Visit,
+        paths: Vec<String>,
+    ) -> Result<Vec<Result<PathBuf, String>>, Refusal> {
         self.ask(
-            |answer| Asked::File {
+            |answer| Asked::Files {
                 visit,
-                path,
+                paths,
                 answer,
             },
             "the daemon is busy; open the link again",
@@ -365,7 +398,7 @@ impl Server {
         // A path of changes is relative to the top of the working tree, and the prompt
         // writes it as the session would.
         let tree = match target.opens {
-            Opens::File { .. } => None,
+            Opens::Files { .. } => None,
             Opens::Changes { path, .. } => Some(self.tree(visit.clone(), path).await?),
         };
         let shown = |path: &str| match &tree {
@@ -691,11 +724,19 @@ fn fence(texts: &[&str]) -> String {
 impl Machine {
     pub(super) fn page(&mut self, asked: Asked) {
         let refused = match asked {
-            Asked::File {
+            Asked::Files {
                 visit,
-                path,
+                paths,
                 answer,
-            } => answer.send(self.opened(&visit, &path)).is_err(),
+            } => {
+                let found = self.visited(&visit).map(|dir| {
+                    paths
+                        .iter()
+                        .map(|path| self.resolved(&visit, &dir, path))
+                        .collect()
+                });
+                answer.send(found).is_err()
+            }
             Asked::Tree {
                 visit,
                 path,
@@ -724,10 +765,9 @@ impl Machine {
         Ok(dir)
     }
 
-    /// The file `path` names in the session's directory, once the visitor may see it,
-    /// with every link resolved.
-    fn opened(&self, visit: &Visit, path: &str) -> Result<PathBuf, String> {
-        let dir = self.visited(visit)?;
+    /// The file `path` names in the session's directory `dir`, once the visitor may see
+    /// it, with every link resolved.
+    fn resolved(&self, visit: &Visit, dir: &Path, path: &str) -> Result<PathBuf, String> {
         let file = dir
             .join(path)
             .canonicalize()
@@ -740,7 +780,7 @@ impl Machine {
     /// whose every file the changes page may show.
     fn tree(&self, visit: &Visit, path: &str) -> Result<Tree, String> {
         let dir = self.visited(visit)?;
-        let top = changes::top(&self.opened(visit, path)?)?;
+        let top = changes::top(&self.resolved(visit, &dir, path)?)?;
         self.admits(visit.guest.as_deref(), &top)?;
         Ok(Tree { dir, top })
     }

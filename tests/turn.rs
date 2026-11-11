@@ -4912,26 +4912,38 @@ fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
 
     let (status, shown) = page("/api/open", &signed(OWNER, &link(SHARED, "src/a.rs")));
     assert_eq!(status, 200, "{shown}");
+    let lines = json!({"from": 2, "to": 2});
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&shown).expect("a file"),
-        json!({"kind": "file", "path": "src/a.rs", "content": "fn a() {}\nfn b() {}\n",
-            "from": 2, "to": 2})
+        serde_json::from_str::<serde_json::Value>(&shown).expect("files"),
+        json!({"kind": "files", "files": [{"path": "src/a.rs", "lines": [lines],
+            "content": "fn a() {}\nfn b() {}\n"}], "file": 0, "lines": lines})
     );
-    // The owner can read anything a shell of theirs could.
-    let (status, _) = page("/api/open", &signed(OWNER, &link(SHARED, "../outside")));
-    assert_eq!(status, 200);
-    // A guest reaches neither a session outside `CHAT_PROJECTS` nor a file outside them.
-    for (session, path) in [
-        ("fedcba9876543210", "project/src/a.rs"),
-        (SHARED, "../outside"),
-    ] {
-        let (status, refusal) = page("/api/open", &signed(GUEST, &link(session, path)));
-        assert_eq!(
-            (status, refusal.as_str()),
-            (409, "that project is not open to guests"),
-            "{session} {path}"
-        );
-    }
+    // The owner can read anything a shell of theirs could, and a guest neither a session
+    // outside `CHAT_PROJECTS` nor a file outside them.
+    let both = format!("{SHARED}_1_0_{}", base64url("src/a.rs#L2\n../outside"));
+    let read = |user: i64| {
+        let (status, shown) = page("/api/open", &signed(user, &both));
+        assert_eq!(status, 200, "{shown}");
+        let shown: serde_json::Value = serde_json::from_str(&shown).expect("files");
+        (
+            shown["files"][0]["content"].is_string(),
+            shown["files"][1].clone(),
+        )
+    };
+    let (_, outside) = read(OWNER);
+    assert!(outside["content"].is_string(), "{outside}");
+    let (inside, outside) = read(GUEST);
+    assert!(inside);
+    assert_eq!(
+        outside["refusal"],
+        json!("that project is not open to guests")
+    );
+    let elsewhere = link("fedcba9876543210", "project/src/a.rs");
+    let (status, refusal) = page("/api/open", &signed(GUEST, &elsewhere));
+    assert_eq!(
+        (status, refusal.as_str()),
+        (409, "that project is not open to guests")
+    );
     let (status, _) = page("/api/open", &signed(GUEST, &link(SHARED, "src/a.rs")));
     assert_eq!(status, 200);
     let stranger = signed(STRANGER, &link(SHARED, "src/a.rs"));
@@ -5165,9 +5177,9 @@ fn served(root: &Path, pid: u32, port: u16) -> Daemon {
     daemon
 }
 
-/// The `startapp` parameter of a link to line 2 of `path` in `session`.
+/// The `startapp` parameter of a message's one link, to line 2 of `path` in `session`.
 fn link(session: &str, path: &str) -> String {
-    format!("{session}_2_2_{}", base64url(path))
+    format!("{session}_0_1_{}", base64url(&format!("{path}#L2")))
 }
 
 /// `text` in base64url, as a link carries a path.

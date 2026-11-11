@@ -51,15 +51,21 @@ export interface Commit {
   included: boolean;
 }
 
-/** What `GET /api/open` answers: the file a link names, or the changes it opens. */
+/** A file a message links to, with the lines its links name, and its text or why it cannot be read. */
+export type Linked = { path: string; lines: Range[] } & (
+  { content: string } | { refusal: string }
+);
+
+/**
+ * What `GET /api/open` answers: the files a message links to, with the link's own file
+ * among them and its lines, or the changes a link opens.
+ */
 export type Opened =
   | {
-      kind: 'file';
-      path: string;
-      content: string;
-      /** The lines the link points at, 0 for none. */
-      from: number;
-      to: number;
+      kind: 'files';
+      files: Linked[];
+      file: number;
+      lines: Range | null;
     }
   | {
       kind: 'changes';

@@ -2,7 +2,7 @@ import { StrictMode, useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { app, call, failure, type Opened } from './api';
 import { ChangesReview } from './changes';
-import { FileReview } from './file';
+import { FilesReview } from './file';
 import './app.css';
 
 app.ready();
@@ -33,8 +33,8 @@ function App() {
   if (opened === null) {
     return <p className="hint status">{refusal ?? 'Loading…'}</p>;
   }
-  return opened.kind === 'file' ? (
-    <FileReview shown={opened} />
+  return opened.kind === 'files' ? (
+    <FilesReview shown={opened} />
   ) : (
     <ChangesReview key={opened.since} changes={opened} onMove={open} />
   );

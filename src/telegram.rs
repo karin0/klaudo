@@ -601,6 +601,21 @@ pub fn blocks(markdown: &str) -> usize {
 /// opens a heading at a `#` that starts a line even with no space after it, so such a `#`
 /// in text is escaped. With `links`, an inline link to a file opens it in the Mini App.
 pub fn rich_markdown(markdown: &str, links: Option<Links>) -> String {
+    let destinations: Vec<_> = Parser::new_ext(markdown, OPTIONS)
+        .filter_map(|event| match event {
+            Event::Start(Tag::Link {
+                link_type: LinkType::Inline,
+                dest_url,
+                ..
+            }) => Some(dest_url),
+            _ => None,
+        })
+        .collect();
+    let destinations: Vec<&str> = destinations.iter().map(AsRef::as_ref).collect();
+    let mut opened = links
+        .map(|links| links.files(&destinations))
+        .unwrap_or_default()
+        .into_iter();
     let mut written = String::with_capacity(markdown.len());
     let mut copied = 0;
     let mut line_start = false;
@@ -625,12 +640,9 @@ pub fn rich_markdown(markdown: &str, links: Option<Links>) -> String {
         match event {
             Event::Start(Tag::Link {
                 link_type: LinkType::Inline,
-                dest_url,
                 ..
             }) => {
-                opening = links
-                    .and_then(|links| links.to(&dest_url))
-                    .map(|link| (link, range.start + 1));
+                opening = opened.next().flatten().map(|link| (link, range.start + 1));
             }
             Event::End(TagEnd::Link) => {
                 if let Some((link, text_end)) = opening.take()
@@ -827,23 +839,31 @@ mod tests {
     #[test]
     fn an_inline_link_to_a_file_opens_it_in_the_mini_app() {
         let links = Links::new(Some("https://t.me/b/a"), "s");
-        let opened = |path: &str| links.and_then(|links| links.to(path)).expect("a link");
+        let opened = |destinations: &[&str]| -> Vec<String> {
+            links
+                .expect("links")
+                .files(destinations)
+                .into_iter()
+                .flatten()
+                .collect()
+        };
         let answer = "See [`listen.rs:588`](src/listen.rs#L588) and [the *docs*]( <README.md> \"t\").\n\
                       [site](https://a.b) [ref][r] [](a(b)c.rs) ![shot](a.png)\n\n[r]: c.rs";
+        let [listen, readme, paren] =
+            opened(&["src/listen.rs#L588", "README.md", "https://a.b", "a(b)c.rs"])
+                .try_into()
+                .expect("a link to each file");
         assert_eq!(
             rich_markdown(answer, links),
             format!(
-                "See [`listen.rs:588`]({}) and [the *docs*]( {} \"t\").\n\
-                 [site](https://a.b) [ref][r] []({}) ![shot](a.png)\n\n[r]: c.rs",
-                opened("src/listen.rs#L588"),
-                opened("README.md"),
-                opened("a(b)c.rs"),
+                "See [`listen.rs:588`]({listen}) and [the *docs*]( {readme} \"t\").\n\
+                 [site](https://a.b) [ref][r] []({paren}) ![shot](a.png)\n\n[r]: c.rs",
             )
         );
         assert_eq!(rich_markdown(answer, None), answer);
         assert_eq!(
             rich_markdown("#1 [x](a.rs)", links),
-            format!("\\#1 [x]({})", opened("a.rs"))
+            format!("\\#1 [x]({})", opened(&["a.rs"])[0])
         );
     }
 

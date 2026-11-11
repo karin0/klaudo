@@ -46,9 +46,9 @@ const git = (...args: string[]) =>
  * The daemon's API and Telegram's launch parameters on the dev server, so the page runs
  * in a browser without either. `/mock` opens the page as Telegram would on a file link,
  * `/mock?changes` on the link to a turn's changes, and `dark` in either query the dark
- * theme. The file shown is the daemon's own `src/telegram.rs`, and the changes are the
- * daemon's own since three commits back, untracked files left out. A review sent is
- * printed by the dev server. A browser draws no `MainButton`, so
+ * theme. The files shown are some of the daemon's own and one refused, opening at the
+ * second link to `src/telegram.rs`, and the changes are the daemon's own since three
+ * commits back, untracked files left out. A review sent is printed by the dev server. A browser draws no `MainButton`, so
  * `Telegram.WebView.receiveEvent('main_button_pressed')` in the console presses it.
  */
 function mock(): Plugin {
@@ -85,13 +85,24 @@ function mock(): Plugin {
       server.middlewares.use('/api/open', (request, response) => {
         const data = request.headers.authorization?.replace(/^tma /, '') ?? '';
         if (new URLSearchParams(data).get('start_param') === 'file') {
-          const path = 'src/telegram.rs';
-          answer(response, {
-            kind: 'file',
+          const linked = (path: string, lines: [number, number][]) => ({
             path,
+            lines: lines.map(([from, to]) => ({ from, to })),
             content: read(path),
-            from: 22,
-            to: 24,
+          });
+          answer(response, {
+            kind: 'files',
+            files: [
+              linked('src/web.rs', [[13, 14]]),
+              linked('src/telegram.rs', [
+                [22, 24],
+                [600, 610],
+              ]),
+              { path: '../outside', lines: [], refusal: 'no such file' },
+              linked('README.md', []),
+            ],
+            file: 1,
+            lines: { from: 600, to: 610 },
           });
           return;
         }

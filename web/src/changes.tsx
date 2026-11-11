@@ -31,6 +31,7 @@ import {
   span,
   useKeyboardReveal,
   useScheme,
+  version,
   type Draft,
 } from './notes';
 
@@ -377,36 +378,6 @@ function Files({
     </section>
   );
 }
-
-const numbers = new WeakMap<object, number>();
-let numbered = 0;
-
-/** A number for `object`, larger than that of every object numbered before it. */
-function numbering(object: object): number {
-  const found = numbers.get(object) ?? ++numbered;
-  numbers.set(object, found);
-  return found;
-}
-
-/**
- * The version of an item, which CodeView redraws only when it changes, keeping the diff
- * it holds otherwise. A new diff, or any annotation added or replaced, is a new object,
- * numbered past all the others, an annotation removed shortens the list, and folding
- * the item flips the lowest bit, so no two states an item goes through share a version.
- */
-const version = (
-  fileDiff: FileDiffMetadata,
-  annotations: readonly DiffLineAnnotation<Extension>[],
-  folded: boolean,
-) =>
-  (Math.max(
-    numbering(fileDiff),
-    ...annotations.map(({ metadata }) => numbering(metadata)),
-  ) *
-    4096 +
-    annotations.length) *
-    2 +
-  Number(folded);
 
 export function ChangesReview({
   changes,
