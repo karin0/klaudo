@@ -3638,8 +3638,10 @@ fn prepare(name: &str) -> (TempDir, Receiver<Call>, Chat) {
     // test never reaches the tmux server of the machine it runs on. Its session exists
     // once a `new-session` has been recorded, every pane is in it and shows the terminal
     // a `tty` file beside the log names, and its windows stay open until a `closed` file
-    // appears there. What is pasted into a pane is appended to a `typed` file there, and the
-    // last argument of each `new-` call, the window's command, to a `commands` file.
+    // appears there. What is pasted into a pane is appended to a `typed` file there once the
+    // Enter after it is pressed, through a rename that replaces the file whole, so a test
+    // never reads half a message, and the Enter is logged after that. The last argument of
+    // each `new-` call, the window's command, is appended to a `commands` file.
     std::fs::create_dir_all(root.join("bin")).expect("binary directory");
     let tmux = root.join("bin/tmux");
     std::fs::write(
@@ -3658,9 +3660,13 @@ display-message)
   esac
   exit ;;
 esac
+[ "$1" = load-buffer ] && cat >> "$dir/pasted"
+case "$*" in "send-keys "*" Enter")
+  [ -e "$dir/pasted" ] && { cat "$dir/typed" 2>/dev/null; cat "$dir/pasted"; } > "$dir/typing" &&
+    mv "$dir/typing" "$dir/typed" && rm "$dir/pasted" ;;
+esac
 printf '%s\n' "$*" >> "$log"
 case "$1" in new-*) eval "printf '%s\\n' \"\${$#}\"" >> "$dir/commands" ;; esac
-[ "$1" = load-buffer ] && cat >> "$dir/typed"
 case "$1" in new-*) echo "%$(grep -c '^new-' "$log") $dir/tmux.sock" ;; esac
 "#,
     )
