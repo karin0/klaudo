@@ -98,6 +98,20 @@ describe('excerpt', () => {
     expandsTo(diff, '', text);
   });
 
+  test('removes every line of a file emptied since the start', () => {
+    const text = lines(1, 20).join('');
+    const diff = cut(text, '', WHOLE);
+    expect(diff.hunks).toHaveLength(1);
+    expect(diff.hunks[0]).toMatchObject({
+      deletionStart: 1,
+      deletionCount: 20,
+      additionStart: 0,
+      additionCount: 0,
+    });
+    expect(rows(diff).every((row) => row.mark === '-')).toBe(true);
+    expandsTo(diff, text, '');
+  });
+
   test.each([
     ['the old side', ended.slice(0, -1), ended, true, false],
     ['the new side', ended, ended.slice(0, -1), false, true],

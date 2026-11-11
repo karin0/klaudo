@@ -80,9 +80,13 @@ export function rows(diff: FileDiffMetadata): Row[] {
           text: unended(diff.additionLines[at]),
         });
       }
-      oldAt =
-        block.deletionLineIndex + (block.type === 'context' ? added : removed);
-      newAt = block.additionLineIndex + added;
+      // An empty side starts at index -1, since the library subtracts one from the
+      // hunk header's start of 0.
+      oldAt = Math.max(
+        0,
+        block.deletionLineIndex + (block.type === 'context' ? added : removed),
+      );
+      newAt = Math.max(0, block.additionLineIndex + added);
     }
   }
   between(diff.deletionLines.length, diff.additionLines.length);
