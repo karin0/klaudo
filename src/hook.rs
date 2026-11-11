@@ -467,8 +467,8 @@ fn fold(text: &str, credit: &str, room: usize) -> String {
     folded
 }
 
-/// A block quotation, which every line carries its own marker of because a line without
-/// one ends the quote. Telegram joins the lines of a paragraph with a space, so each line
+/// A block quotation, which every line carries its own marker of because an empty line
+/// without one ends the quote. Telegram joins the lines of a paragraph with a space, so each line
 /// ends in the two spaces of a hard break, which the end of a paragraph ignores.
 pub fn quote(text: &str) -> String {
     text.lines()
