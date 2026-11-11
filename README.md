@@ -359,12 +359,11 @@ Claude Code links to the files it talks about, as in `[listen.rs:588](src/listen
 Once `WEB_LISTEN` is set, each inline link of a message whose target has no scheme opens
 a page of every file the message links to in the bot's main Mini App, which the daemon
 serves. The page opens at the link's own file and at the lines a fragment `#L12` or
-`#L12-L20` names, and tints the lines of every link. It also lists the files, each
-scrolling the page to itself on a tap, and a file the visitor cannot read shows why in
-the list. The link is `https://t.me/<bot>` with
-`?startapp=<session>_<file>_<lines>_<files in base64url>`, where the files are listed
-once each with the fragments of their links, so it carries everything the page needs and
-still opens after a restart. The daemon reads the bot's username from `getMe` when it
+`#L12-L20` names, and tints the lines of every link. The link is `https://t.me/<bot>`
+with `?startapp=<session>_<file>_<lines>_<commit>_<files in base64url>`, where `<commit>`
+is the commit checked out as the turn started, empty outside a git working tree, and the
+files are listed once each with the fragments of their links, so it carries everything
+the page needs and still opens after a restart. The daemon reads the bot's username from `getMe` when it
 starts. A link whose parameter would pass 1024 characters opens its own file alone, and
 stays as Claude Code wrote it when even that is too long. Telegram opened the page from a
 parameter of 1024 characters and refused one of 2048. A relative path resolves in the session's directory. An
@@ -373,18 +372,25 @@ answer the hook posts without a daemon keeps its links as Claude Code wrote them
 A turn of a session in a git working tree that changed anything there ends with a link
 to the changes, as in `[Review changes: 3 commits, 5 files](https://t.me/<bot>?startapp=<session>_<commit>_<path in base64url>)`.
 The page shows the working tree holding the path, which resolves in the session's
-directory and is `.` for a turn. The daemon records the commit checked out as the turn
-starts, and the page shows the changes from it to the working tree as it is when the
-page opens, untracked files included, so an older link shows everything since its turn
-began. The link is in the answer's text, since the daemon rewrites a message without
-its buttons, and an answer split over several messages would have to carry a button on
-its last one. A menu on the page lists the latest 30 commits of the first-parent
-history of `HEAD`, grouped by whether the changes take them in, and choosing one moves
-the start to its parent, so the changes then take in that commit, every later one, and
-the working tree. The menu can also move the start to `HEAD`, which leaves the working
-tree alone. The page also lists the files, each scrolling the page to itself on a
-tap. Each file shows the hunks git found, and expanding one loads both sides of the
-file whole. The arrow in a file's header folds it.
+directory and is `.` for a turn. The link is in the answer's text, since the daemon
+rewrites a message without its buttons, and an answer split over several messages would
+have to carry a button on its last one.
+
+Both links open one page, which shows a working tree since a commit: every changed file,
+or the files a message links to. The daemon records the commit checked out as a turn
+starts, and the page compares it with the working tree as it is when the page opens,
+untracked files included, so an older link shows everything since its turn began. A
+linked file in the session's working tree shows its changes since the commit, and any
+other linked file shows as it is. Each file shows its changes and the lines its links
+name, with 5 unchanged lines around each, and collapses the rest, which a tap expands. A
+link naming no lines shows its whole file. Expanding the changes loads both sides of the
+file whole, while the page of a message's files carries both sides from the start. A
+menu on the page lists the latest 30 commits of the first-parent history of `HEAD`,
+grouped by whether the changes take them in, and choosing one moves the start to its
+parent, so the changes then take in that commit, every later one, and the working tree.
+The menu can also move the start to `HEAD`, which leaves the working tree alone. The page
+also lists the files, each scrolling the page to itself on a tap, and a file the visitor
+cannot read shows why in the list. The arrow in a file's header folds it.
 
 `/diff` posts such a link under the head of the session a message would reach, for the
 changes of its working tree since `HEAD` forked from its upstream, or since `HEAD` when
@@ -392,9 +398,9 @@ there is no upstream. `/diff <directory>` links the working tree holding that di
 read as `/new` reads one, so the review of a repository the session changed outside its
 own directory still goes to the session.
 
-On either page, a tap on a line number opens a comment there, and a tap on another in
+On the page, a tap on a line number opens a comment there, and a tap on another in
 the same file stretches it over the lines between, as a drag across line numbers does.
-A comment on the changes may span removed lines, which the prompt names as git names a
+A comment may span removed lines, which the prompt names as git names a
 file as of a commit, as in `0123456789ab:src/a.rs:3-4`, so Claude does not read them as
 lines of the file as it is. `Suggest change` fills an editor with the lines to rewrite,
 and only lines of the file as it is can be rewritten. The top of the page lists the
@@ -414,7 +420,8 @@ link's `startapp`, and the page passes it with every request. That signature is 
 guards the files, so the page reaches as
 far as a reply could: the user reads any file the daemon can, and a guest only the
 sessions and the files inside `CHAT_PROJECTS`, with symlinks resolved, and the changes of
-a working tree whose top is inside them. A signature older
+a working tree whose top is inside them, so the page of a message's files shows a guest
+no changes when that top is outside them. A signature older
 than six hours is refused, and opening the link again signs a new one. A file past 1 MiB or
 not in UTF-8 is refused.
 

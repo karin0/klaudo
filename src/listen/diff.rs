@@ -46,7 +46,7 @@ impl Machine {
         if !self.reaches(from.guest.as_deref(), place, &held) {
             return;
         }
-        let Some(links) = Links::new(self.app, id) else {
+        let Some(links) = Links::new(self.app, id, None) else {
             return self.say(place, "this daemon serves no review page; set `WEB_LISTEN`");
         };
         let line = changes::top(&held).and_then(|top| {
@@ -56,7 +56,7 @@ impl Machine {
             } else {
                 &held
             };
-            let line = review(links, &top, &since, &path.display().to_string())?;
+            let line = review(&links, &top, &since, &path.display().to_string())?;
             let at = code(&tilde(&top));
             Ok(line.map_or_else(
                 || format!("{at} has no unpushed changes"),

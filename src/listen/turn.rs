@@ -154,7 +154,7 @@ impl Segment {
 
     /// The words, then the run they introduce, with the calls a reader follows in view
     /// while the segment is `live`.
-    fn text(&self, live: bool, links: Option<Links>) -> String {
+    fn text(&self, live: bool, links: Option<&Links>) -> String {
         let words = telegram::rich_markdown(
             &self
                 .said
@@ -253,6 +253,12 @@ struct Stopping {
 }
 
 impl Turn {
+    /// The commit the turn started from, which the files its answers link to show their
+    /// changes since.
+    pub(super) fn since(&self) -> Option<String> {
+        self.start.as_ref().map(|start| start.head.clone())
+    }
+
     fn new(prompt_id: String, thread: Thread, dir: &Path) -> Self {
         Self {
             start: changes::start(dir),
@@ -284,7 +290,7 @@ impl Turn {
 
     /// When the message showing the open segment is due to be written next, which is
     /// only to move its clock while the chat already shows what the segment says.
-    pub(super) fn due(&self, links: Option<Links>) -> Option<Instant> {
+    pub(super) fn due(&self, links: Option<&Links>) -> Option<Instant> {
         let segment = self.segment.as_ref()?;
         let quiet = segment.heard + SETTLE;
         match &segment.written {
@@ -384,7 +390,8 @@ impl Machine {
                 event.prompt_id.as_deref()
             };
             let head = session.head(id, prompt);
-            let message = hook::message(event, &head, "", Links::new(self.app, id));
+            let links = Links::new(self.app, id, session.turn.as_ref().and_then(Turn::since));
+            let message = hook::message(event, &head, "", links.as_ref());
             let place = session.home(&self.telegram);
             // The phone's owner asked this, so it arrives without a sound.
             Thread {
@@ -492,7 +499,11 @@ impl Machine {
     /// A run that would overflow the message of the words introducing it goes on in one
     /// of its own, and the words keep theirs.
     fn part(&mut self, id: &str) {
-        let links = Links::new(self.app, id);
+        let since = self
+            .sessions
+            .get(id)
+            .and_then(|session| session.turn.as_ref()?.since());
+        let links = Links::new(self.app, id, since);
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
@@ -501,7 +512,7 @@ impl Machine {
             .as_mut()
             .filter(|segment| segment.said.is_some() && !segment.calls.is_empty())
             .filter(|segment| {
-                let text = segment.text(true, links);
+                let text = segment.text(true, links.as_ref());
                 text.len() + FRAME > MAX_BYTES
                     || telegram::blocks(&text) + FRAME_BLOCKS > MAX_BLOCKS
             })
@@ -635,7 +646,7 @@ impl Machine {
         let Some(mut segment) = turn.segment.take() else {
             return;
         };
-        let text = segment.text(false, Links::new(self.app, id));
+        let text = segment.text(false, Links::new(self.app, id, turn.since()).as_ref());
         if text.is_empty() {
             return;
         }
@@ -686,7 +697,7 @@ impl Machine {
             &head,
             &took(posted.elapsed),
             "",
-            &segment.text(false, Links::new(self.app, id)),
+            &segment.text(false, Links::new(self.app, id, turn.since()).as_ref()),
         );
         let thread = turn.thread;
         if posted.filed {
@@ -747,10 +758,10 @@ impl Machine {
         };
         session.done = Some(turn.prompt_id.clone());
         let head = session.head(id, Some(&turn.prompt_id));
-        let links = Links::new(self.app, id);
-        let mut answer = hook::message(event, &head, &took(turn.started.elapsed()), links);
+        let links = Links::new(self.app, id, turn.since());
+        let mut answer = hook::message(event, &head, &took(turn.started.elapsed()), links.as_ref());
         let line = turn.start.as_ref().zip(links).and_then(|(start, links)| {
-            review(links, &start.top, &start.head, ".")
+            review(&links, &start.top, &start.head, ".")
                 .inspect_err(|error| eprintln!("changes since {}: {error}", start.head))
                 .ok()
                 .flatten()
@@ -837,7 +848,17 @@ impl Machine {
         let thread = typed.unwrap_or_else(|| self.thread(&self.sessions[id]));
         let answer = self.telegram.post(
             thread.place,
-            &hook::message(event, &head, "", Links::new(self.app, id)),
+            &hook::message(
+                event,
+                &head,
+                "",
+                Links::new(
+                    self.app,
+                    id,
+                    self.sessions[id].turn.as_ref().and_then(Turn::since),
+                )
+                .as_ref(),
+            ),
             Sound::Ring,
             thread.prompt,
         );
@@ -878,7 +899,8 @@ impl Machine {
         let prompt = session.turn.as_ref().map(|turn| turn.prompt_id.clone());
         let head = session.head(id, prompt.as_deref());
         let thread = self.thread(session);
-        let message = hook::message(event, &head, "", Links::new(self.app, id));
+        let links = Links::new(self.app, id, session.turn.as_ref().and_then(Turn::since));
+        let message = hook::message(event, &head, "", links.as_ref());
         let posted = self
             .telegram
             .post(thread.place, &message, sound, thread.prompt);
@@ -898,8 +920,11 @@ impl Machine {
         let Some(turn) = session.turn.as_ref() else {
             return;
         };
-        let links = Links::new(self.app, id);
-        if turn.due(links).is_none_or(|at| at > Instant::now()) {
+        let links = Links::new(self.app, id, turn.since());
+        if turn
+            .due(links.as_ref())
+            .is_none_or(|at| at > Instant::now())
+        {
             return;
         }
         let elapsed = turn.started.elapsed();
@@ -907,7 +932,7 @@ impl Machine {
             .segment
             .as_ref()
             .expect("a segment falling due")
-            .text(true, links);
+            .text(true, links.as_ref());
         let head = session.head(id, Some(&turn.prompt_id));
         let live = turn.live;
         let thread = turn.thread;
@@ -1074,7 +1099,7 @@ fn interrupted(path: &Path, from: u64) -> bool {
 /// The line linking to the changes since `since` of the working tree at `top`, which
 /// `path` names in the session's directory, `None` when nothing changed.
 pub(super) fn review(
-    links: Links,
+    links: &Links,
     top: &Path,
     since: &str,
     path: &str,

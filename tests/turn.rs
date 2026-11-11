@@ -4915,12 +4915,12 @@ fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
     let lines = json!({"from": 2, "to": 2});
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&shown).expect("files"),
-        json!({"kind": "files", "files": [{"path": "src/a.rs", "lines": [lines],
-            "content": "fn a() {}\nfn b() {}\n"}], "file": 0, "lines": lines})
+        json!({"context": 5, "kind": "files", "start": null, "files": [{"path": "src/a.rs",
+            "lines": [lines], "content": "fn a() {}\nfn b() {}\n"}], "file": 0, "lines": lines})
     );
     // The owner can read anything a shell of theirs could, and a guest neither a session
     // outside `CHAT_PROJECTS` nor a file outside them.
-    let both = format!("{SHARED}_1_0_{}", base64url("src/a.rs#L2\n../outside"));
+    let both = format!("{SHARED}_1_0__{}", base64url("src/a.rs#L2\n../outside"));
     let read = |user: i64| {
         let (status, shown) = page("/api/open", &signed(user, &both));
         assert_eq!(status, 200, "{shown}");
@@ -4953,6 +4953,36 @@ fn the_mini_app_shows_a_file_to_whom_a_reply_could_reach() {
     assert_ne!(forged, owner);
     assert_eq!(page("/api/open", &forged).0, 401);
     assert_eq!(page("/api/open", "").0, 401);
+
+    // In a working tree, the files show their changes since the link's commit to whoever
+    // may see the whole tree, with paths from its top, and only the files to anyone else.
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "project/src/a.rs"]);
+    git(&["commit", "-qm", "first"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let since = format!("{SHARED}_0_1_{head}_{}", base64url("src/a.rs#L2"));
+    let opened = |user: i64| {
+        let (status, shown) = page("/api/open", &signed(user, &since));
+        assert_eq!(status, 200, "{shown}");
+        let shown: serde_json::Value = serde_json::from_str(&shown).expect("files");
+        (
+            shown["start"]["since"].clone(),
+            shown["files"][0]["path"].clone(),
+        )
+    };
+    assert_eq!(opened(OWNER), (json!(head), json!("project/src/a.rs")));
+    assert_eq!(opened(GUEST), (json!(null), json!("src/a.rs")));
     drop(daemon);
     let mut session = session;
     let _ = session.kill();
@@ -5050,8 +5080,9 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
         assert!(output.status.success(), "git {args:?}: {output:?}");
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     };
+    std::fs::write(project.join("src/u.rs"), "fn u() {}\n").expect("a file");
     git(&["init", "-q"]);
-    git(&["add", "src/a.rs"]);
+    git(&["add", "src"]);
     git(&["commit", "-qm", "first"]);
     let head = git(&["rev-parse", "HEAD"]);
     let (session, pid) = terminal(root);
@@ -5067,7 +5098,7 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
     assert_eq!(status, 200, "{opened}");
     let opened: serde_json::Value = serde_json::from_str(&opened).expect("changes");
     assert_eq!(opened["kind"], json!("changes"));
-    assert_eq!(opened["since"], json!(head));
+    assert_eq!(opened["start"]["since"], json!(head));
     let patch = opened["patch"].as_str().expect("a patch");
     assert!(patch.contains("-fn b() {}\n+fn c() {}\n"), "{patch}");
     assert!(
@@ -5076,6 +5107,26 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
     );
     let moved = page(port, "GET", "/api/open?since=HEAD", &owner, "");
     assert_eq!(moved, (422, "HEAD is no commit hash".to_owned()));
+
+    // A page of files shows each one's changes: an edited file with its old text, a new
+    // one with an empty old text, and an unchanged one with none.
+    let files = format!(
+        "{SHARED}_0_0_{head}_{}",
+        base64url("src/a.rs\nsrc/n.rs\nsrc/u.rs")
+    );
+    let (status, opened) = page(port, "GET", "/api/open", &signed(OWNER, &files), "");
+    assert_eq!(status, 200, "{opened}");
+    let opened: serde_json::Value = serde_json::from_str(&opened).expect("files");
+    assert_eq!(opened["start"]["since"], json!(head));
+    assert_eq!(
+        opened["files"],
+        json!([
+            {"path": "src/a.rs", "lines": [], "content": "fn a() {}\nfn c() {}\n",
+                "old": "fn a() {}\nfn b() {}\n"},
+            {"path": "src/n.rs", "lines": [], "content": "fn n() {}\n", "old": ""},
+            {"path": "src/u.rs", "lines": [], "content": "fn u() {}\n"},
+        ])
+    );
 
     let contents = format!("/api/contents?since={head}&path=src/a.rs&prev=src/a.rs");
     let (status, contents) = page(port, "GET", &contents, &owner, "");
@@ -5108,11 +5159,17 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
         hook_in_pane(root, &event);
     };
     event(json!({"hook_event_name": "UserPromptSubmit", "prompt": "rename b"}));
-    event(json!({"hook_event_name": "Stop", "last_assistant_message": "Renamed."}));
+    event(
+        json!({"hook_event_name": "Stop", "last_assistant_message": "Renamed [c](src/a.rs#L2)."}),
+    );
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let answer = made.last().expect("the answer");
     let linked = format!("[Review changes: 2 files](https://t.me/klaudo_bot?startapp={start})");
     assert!(answer.markdown.contains(&linked), "{}", answer.markdown);
+    // A file link of the turn shows the file's changes since the turn started.
+    let file = format!("{SHARED}_0_1_{head}_{}", base64url("src/a.rs#L2"));
+    let renamed = format!("[c](https://t.me/klaudo_bot?startapp={file})");
+    assert!(answer.markdown.contains(&renamed), "{}", answer.markdown);
 
     drop(daemon);
     let mut session = session;
@@ -5177,9 +5234,10 @@ fn served(root: &Path, pid: u32, port: u16) -> Daemon {
     daemon
 }
 
-/// The `startapp` parameter of a message's one link, to line 2 of `path` in `session`.
+/// The `startapp` parameter of a message's one link, to line 2 of `path` in `session`,
+/// which runs in no working tree.
 fn link(session: &str, path: &str) -> String {
-    format!("{session}_0_1_{}", base64url(&format!("{path}#L2")))
+    format!("{session}_0_1__{}", base64url(&format!("{path}#L2")))
 }
 
 /// `text` in base64url, as a link carries a path.

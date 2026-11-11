@@ -46,10 +46,11 @@ const git = (...args: string[]) =>
  * The daemon's API and Telegram's launch parameters on the dev server, so the page runs
  * in a browser without either. `/mock` opens the page as Telegram would on a file link,
  * `/mock?changes` on the link to a turn's changes, and `dark` in either query the dark
- * theme. The files shown are some of the daemon's own and one refused, opening at the
- * second link to `src/telegram.rs`, and the changes are the daemon's own since three
- * commits back, untracked files left out. A review sent is printed by the dev server. A browser draws no `MainButton`, so
- * `Telegram.WebView.receiveEvent('main_button_pressed')` in the console presses it.
+ * theme. Both show the daemon's own working tree since three commits back, untracked
+ * files left out. The files are some of the daemon's own and one refused, opening at the
+ * second link to `src/telegram.rs`. A review sent is printed by the dev server. A
+ * browser draws no `MainButton`, so `Telegram.WebView.receiveEvent('main_button_pressed')`
+ * in the console presses it.
  */
 function mock(): Plugin {
   return {
@@ -84,28 +85,6 @@ function mock(): Plugin {
         });
       server.middlewares.use('/api/open', (request, response) => {
         const data = request.headers.authorization?.replace(/^tma /, '') ?? '';
-        if (new URLSearchParams(data).get('start_param') === 'file') {
-          const linked = (path: string, lines: [number, number][]) => ({
-            path,
-            lines: lines.map(([from, to]) => ({ from, to })),
-            content: read(path),
-          });
-          answer(response, {
-            kind: 'files',
-            files: [
-              linked('src/web.rs', [[13, 14]]),
-              linked('src/telegram.rs', [
-                [22, 24],
-                [600, 610],
-              ]),
-              { path: '../outside', lines: [], refusal: 'no such file' },
-              linked('README.md', []),
-            ],
-            file: 1,
-            lines: { from: 600, to: 610 },
-          });
-          return;
-        }
         const query = new URLSearchParams(request.url?.split('?')[1]);
         const since = query.get('since') ?? git('rev-parse', 'HEAD~3').trim();
         const included = git('rev-list', '--first-parent', `${since}..HEAD`);
@@ -116,8 +95,7 @@ function mock(): Plugin {
           '--date=unix',
           '--format=%H%x00%P%x00%cd%x00%s',
         );
-        answer(response, {
-          kind: 'changes',
+        const start = {
           since,
           commits: log
             .trim()
@@ -134,11 +112,46 @@ function mock(): Plugin {
                 included: included.includes(hash),
               };
             }),
+        };
+        if (new URLSearchParams(data).get('start_param') === 'file') {
+          const linked = (path: string, lines: [number, number][]) => {
+            const content = read(path);
+            const old = git('show', `${since}:${path}`);
+            return {
+              path,
+              lines: lines.map(([from, to]) => ({ from, to })),
+              content,
+              ...(old !== content && { old }),
+            };
+          };
+          answer(response, {
+            context: 5,
+            kind: 'files',
+            start,
+            files: [
+              linked('src/web.rs', [[13, 14]]),
+              linked('src/telegram.rs', [
+                [22, 24],
+                [600, 610],
+              ]),
+              { path: '../outside', lines: [], refusal: 'no such file' },
+              linked('README.md', []),
+            ],
+            file: 1,
+            lines: { from: 600, to: 610 },
+          });
+          return;
+        }
+        answer(response, {
+          context: 5,
+          kind: 'changes',
+          start,
           patch: git(
             'diff-index',
             '--patch',
             '--no-color',
             '-M',
+            '--unified=5',
             '--src-prefix=a/',
             '--dst-prefix=b/',
             since,

@@ -230,7 +230,7 @@ impl Event {
 
     /// What the message says under its title, in at most `room` bytes where the
     /// event carries more than a message holds.
-    fn body(&self, room: usize, links: Option<Links>) -> String {
+    fn body(&self, room: usize, links: Option<&Links>) -> String {
         match self.hook_event_name.as_str() {
             // What was asked is quoted, so a chat scrolled through tells the asks from
             // the answers at a glance.
@@ -532,7 +532,7 @@ pub fn compose(head: &Head, took: &str, tag: &str, body: &str) -> Post {
 
 /// The message an event posts, whose answer opens the files it links to through
 /// `links`.
-pub fn message(event: &Event, head: &Head, took: &str, links: Option<Links>) -> Post {
+pub fn message(event: &Event, head: &Head, took: &str, links: Option<&Links>) -> Post {
     let tag = event.tag();
     let title = compose(head, took, &tag, "").markdown.len();
     compose(head, took, &tag, &event.body(MAX_BYTES - title, links))

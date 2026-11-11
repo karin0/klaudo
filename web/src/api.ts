@@ -51,26 +51,39 @@ export interface Commit {
   included: boolean;
 }
 
-/** A file a message links to, with the lines its links name, and its text or why it cannot be read. */
+/** The commit the changes start from, and the commits the page moves it along. */
+export interface Start {
+  since: string;
+  commits: Commit[];
+}
+
+/**
+ * A file a message links to, with the lines its links name, and its text or why it cannot
+ * be read. `old` is its text as of the start when it changed since, empty when the start
+ * had none.
+ */
 export type Linked = { path: string; lines: Range[] } & (
-  { content: string } | { refusal: string }
+  { content: string; old?: string } | { refusal: string }
 );
 
 /**
- * What `GET /api/open` answers: the files a message links to, with the link's own file
- * among them and its lines, or the changes a link opens.
+ * What `GET /api/open` answers: a session's working tree since a commit, either the files
+ * a message links to, with the link's own file and lines among them, or every changed
+ * file, and how many unchanged lines the page shows around a change or a linked line.
  */
-export type Opened =
+export type Opened = { context: number } & (
   | {
       kind: 'files';
+      /** `null` without a working tree the visitor may see all of. */
+      start: Start | null;
       files: Linked[];
       file: number;
       lines: Range | null;
     }
   | {
       kind: 'changes';
-      since: string;
-      commits: Commit[];
+      start: Start;
       /** A git patch, untracked files as new ones. */
       patch: string;
-    };
+    }
+);

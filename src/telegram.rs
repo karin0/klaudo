@@ -600,7 +600,7 @@ pub fn blocks(markdown: &str) -> usize {
 /// `markdown` from Claude Code, escaped where Telegram reads it differently. Telegram
 /// opens a heading at a `#` that starts a line even with no space after it, so such a `#`
 /// in text is escaped. With `links`, an inline link to a file opens it in the Mini App.
-pub fn rich_markdown(markdown: &str, links: Option<Links>) -> String {
+pub fn rich_markdown(markdown: &str, links: Option<&Links>) -> String {
     let destinations: Vec<_> = Parser::new_ext(markdown, OPTIONS)
         .filter_map(|event| match event {
             Event::Start(Tag::Link {
@@ -838,9 +838,10 @@ mod tests {
 
     #[test]
     fn an_inline_link_to_a_file_opens_it_in_the_mini_app() {
-        let links = Links::new(Some("https://t.me/b/a"), "s");
+        let links = Links::new(Some("https://t.me/b/a"), "s", None);
         let opened = |destinations: &[&str]| -> Vec<String> {
             links
+                .as_ref()
                 .expect("links")
                 .files(destinations)
                 .into_iter()
@@ -854,7 +855,7 @@ mod tests {
                 .try_into()
                 .expect("a link to each file");
         assert_eq!(
-            rich_markdown(answer, links),
+            rich_markdown(answer, links.as_ref()),
             format!(
                 "See [`listen.rs:588`]({listen}) and [the *docs*]( {readme} \"t\").\n\
                  [site](https://a.b) [ref][r] []({paren}) ![shot](a.png)\n\n[r]: c.rs",
@@ -862,7 +863,7 @@ mod tests {
         );
         assert_eq!(rich_markdown(answer, None), answer);
         assert_eq!(
-            rich_markdown("#1 [x](a.rs)", links),
+            rich_markdown("#1 [x](a.rs)", links.as_ref()),
             format!("\\#1 [x]({})", opened(&["a.rs"])[0])
         );
     }

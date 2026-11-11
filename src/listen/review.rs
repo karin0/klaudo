@@ -1,4 +1,4 @@
-//! The server of the Mini App a link in an answer opens: the page, the file or the
+//! The server of the Mini App a link in an answer opens: the page, the files or the
 //! changes the link names, and the review the page sends back, which the session receives
 //! as a prompt. It runs on a thread of its own, and asks the machine, which owns the
 //! sessions, through the channel the other input threads feed.
@@ -27,10 +27,10 @@ use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use crate::changes::{self, Changes};
+use crate::changes::{self, Commit};
 use crate::hook;
 use crate::telegram::{Sound, Telegram};
-use crate::web::{self, Opens, Target};
+use crate::web::{self, Linked, Opens, Target};
 
 use super::chat::{IN_DIALOG, unseen};
 use super::turn::Ask;
@@ -71,8 +71,8 @@ pub(super) enum Asked {
         paths: Vec<String>,
         answer: oneshot::Sender<Result<Vec<Result<PathBuf, String>>, String>>,
     },
-    /// The working tree holding the directory `path` names in the session's directory,
-    /// once the visitor may see all of it.
+    /// The session's directory, and the working tree holding the directory `path` names
+    /// in it.
     Tree {
         visit: Visit,
         path: String,
@@ -86,10 +86,11 @@ pub(super) enum Asked {
     },
 }
 
-/// The directory a session runs in, and the top of a working tree it may show.
+/// The directory a session runs in, and the top of a working tree, or the reason the page
+/// cannot show its changes: there is none, or the visitor may not see all of it.
 pub(super) struct Tree {
     dir: PathBuf,
-    top: PathBuf,
+    top: Result<PathBuf, String>,
 }
 
 type Refusal = (StatusCode, String);
@@ -123,21 +124,45 @@ struct Lines {
     to: usize,
 }
 
-/// What a link opens, as the page draws it: the files a message links to with the
-/// link's own file and lines among them, or changes.
+/// What a link opens, as the page draws it, with how many unchanged lines it shows around
+/// a change or a line a link names.
+#[derive(Serialize)]
+struct Page {
+    context: usize,
+    #[serde(flatten)]
+    opened: Opened,
+}
+
+/// A session's working tree since a commit: the files a message links to, with the link's
+/// own file and lines among them, or every changed file. The files have no start when the
+/// session runs in no working tree, or the visitor may not see all of it.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum Opened {
     Files {
+        start: Option<Start>,
         files: Vec<Shown>,
         file: usize,
         lines: Option<web::Lines>,
     },
-    Changes(Changes),
+    Changes {
+        start: Start,
+        /// A git patch, untracked files as new ones.
+        patch: String,
+    },
 }
 
-/// A file a message links to, with the lines its links name, and its text or the
-/// reason the visitor cannot read it.
+/// The commit the changes start from, and the commits the page moves it along.
+#[derive(Serialize)]
+struct Start {
+    since: String,
+    commits: Vec<Commit>,
+}
+
+/// A file a message links to, with the lines its links name, and its text or the reason
+/// the visitor cannot read it. With a working tree to show the changes of, its path is
+/// relative to the tree's top, or absolute outside it, and is as the link wrote it
+/// otherwise.
 #[derive(Serialize)]
 struct Shown {
     path: String,
@@ -147,10 +172,18 @@ struct Shown {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(untagged)]
 enum Read {
-    Content(String),
-    Refusal(String),
+    /// `old` is the file as of the start when it changed since then, empty when the start
+    /// had none.
+    Text {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        old: Option<String>,
+    },
+    Refusal {
+        refusal: String,
+    },
 }
 
 /// A changed file as of the start and as it is, for the page to show the lines around a
@@ -268,40 +301,58 @@ impl Server {
         Ok(response)
     }
 
-    /// What the link names. The page moves the start of changes with `?since=`.
+    /// What the link names. The page moves the start with `?since=`.
     async fn open(&self, request: &Request<Incoming>) -> Result<Response<Full<Bytes>>, Refusal> {
         let (visit, target) = self.visitor(request)?;
         let opened = match target.opens {
-            Opens::Files { files, file, lines } => {
+            Opens::Files {
+                since,
+                files,
+                file,
+                lines,
+            } => {
+                let since = parameter(request, "since").or(since);
+                let Tree { top, .. } = self.tree(visit.clone(), ".".to_owned()).await?;
                 let paths = files.iter().map(|linked| linked.path.clone()).collect();
                 let found = self.files(visit, paths).await?;
-                let files = files
-                    .into_iter()
-                    .zip(found)
-                    .map(|(linked, found)| Shown {
-                        read: found
-                            .and_then(|file| {
-                                read(&file, &linked.path).map_err(|(_, reason)| reason)
-                            })
-                            .map_or_else(Read::Refusal, Read::Content),
-                        path: linked.path,
-                        lines: linked.lines,
+                blocking(move || {
+                    let top = top.ok();
+                    let start = top
+                        .as_deref()
+                        .zip(since)
+                        .map(|(top, since)| started(top, since))
+                        .transpose()?;
+                    let since = start.as_ref().map(|start| start.since.as_str());
+                    let files = files
+                        .into_iter()
+                        .zip(found)
+                        .map(|(linked, found)| shown(linked, found, top.as_deref(), since))
+                        .collect::<Result<_, _>>()?;
+                    Ok(Opened::Files {
+                        start,
+                        files,
+                        file,
+                        lines,
                     })
-                    .collect();
-                Opened::Files { files, file, lines }
+                })
+                .await?
             }
             Opens::Changes { since, path } => {
                 let since = parameter(request, "since").unwrap_or(since);
-                let Tree { top, .. } = self.tree(visit, path).await?;
-                let changes = blocking(move || {
-                    changes::verify(&top, &since)?;
-                    changes::changes(&top, &since)
+                let top = self.tree(visit, path).await?.top.map_err(conflict)?;
+                blocking(move || {
+                    let start = started(&top, since)?;
+                    let patch = changes::patch(&top, &start.since)?;
+                    Ok(Opened::Changes { start, patch })
                 })
-                .await?;
-                Opened::Changes(changes)
+                .await?
             }
         };
-        let body = serde_json::to_vec(&opened).expect("what a link opens serializes");
+        let page = Page {
+            context: changes::CONTEXT,
+            opened,
+        };
+        let body = serde_json::to_vec(&page).expect("what a link opens serializes");
         Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
     }
 
@@ -321,7 +372,11 @@ impl Server {
         let since = parameter(request, "since").ok_or_else(|| missing("since"))?;
         let path = parameter(request, "path").ok_or_else(|| missing("path"))?;
         let prev = parameter(request, "prev").ok_or_else(|| missing("prev"))?;
-        let Tree { top, .. } = self.tree(visit.clone(), held).await?;
+        let top = self
+            .tree(visit.clone(), held)
+            .await?
+            .top
+            .map_err(conflict)?;
         let file = self
             .files(visit, vec![top.join(&path).display().to_string()])
             .await?
@@ -331,21 +386,10 @@ impl Server {
         let new = read(&file, &path)?;
         let old = blocking(move || {
             changes::verify(&top, &since)?;
-            changes::old(&top, &since, &prev)
+            changes::old(&top, &since, &prev)?.ok_or_else(|| format!("{since} has no {prev}"))
         })
         .await?;
-        if old.len() as u64 > FILE_MAX {
-            return Err((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("{path} was larger than 1 MiB"),
-            ));
-        }
-        let old = String::from_utf8(old).map_err(|_| {
-            (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                format!("{path} was no text in UTF-8"),
-            )
-        })?;
+        let old = was(old, &path)?;
         let body = serde_json::to_vec(&Contents { old, new }).expect("contents serialize");
         Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
     }
@@ -395,17 +439,22 @@ impl Server {
         .to_bytes();
         let review: Review = serde_json::from_slice(&body)
             .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
-        // A path of changes is relative to the top of the working tree, and the prompt
-        // writes it as the session would.
-        let tree = match target.opens {
-            Opens::Files { .. } => None,
-            Opens::Changes { path, .. } => Some(self.tree(visit.clone(), path).await?),
+        // A path the page shows changes of is relative to the top of the working tree,
+        // and the prompt writes it as the session would.
+        let held = match &target.opens {
+            Opens::Files { .. } => ".".to_owned(),
+            Opens::Changes { path, .. } => path.clone(),
         };
-        let shown = |path: &str| match &tree {
+        let Tree { dir, top } = self.tree(visit.clone(), held).await?;
+        let top = match target.opens {
+            Opens::Files { .. } => top.ok(),
+            Opens::Changes { .. } => Some(top.map_err(conflict)?),
+        };
+        let shown = |path: &str| match &top {
             None => path.to_owned(),
-            Some(Tree { dir, top }) => {
+            Some(top) => {
                 let file = top.join(path);
-                file.strip_prefix(dir)
+                file.strip_prefix(&dir)
                     .unwrap_or(&file)
                     .display()
                     .to_string()
@@ -467,6 +516,65 @@ impl Server {
     }
 }
 
+fn conflict(reason: String) -> Refusal {
+    (StatusCode::CONFLICT, reason)
+}
+
+/// The start at `since` of the working tree at `top`, once `since` passes `verify`.
+fn started(top: &Path, since: String) -> Result<Start, String> {
+    changes::verify(top, &since)?;
+    Ok(Start {
+        commits: changes::commits(top, &since)?,
+        since,
+    })
+}
+
+/// How the page shows the file a message links to as `linked`, which resolved to `found`:
+/// with its changes since `since` when the working tree at `top` holds it. A failing git
+/// command fails the page, and a file the visitor cannot read is refused alone.
+fn shown(
+    linked: Linked,
+    found: Result<PathBuf, String>,
+    top: Option<&Path>,
+    since: Option<&str>,
+) -> Result<Shown, String> {
+    let Linked { path, lines } = linked;
+    let refused = |path: String, lines, refusal| Shown {
+        path,
+        lines,
+        read: Read::Refusal { refusal },
+    };
+    let file = match found {
+        Ok(file) => file,
+        Err(refusal) => return Ok(refused(path, lines, refusal)),
+    };
+    let held = top.and_then(|top| Some((top, file.strip_prefix(top).ok()?.to_str()?)));
+    let content = match read(&file, &path) {
+        Ok(content) => content,
+        Err((_, refusal)) => return Ok(refused(path, lines, refusal)),
+    };
+    let old = match held.zip(since) {
+        None => None,
+        Some(((top, inside), since)) => match changes::old(top, since, inside)? {
+            None => changes::seen(top, inside)?.then(String::new),
+            Some(old) => match was(old, &path) {
+                Ok(old) => Some(old).filter(|old| *old != content),
+                Err((_, refusal)) => return Ok(refused(path, lines, refusal)),
+            },
+        },
+    };
+    let path = match (top, held) {
+        (None, _) => path,
+        (Some(_), Some((_, inside))) => inside.to_owned(),
+        (Some(_), None) => file.display().to_string(),
+    };
+    Ok(Shown {
+        path,
+        lines,
+        read: Read::Text { content, old },
+    })
+}
+
 /// The query parameter `name` of `request`.
 fn parameter(request: &Request<Incoming>, name: &str) -> Option<String> {
     form_urlencoded::parse(request.uri().query()?.as_bytes())
@@ -513,6 +621,22 @@ fn read(file: &Path, path: &str) -> Result<String, Refusal> {
         (
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             format!("{path} is not text in UTF-8"),
+        )
+    })
+}
+
+/// The text of `old`, a version of the file the link wrote as `path`.
+fn was(old: Vec<u8>, path: &str) -> Result<String, Refusal> {
+    if old.len() as u64 > FILE_MAX {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("{path} was larger than 1 MiB"),
+        ));
+    }
+    String::from_utf8(old).map_err(|_| {
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!("{path} was no text in UTF-8"),
         )
     })
 }
@@ -776,12 +900,13 @@ impl Machine {
         Ok(file)
     }
 
-    /// The working tree holding the directory `path` names in the session's directory,
-    /// whose every file the changes page may show.
+    /// The session's directory, and the working tree holding the directory `path` names
+    /// in it, whose changes the page shows only to a visitor who may see all of it.
     fn tree(&self, visit: &Visit, path: &str) -> Result<Tree, String> {
         let dir = self.visited(visit)?;
-        let top = changes::top(&self.resolved(visit, &dir, path)?)?;
-        self.admits(visit.guest.as_deref(), &top)?;
+        let held = self.resolved(visit, &dir, path)?;
+        let top = changes::top(&held)
+            .and_then(|top| self.admits(visit.guest.as_deref(), &top).map(|()| top));
         Ok(Tree { dir, top })
     }
 

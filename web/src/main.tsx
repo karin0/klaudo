@@ -1,8 +1,7 @@
 import { StrictMode, useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { app, call, failure, type Opened } from './api';
-import { ChangesReview } from './changes';
-import { FilesReview } from './file';
+import { Review } from './review';
 import './app.css';
 
 app.ready();
@@ -11,7 +10,7 @@ app.expand();
 function App() {
   const [opened, setOpened] = useState<Opened | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
-  // The changes page moves its start with `since`, and stays as it was on a refusal.
+  // The page moves its start with `since`, and stays as it was on a refusal.
   const open = useCallback((since?: string) => {
     const path =
       since === undefined
@@ -33,11 +32,7 @@ function App() {
   if (opened === null) {
     return <p className="hint status">{refusal ?? 'Loading…'}</p>;
   }
-  return opened.kind === 'files' ? (
-    <FilesReview shown={opened} />
-  ) : (
-    <ChangesReview key={opened.since} changes={opened} onMove={open} />
-  );
+  return <Review key={opened.start?.since} opened={opened} onMove={open} />;
 }
 
 const root = document.getElementById('root');

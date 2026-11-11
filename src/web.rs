@@ -1,5 +1,6 @@
 //! The links that open the files an answer names, or the changes of a turn, in the Telegram
-//! Mini App the daemon serves. A link carries everything the page needs in its `startapp`
+//! Mini App the daemon serves. Both show a session's working tree since a commit, the files
+//! a message links to or every changed one. A link carries everything the page needs in its `startapp`
 //! parameter, so a link posted before a restart still opens.
 
 use std::net::SocketAddr;
@@ -30,23 +31,30 @@ pub fn app(username: &str) -> String {
     format!("https://t.me/{username}")
 }
 
-/// How the links of one session's answer are rewritten: the Mini App link, and the
-/// session a relative path is resolved in.
-#[derive(Clone, Copy)]
+/// How the links of one session's answer are rewritten: the Mini App link, the session a
+/// relative path is resolved in, and the commit its turn started from, which the page
+/// shows the files' changes since.
+#[derive(Clone)]
 pub struct Links<'a> {
     app: &'a str,
     session: &'a str,
+    since: Option<String>,
 }
 
 impl<'a> Links<'a> {
     /// `None` without a Mini App to link to, and for a session id that would not survive
     /// the `startapp` alphabet, which a session id Claude Code makes, a UUID, does.
-    pub fn new(app: Option<&'a str>, session: &'a str) -> Option<Self> {
+    /// `since` is a full commit hash.
+    pub fn new(app: Option<&'a str>, session: &'a str, since: Option<String>) -> Option<Self> {
         let app = app?;
         session
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            .then_some(Self { app, session })
+            .then_some(Self {
+                app,
+                session,
+                since,
+            })
     }
 
     /// The Mini App link of each of a message's markdown link `destinations`, all opening
@@ -55,7 +63,7 @@ impl<'a> Links<'a> {
     /// itself, and a fragment of `L12` or `L12-L20` names the lines. A link whose page
     /// would be too long for Telegram opens its file alone, and stays as it was when even
     /// that is too long.
-    pub fn files(self, destinations: &[&str]) -> Vec<Option<String>> {
+    pub fn files(&self, destinations: &[&str]) -> Vec<Option<String>> {
         let named: Vec<_> = destinations.iter().map(|d| file(d)).collect();
         let mut files: Vec<Linked> = Vec::new();
         for &(path, lines) in named.iter().flatten() {
@@ -94,7 +102,7 @@ impl<'a> Links<'a> {
 
     /// The Mini App link opening the changes since the commit `since`, a full hash, of
     /// the working tree holding `path`, which resolves in the session's directory.
-    pub fn changes(self, since: &str, path: &str) -> Option<String> {
+    pub fn changes(&self, since: &str, path: &str) -> Option<String> {
         self.link(&format!(
             "{}_{since}_{}",
             self.session,
@@ -104,7 +112,7 @@ impl<'a> Links<'a> {
 
     /// The link to `page`, a page of `files`, at `path` and its `lines`.
     fn opening(
-        self,
+        &self,
         page: &str,
         files: &[Linked],
         path: &str,
@@ -118,10 +126,11 @@ impl<'a> Links<'a> {
                 .position(|&linked| linked == lines)
                 .expect("the lines of a link are among its file's")
         });
-        self.link(&format!("{}_{file}_{at}_{page}", self.session))
+        let since = self.since.as_deref().unwrap_or_default();
+        self.link(&format!("{}_{file}_{at}_{since}_{page}", self.session))
     }
 
-    fn link(self, parameter: &str) -> Option<String> {
+    fn link(&self, parameter: &str) -> Option<String> {
         (parameter.len() <= PARAMETER_MAX).then(|| format!("{}?startapp={parameter}", self.app))
     }
 }
@@ -197,12 +206,12 @@ impl Linked {
     }
 }
 
-/// What a link opens in a session. It travels as `<session>_<file>_<lines>_<files in
-/// base64url>` for the files a message links to and `<session>_<since>_<path in
+/// What a link opens in a session. It travels as `<session>_<file>_<lines>_<since>_<files
+/// in base64url>` for the files a message links to and `<session>_<since>_<path in
 /// base64url>` for changes, which keeps to the alphabet `startapp` allows, since a
 /// session id holds no `_`. The files are listed a line each, and `<file>` counts the
 /// link's own among them from 0 and `<lines>` its lines among that file's from 1, 0 for
-/// none.
+/// none. `<since>` of files is empty when their session ran in no working tree.
 #[derive(Debug, PartialEq)]
 pub struct Target {
     pub session: String,
@@ -211,8 +220,10 @@ pub struct Target {
 
 #[derive(Debug, PartialEq)]
 pub enum Opens {
-    /// The files a message links to, and the link's own file and lines among them.
+    /// The files a message links to, and the link's own file and lines among them, with
+    /// their changes since the commit `since` of the session's working tree.
     Files {
+        since: Option<String>,
         files: Vec<Linked>,
         file: usize,
         lines: Option<Lines>,
@@ -235,7 +246,13 @@ impl Target {
                 path: rest.map_or(Some(".".to_owned()), text)?,
             }
         } else {
-            let (at, listed) = rest?.split_once('_')?;
+            let (at, rest) = rest?.split_once('_')?;
+            let (since, listed) = rest.split_once('_')?;
+            let since = match since {
+                "" => None,
+                since if changes::hash(since) => Some(since.to_owned()),
+                _ => return None,
+            };
             let files = text(listed)?
                 .split('\n')
                 .map(Linked::parse)
@@ -247,7 +264,12 @@ impl Target {
                 Some(index) => Some(*files.get(file)?.lines.get(index)?),
             };
             files.get(file)?;
-            Opens::Files { files, file, lines }
+            Opens::Files {
+                since,
+                files,
+                file,
+                lines,
+            }
         };
         Some(Self {
             session: session.to_owned(),
@@ -266,9 +288,15 @@ mod tests {
     use super::*;
 
     const SESSION: &str = "0b7c4bd0-62d5-4b8e-9e05-2bd0f8f0a7d3";
+    const SINCE: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn links() -> Links<'static> {
-        Links::new(Some("https://t.me/bot/app"), SESSION).expect("links")
+        Links::new(
+            Some("https://t.me/bot/app"),
+            SESSION,
+            Some(SINCE.to_owned()),
+        )
+        .expect("links")
     }
 
     fn decoded(link: &str) -> Target {
@@ -304,6 +332,7 @@ mod tests {
         Target {
             session: SESSION.to_owned(),
             opens: Opens::Files {
+                since: Some(SINCE.to_owned()),
                 files: files.to_vec(),
                 file,
                 lines: lines.map(|(from, to)| Lines { from, to }),
@@ -353,7 +382,7 @@ mod tests {
 
     #[test]
     fn a_link_whose_page_is_too_long_for_telegram_opens_its_file_alone() {
-        let long = "a/".repeat(365);
+        let long = "a/".repeat(350);
         let opened = opened(&[&long, "src/listen/b.rs#L2"]);
         assert_eq!(opened[0], Some(target(&[linked(&long, &[])], 0, None)));
         let short = [linked("src/listen/b.rs", &[(2, 2)])];
@@ -361,8 +390,18 @@ mod tests {
     }
 
     #[test]
+    fn a_link_of_a_session_outside_a_working_tree_opens_its_files_alone() {
+        let links = Links::new(Some("https://t.me/bot/app"), SESSION, None).expect("links");
+        let link = links.files(&["a.rs#L2"]).remove(0).expect("a link");
+        let Opens::Files { since, files, .. } = decoded(&link).opens else {
+            panic!("{link} opens no files");
+        };
+        assert_eq!((since, files), (None, vec![linked("a.rs", &[(2, 2)])]));
+    }
+
+    #[test]
     fn a_link_to_changes_opens_them_since_its_commit() {
-        let since = "0123456789abcdef0123456789abcdef01234567";
+        let since = SINCE;
         let changes = |path: &str| Target {
             session: SESSION.to_owned(),
             opens: Opens::Changes {
@@ -392,20 +431,20 @@ mod tests {
 
     #[test]
     fn a_link_too_long_for_telegram_stays_as_it_was() {
-        assert!(links().files(&[&"a/".repeat(365)])[0].is_some());
-        assert_eq!(links().files(&[&"a/".repeat(375)]), [None]);
+        assert!(links().files(&[&"a/".repeat(350)])[0].is_some());
+        assert_eq!(links().files(&[&"a/".repeat(360)]), [None]);
     }
 
     #[test]
-    fn a_link_naming_lines_or_a_file_past_its_list_names_nothing() {
+    fn a_link_naming_lines_or_a_file_past_its_list_or_no_commit_names_nothing() {
         let listed = URL_SAFE_NO_PAD.encode("a.rs#L2\nb.rs");
-        for at in ["0_0", "0_1", "1_0"] {
+        for at in ["0_0_", "0_1_", &format!("1_0_{SINCE}")] {
             assert!(
                 Target::decode(&format!("{SESSION}_{at}_{listed}")).is_some(),
                 "{at}"
             );
         }
-        for at in ["0_2", "1_1", "2_0"] {
+        for at in ["0_2_", "1_1_", "2_0_", &format!("0_0_{}", &SINCE[..12])] {
             assert_eq!(
                 Target::decode(&format!("{SESSION}_{at}_{listed}")),
                 None,
@@ -416,7 +455,7 @@ mod tests {
 
     #[test]
     fn a_session_outside_the_startapp_alphabet_has_no_links() {
-        assert!(Links::new(Some("https://t.me/bot/app"), "a_b").is_none());
-        assert!(Links::new(None, SESSION).is_none());
+        assert!(Links::new(Some("https://t.me/bot/app"), "a_b", None).is_none());
+        assert!(Links::new(None, SESSION, None).is_none());
     }
 }

@@ -822,7 +822,8 @@ impl Machine {
         });
         let turns = || {
             self.sessions.iter().filter_map(|(id, session)| {
-                Some((Links::new(self.app, id), session.turn.as_ref()?))
+                let turn = session.turn.as_ref()?;
+                Some((Links::new(self.app, id, turn.since()), turn))
             })
         };
         let sweep =
@@ -831,7 +832,7 @@ impl Machine {
             .flat_map(|(links, turn)| {
                 [
                     turn.pending.first().map(|(at, _)| *at + SETTLE),
-                    turn.due(links),
+                    turn.due(links.as_ref()),
                     (!turn.dialog).then_some(turn.typing),
                     turn.stop_due(),
                 ]

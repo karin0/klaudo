@@ -13,6 +13,9 @@ use serde::Serialize;
 
 use crate::process::run;
 
+/// How many unchanged lines the page shows on each side of a change, and of a line a link
+/// names.
+pub const CONTEXT: usize = 5;
 /// The commits the page lists from `HEAD`, enough to move the start a few turns back.
 const COMMITS_MAX: usize = 30;
 /// An untracked file past this is shown as binary, as a phone shows it too slowly.
@@ -43,15 +46,6 @@ pub struct Commit {
     pub subject: String,
     /// Whether the changes since the start include it.
     pub included: bool,
-}
-
-/// What the page shows of the changes since `since`.
-#[derive(Serialize)]
-pub struct Changes {
-    pub since: String,
-    pub commits: Vec<Commit>,
-    /// The changes as a git patch, untracked files as new ones.
-    pub patch: String,
 }
 
 fn git(top: &Path) -> Command {
@@ -143,14 +137,16 @@ pub fn summary(top: &Path, since: &str) -> Result<Summary, String> {
     })
 }
 
-/// Everything the page shows of the changes since `since`, which `verify` passed.
-pub fn changes(top: &Path, since: &str) -> Result<Changes, String> {
+/// The changes since `since`, which `verify` passed, as a git patch, untracked files as
+/// new ones.
+pub fn patch(top: &Path, since: &str) -> Result<String, String> {
     let mut patch = text(&run(git(top).args([
         "diff-index",
         "--patch",
         "--no-color",
         "--no-ext-diff",
         "-M",
+        &format!("--unified={CONTEXT}"),
         "--src-prefix=a/",
         "--dst-prefix=b/",
         since,
@@ -158,16 +154,32 @@ pub fn changes(top: &Path, since: &str) -> Result<Changes, String> {
     for path in untracked(top)? {
         added(&mut patch, &path, &top.join(&path));
     }
-    Ok(Changes {
-        since: since.to_owned(),
-        commits: commits(top, since)?,
-        patch,
-    })
+    Ok(patch)
 }
 
-/// The file at `path` as of `since`.
-pub fn old(top: &Path, since: &str, path: &str) -> Result<Vec<u8>, String> {
-    run(git(top).args(["show", &format!("{since}:{path}")]))
+/// The file at `path` as of `since`, `None` when `since` has none there.
+pub fn old(top: &Path, since: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+    let object = format!("{since}:{path}");
+    if run(git(top).args(["cat-file", "-e", &object])).is_err() {
+        return Ok(None);
+    }
+    run(git(top).args(["show", &object])).map(Some)
+}
+
+/// Whether git tracks the file at `path`, or would list it as untracked, since it does
+/// not ignore it.
+pub fn seen(top: &Path, path: &str) -> Result<bool, String> {
+    let listed = run(git(top).args([
+        "--literal-pathspecs",
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        path,
+    ]))?;
+    Ok(!listed.is_empty())
 }
 
 /// The files git neither tracks nor ignores, relative to `top`.
@@ -187,7 +199,7 @@ fn untracked(top: &Path) -> Result<Vec<String>, String> {
 
 /// The first-parent history from `HEAD`, each commit marked by whether the changes
 /// since `since` include it.
-fn commits(top: &Path, since: &str) -> Result<Vec<Commit>, String> {
+pub fn commits(top: &Path, since: &str) -> Result<Vec<Commit>, String> {
     let max = format!("--max-count={COMMITS_MAX}");
     let included = text(&run(git(top).args([
         "rev-list",
@@ -383,9 +395,8 @@ mod tests {
             })
         );
         verify(dir, &first).expect("a commit of the repository");
-        let changes = changes(dir, &first).expect("changes");
         assert_eq!(
-            changes.patch,
+            patch(dir, &first).expect("a patch"),
             "diff --git a/a b/a\n\
              index 01e79c3..d8eb098 100644\n\
              --- a/a\n\
@@ -407,8 +418,8 @@ mod tests {
              +no newline\n\
              \\ No newline at end of file\n"
         );
-        let listed: Vec<_> = changes
-            .commits
+        let commits = commits(dir, &first).expect("commits");
+        let listed: Vec<_> = commits
             .iter()
             .map(|commit| {
                 (
@@ -419,8 +430,12 @@ mod tests {
             })
             .collect();
         assert_eq!(listed, [("second", true, true), ("first", false, false)]);
-        assert!(changes.commits.iter().all(|commit| commit.time > 0));
-        assert_eq!(old(dir, &first, "a"), Ok(b"1\n2\n3\n".to_vec()));
+        assert!(commits.iter().all(|commit| commit.time > 0));
+        assert_eq!(old(dir, &first, "a"), Ok(Some(b"1\n2\n3\n".to_vec())));
+        assert_eq!(old(dir, &first, "binary"), Ok(None));
+        assert_eq!(seen(dir, "a"), Ok(true));
+        assert_eq!(seen(dir, "binary"), Ok(true));
+        assert_eq!(seen(dir, "ignored"), Ok(false));
     }
 
     #[test]
