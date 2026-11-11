@@ -4,8 +4,9 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -3626,12 +3627,12 @@ fn talking(root: &Path, transcript: &Path, later: &[serde_json::Value]) -> Child
 /// own credentials stay out of the test. It is removed when the test drops it, which a
 /// failing test does too.
 fn prepare(name: &str) -> (TempDir, Receiver<Call>, Chat) {
-    let (port, calls, chat) = recorder();
     let temporary = tempfile::Builder::new()
         .prefix(&format!("klaudo-{name}-"))
         .tempdir()
         .expect("throwaway root");
     let root = temporary.path();
+    let (port, calls, chat) = recorder(root.join("run/klaudo/listen.sock"));
     std::fs::create_dir_all(root.join("run")).expect("runtime directory");
     // A window the daemon opens goes to a `tmux` that records how it was called, so a
     // test never reaches the tmux server of the machine it runs on. Its session exists
@@ -3791,11 +3792,14 @@ fn wait_for(ready: impl Fn() -> bool, complaint: &str) {
     panic!("{complaint}");
 }
 
-fn recorder() -> (u16, Receiver<Call>, Chat) {
+fn recorder(socket: PathBuf) -> (u16, Receiver<Call>, Chat) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("address").port();
     let (sender, receiver) = channel();
-    let chat = Chat::default();
+    let chat = Chat {
+        socket,
+        ..Chat::default()
+    };
     let sending = chat.clone();
     std::thread::spawn(move || {
         for (id, stream) in (1..).zip(listener.incoming()) {
@@ -3823,6 +3827,8 @@ struct Chat {
     commands_held: Arc<Mutex<Duration>>,
     /// Whether `getMe` tells of the bot's main Mini App.
     main_app: Arc<AtomicBool>,
+    /// The daemon's socket, which `settle` asks on.
+    socket: PathBuf,
 }
 
 impl Chat {
@@ -3931,11 +3937,29 @@ impl Chat {
     }
 
     fn deliver(&self, mut update: serde_json::Value) {
+        self.settle();
         let (updates, arrived) = &*self.updates;
         let mut updates = updates.lock().expect("the chat");
         update["update_id"] = json!(updates.len() + 1);
         updates.push(update);
         arrived.notify_all();
+    }
+
+    /// Waits until the daemon has handled every hook reported so far, which reaches it on
+    /// another thread than an update and could otherwise come after an update sent later.
+    /// The daemon accepts connections to its socket in order and handles what they carry in
+    /// order, so the answer to a question asked now comes after those hooks. A socket that
+    /// nothing listens on leaves no hook to wait for.
+    fn settle(&self) {
+        let Ok(mut asker) = UnixStream::connect(&self.socket) else {
+            return;
+        };
+        asker
+            .write_all(br#"{"locate": {"session": null, "cwd": "/"}}"#)
+            .and_then(|()| asker.shutdown(Shutdown::Write))
+            .and_then(|()| asker.set_read_timeout(Some(PATIENCE)))
+            .and_then(|()| asker.read_to_end(&mut Vec::new()))
+            .expect("the daemon's answer");
     }
 
     /// The updates from `offset` on, waiting up to `HOLD` for one to arrive.
