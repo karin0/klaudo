@@ -1252,6 +1252,94 @@ fn a_project_without_a_topic_opens_one_in_a_forum() {
     drop(daemon);
 }
 
+/// The session `0123456789abcdef` of a test, exited after standing outside every topic
+/// of the forum.
+fn exited_in_general(root: &Path) -> &'static str {
+    let id = "0123456789abcdef";
+    seed_state(
+        root,
+        &json!([{
+            "id": id,
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "idle_since": 0,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 5, "at": 0}},
+        }]),
+    );
+    id
+}
+
+/// In a forum, a session resumed from the terminal after standing outside every topic
+/// moves into a topic opened for its project.
+#[test]
+fn a_session_resumed_outside_every_topic_of_a_forum_moves_into_one() {
+    let (temporary, calls, chat) = prepare("resumed-opens-topic");
+    let root = temporary.path();
+    chat.forum.store(true, Ordering::Relaxed);
+    let id = exited_in_general(root);
+    let daemon = daemon(root);
+
+    for event in [
+        json!({"hook_event_name": "SessionEnd", "session_id": id, "cwd": project(root)}),
+        json!({"hook_event_name": "SessionStart", "session_id": id, "cwd": project(root), "source": "resume"}),
+        json!({"hook_event_name": "UserPromptSubmit", "session_id": id, "cwd": project(root), "prompt": "again"}),
+    ] {
+        hook(root, &event);
+    }
+    let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+    let topic = made
+        .iter()
+        .find(|call| call.label == "createForumTopic")
+        .expect("a topic for the project");
+    assert_eq!(topic.body, json!({"chat_id": GROUP, "name": "project"}));
+    let prompt = made.last().expect("the prompt");
+    assert_eq!(prompt.body["message_thread_id"], json!(topic.id));
+    drop(daemon);
+}
+
+/// In a forum, a session that a message outside every topic resumes stays there.
+#[test]
+fn a_session_resumed_by_the_chat_outside_every_topic_stays_there() {
+    let (temporary, calls, chat) = prepare("resumed-in-general");
+    let root = temporary.path();
+    chat.forum.store(true, Ordering::Relaxed);
+    let id = exited_in_general(root);
+    let daemon = daemon(root);
+
+    hook(
+        root,
+        &json!({"hook_event_name": "SessionEnd", "session_id": id, "cwd": project(root)}),
+    );
+    chat.says(GROUP, OWNER, "carry on");
+    let log = root.join("tmux.log");
+    wait_for(
+        || std::fs::read_to_string(&log).is_ok_and(|log| log.contains("--resume")),
+        "no session was resumed",
+    );
+    for event in [
+        json!({"hook_event_name": "SessionStart", "session_id": id, "cwd": project(root), "source": "resume"}),
+        json!({"hook_event_name": "UserPromptSubmit", "session_id": id, "cwd": project(root), "prompt": "carry on"}),
+        json!({"hook_event_name": "Stop", "session_id": id, "last_assistant_message": "carried on"}),
+    ] {
+        hook(root, &event);
+    }
+    let made = collect(&calls, |call| call.markdown.ends_with("carried on"));
+    assert!(
+        made.iter().all(|call| call.label != "createForumTopic"),
+        "{:?}",
+        made.iter().map(|call| &call.label).collect::<Vec<_>>()
+    );
+    let answer = made.last().expect("the answer");
+    assert_eq!(answer.chat, Some(GROUP));
+    assert!(
+        answer.body["message_thread_id"].is_null(),
+        "{:?}",
+        answer.body
+    );
+    drop(daemon);
+}
+
 /// A message sent while the daemon registers its commands is meant for that daemon, so
 /// it is answered however long registering takes.
 #[test]

@@ -309,7 +309,9 @@ A private chat in topic mode takes no message outside every topic, since one sen
 opens a topic of its own. In a chat split into topics, a session new to the daemon that
 no message from the chat started, in a project with no session standing in a topic,
 opens a topic named after the project's directory, which the project's later sessions
-inherit. The daemon reads which chats are split into topics once as it starts, so
+inherit. A session that stood outside every topic moves the same way when the terminal or
+the Agent SDK resumes it, so a session resumed for every turn leaves the place it held
+before the chat was split. The daemon reads which chats are split into topics once as it starts, so
 turning topic mode on or off applies after a restart. A topic reaches only its own
 sessions, so a message sent outside every topic by mistake reaches no session.
 

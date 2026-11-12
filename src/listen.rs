@@ -667,10 +667,21 @@ impl Machine {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(&event.cwd));
             let mut session = Session::new(dir, pid, pane.clone(), now_millis());
-            // A resumed session keeps its id, and with its trail its topic.
+            // A resumed session keeps its id, and with its trail its topic. One that stood
+            // outside every topic of a chat split into topics moves as a new session would,
+            // unless the chat resumed it, which placed it where it was asked.
             if let Some(index) = self.ended.iter().position(|ended| ended.id == id) {
                 session.trail = self.ended.remove(index).expect("a listed index").trail;
                 self.save_ended();
+                let stray = session.trail.last.is_some_and(|last| {
+                    last.place.topic.is_none() && self.topical.contains(&last.place.chat)
+                });
+                let asked = self.opening.iter().any(
+                    |opening| matches!(&opening.start, Start::Resume(resumed) if *resumed == id),
+                );
+                if stray && !asked {
+                    session.trail.last = Some(Last::now(self.starting(&session.dir), None));
+                }
             } else {
                 // A conversation opened from the chat belongs where it was asked for.
                 let opening = self
