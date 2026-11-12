@@ -477,7 +477,8 @@ pub fn quote(text: &str) -> String {
         .join("  \n")
 }
 
-fn name(dir: &Path) -> String {
+/// The name of the project in `dir`, which its messages open with.
+pub fn name(dir: &Path) -> String {
     dir.file_name()
         .unwrap_or(dir.as_os_str())
         .to_string_lossy()

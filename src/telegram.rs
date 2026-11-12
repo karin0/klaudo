@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use kuriero::{
     AnswerCallbackQuery, BotCommand, Button, ChatAction, Client, CommandScope, Content,
-    CreateForumTopic, DeleteMessage, EditMessageText, GetFile, GetMe, Keyboard, Message, Method,
-    ParseMode, Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction, SendMessage,
-    SendRichMessage, Sent, SetMessageReaction, SetMyCommands, Update, User,
+    CreateForumTopic, DeleteMessage, EditMessageText, GetChat, GetFile, GetMe, Keyboard, Message,
+    Method, ParseMode, Reaction, ReplyMarkup, ReplyParameters, RichInput, SendChatAction,
+    SendMessage, SendRichMessage, Sent, SetMessageReaction, SetMyCommands, Update, User,
 };
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use serde::de::IgnoredAny;
@@ -463,6 +463,27 @@ impl Telegram {
     /// The bot itself.
     pub fn me(&self) -> Option<User> {
         self.call(&GetMe)
+    }
+
+    /// The chats Klaŭdo posts in that are split into topics: the private chat where the
+    /// bot has topic mode on, and `CHAT_ID` where it is a forum. `None` while Telegram is
+    /// out of reach.
+    pub fn topical(&self, bot: &User) -> Option<Vec<i64>> {
+        let forum = self.chat_id != self.user_id
+            && self
+                .call(&GetChat {
+                    chat_id: self.chat_id,
+                })?
+                .is_forum;
+        Some(
+            [
+                (bot.has_topics_enabled, self.user_id),
+                (forum, self.chat_id),
+            ]
+            .into_iter()
+            .filter_map(|(split, chat)| split.then_some(chat))
+            .collect(),
+        )
     }
 
     /// One long poll for what the chat has sent since `offset`.

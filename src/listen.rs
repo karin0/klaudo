@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use kuriero::{CallbackQuery, Message};
+use kuriero::{CallbackQuery, Message, User};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -165,7 +165,9 @@ pub fn run() {
     std::thread::spawn(move || read(&listener, &landed));
     // The hooks reaching the socket meanwhile wait in `arrivals`, and nothing could be
     // sent while Telegram is out of reach anyway.
-    let app = page.map(|_| main_app(&telegram));
+    let bot = answered(|| telegram.me());
+    let app = page.map(|_| main_app(&bot));
+    let topical = answered(|| telegram.topical(&bot));
 
     let running_file = directory.join("state.json");
     // A list a different version wrote may not parse, and it only saves the sessions
@@ -211,6 +213,7 @@ pub fn run() {
         attach,
         guest_push: crate::telegram::flag("GUEST_PUSH"),
         app,
+        topical,
     };
     // Whatever exited while nothing was listening.
     machine.sweep();
@@ -276,19 +279,23 @@ fn acquire(lock: &File) -> bool {
     }
 }
 
-/// The link to the bot's main Mini App, which opens the files an answer names.
-fn main_app(telegram: &Telegram) -> &'static str {
-    let bot = loop {
-        match telegram.me() {
-            Some(bot) => break bot,
+/// What `call` gives once Telegram answers it.
+fn answered<T>(call: impl Fn() -> Option<T>) -> T {
+    loop {
+        match call() {
+            Some(answer) => return answer,
             None => std::thread::sleep(RETRY),
         }
-    };
+    }
+}
+
+/// The link to the bot's main Mini App, which opens the files an answer names.
+fn main_app(bot: &User) -> &'static str {
     assert!(
         bot.has_main_web_app,
         "WEB_LISTEN is set, but the bot has no main Mini App"
     );
-    web::app(&bot.username.expect("a bot's username")).leak()
+    web::app(bot.username.as_ref().expect("a bot's username")).leak()
 }
 
 /// Reads the chat and queues each update beside the requests, so events from the hooks
@@ -371,8 +378,8 @@ struct Own {
 
 /// The last message of a conversation, the session's own or one the daemon typed into
 /// it, and when it was left. This is how recent a session is everywhere sessions are
-/// ordered. A session new to the daemon starts out with no message, where the most recent
-/// session of its project is, or outside every topic of its project's chat.
+/// ordered. A session new to the daemon starts out with no message, where `starting`
+/// places it.
 #[derive(Serialize, Deserialize, Clone, Copy)]
 struct Last {
     place: Place,
@@ -506,6 +513,9 @@ struct Machine {
     /// The Mini App link a file link in an answer opens, which lives as long as the
     /// daemon.
     app: Option<&'static str>,
+    /// The chats split into topics, where a project's sessions post in a topic of their
+    /// own.
+    topical: Vec<i64>,
 }
 
 /// A session the daemon has heard from: where it ran, which is where a reply to it
@@ -686,8 +696,7 @@ impl Machine {
                 let asked = opening.map(|opening| opening.ask.place());
                 let place = asked
                     .or_else(|| origin?.last.map(|last| last.place))
-                    .or_else(|| self.inherited(&session.dir))
-                    .unwrap_or_else(|| session.home(&self.telegram));
+                    .unwrap_or_else(|| self.starting(&session.dir));
                 session.trail.last = Some(Last::now(place, None));
             }
             self.sessions.insert(id.clone(), session);
@@ -768,14 +777,15 @@ impl Machine {
     /// Where a file the session asks to show goes: the thread of its turn, below
     /// everything the turn has said so far, under the head a message of the turn carries,
     /// so a reply to the file reaches the session. A file sent from outside any session
-    /// goes bare to the chat of the directory it was sent from.
+    /// goes bare to where the most recent session of the directory it was sent from
+    /// stands, or else outside every topic of the directory's chat.
     fn locate(&mut self, id: Option<&str>, cwd: &Path) -> Result<Placement, String> {
         let Some(id) = id else {
             return Ok(Placement {
-                place: Place {
+                place: self.inherited(cwd).unwrap_or(Place {
                     chat: self.telegram.chat(cwd),
                     topic: None,
-                },
+                }),
                 reply_to: None,
                 caption: None,
             });

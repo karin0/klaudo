@@ -306,10 +306,12 @@ inside one. A message in a forum's topic replying to nothing arrives replying to
 service message that opened the topic, which Klaŭdo reads as replying to nothing.
 
 A private chat in topic mode takes no message outside every topic, since one sent there
-opens a topic of its own. A turn started in the terminal is posted outside every topic
-until a session of its project posts in a topic, so a reply to one of its messages or
-`/resume` brings the session into a topic. A topic reaches only its own sessions, so a
-message sent outside every topic by mistake reaches no session.
+opens a topic of its own. In a chat split into topics, a session new to the daemon that
+no message from the chat started, in a project with no session standing in a topic,
+opens a topic named after the project's directory, which the project's later sessions
+inherit. The daemon reads which chats are split into topics once as it starts, so
+turning topic mode on or off applies after a restart. A topic reaches only its own
+sessions, so a message sent outside every topic by mistake reaches no session.
 
 `/split` opens a topic for the session a message would reach, named after its latest
 prompt, and moves the session there the way `/resume` does. Claude Code's `/branch` starts

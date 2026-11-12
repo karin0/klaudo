@@ -1200,6 +1200,58 @@ fn a_new_session_takes_the_topic_of_its_project() {
     drop(daemon);
 }
 
+/// In a forum, a project whose sessions stand outside every topic gets a topic of its
+/// own, named after it, for its next new session, and the sessions after it follow.
+#[test]
+fn a_project_without_a_topic_opens_one_in_a_forum() {
+    let (temporary, calls, chat) = prepare("project-opens-topic");
+    let root = temporary.path();
+    chat.forum.store(true, Ordering::Relaxed);
+    seed_state(
+        root,
+        &json!([{
+            "id": "0123456789abcdef",
+            "dir": project(root),
+            "pid": std::process::id(),
+            "pane": null,
+            "idle_since": 0,
+            "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 5, "at": 0}},
+        }]),
+    );
+    let daemon = daemon(root);
+
+    let mut topics = Vec::new();
+    for session in ["fedcba9876543210", "aaaabbbbccccdddd"] {
+        hook(
+            root,
+            &json!({
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session,
+                "cwd": project(root),
+                "prompt": "from a new terminal",
+            }),
+        );
+        let made = collect(&calls, |call| call.label.starts_with("sendRichMessage"));
+        let opened: Vec<_> = made
+            .iter()
+            .filter(|call| call.label == "createForumTopic")
+            .map(|call| (call.id, call.body.clone()))
+            .collect();
+        topics.extend(opened);
+        let prompt = made.last().expect("the prompt");
+        assert_eq!(prompt.chat, Some(GROUP));
+        assert_eq!(
+            prompt.body["message_thread_id"],
+            json!(topics.first().expect("a topic").0)
+        );
+    }
+    assert_eq!(
+        topics.iter().map(|(_, body)| body).collect::<Vec<_>>(),
+        [&json!({"chat_id": GROUP, "name": "project"})]
+    );
+    drop(daemon);
+}
+
 /// A message sent while the daemon registers its commands is meant for that daemon, so
 /// it is answered however long registering takes.
 #[test]
@@ -3847,6 +3899,8 @@ struct Chat {
     commands_held: Arc<Mutex<Duration>>,
     /// Whether `getMe` tells of the bot's main Mini App.
     main_app: Arc<AtomicBool>,
+    /// Whether `getChat` tells that the group is a forum.
+    forum: Arc<AtomicBool>,
     /// The daemon's socket, which `settle` asks on.
     socket: PathBuf,
 }
@@ -4066,6 +4120,8 @@ fn unrecorded(method: &str, body: &serde_json::Value, chat: &Chat) -> Option<Str
             json!({"id": 111_111, "first_name": "Klaŭdo", "username": "klaudo_bot",
                 "has_main_web_app": main_app})
         }
+        "getChat" => json!({"id": body["chat_id"], "type": "supergroup",
+            "is_forum": chat.forum.load(Ordering::Relaxed)}),
         // A local Bot API server gives the absolute path of the file, which the tests
         // send as its id.
         "getFile" => json!({"file_id": body["file_id"], "file_path": body["file_id"]}),

@@ -499,16 +499,31 @@ impl Machine {
             )
     }
 
-    /// Where a session new to the daemon in `dir` starts out: the place in the
-    /// project's chat of the project's most recent session, which a session in a topic of
-    /// its own stands for in the place it left, so a conversation restarted in a project
-    /// stays in its topic.
+    /// Where a session new to the daemon in `dir` starts out: where the project's most
+    /// recent session stands, or else a topic opened for the project.
+    pub(super) fn starting(&self, dir: &Path) -> Place {
+        self.inherited(dir).unwrap_or_else(|| {
+            let chat = self.telegram.chat(dir);
+            let topic = self
+                .topical
+                .contains(&chat)
+                .then(|| self.telegram.topic(chat, &hook::name(dir)))
+                .flatten();
+            Place { chat, topic }
+        })
+    }
+
+    /// The place in the project's chat of the project's most recent session, which a
+    /// session in a topic of its own stands for in the place it left, so a conversation
+    /// restarted in a project stays in its topic. In a chat split into topics, a place
+    /// outside every topic is passed over, so a project gets a topic of its own.
     pub(super) fn inherited(&self, dir: &Path) -> Option<Place> {
         let chat = self.telegram.chat(dir);
+        let topical = self.topical.contains(&chat);
         self.known()
             .filter(|(_, known, _)| *known == dir)
             .filter_map(|(_, _, trail)| trail.standing())
-            .filter(|&(place, _)| place.chat == chat)
+            .filter(|&(place, _)| place.chat == chat && (place.topic.is_some() || !topical))
             .max_by_key(|&(_, at)| at)
             .map(|(place, _)| place)
     }
