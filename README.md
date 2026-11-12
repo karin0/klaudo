@@ -361,7 +361,7 @@ Claude Code links to the files it talks about, as in `[listen.rs:588](src/listen
 Once `WEB_LISTEN` is set, each inline link of a message whose target has no scheme opens
 a page of every file the message links to in the bot's main Mini App, which the daemon
 serves. The page opens at the link's own file and at the lines a fragment `#L12` or
-`#L12-L20` names, and tints the lines of every link. The link is `https://t.me/<bot>`
+`#L12-L20` names, or else a suffix `:12` or `:12-20`, and tints the lines of every link. The link is `https://t.me/<bot>`
 with `?startapp=<session>_<file>_<lines>_<commit>_<files in base64url>`, where `<commit>`
 is the commit checked out as the turn started, empty outside a git working tree, and the
 files are listed once each with the fragments of their links, so it carries everything

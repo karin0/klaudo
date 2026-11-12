@@ -141,10 +141,17 @@ fn page(files: &[Linked]) -> String {
     URL_SAFE_NO_PAD.encode(listed.join("\n"))
 }
 
-/// The file a markdown link's `destination` names, and the lines its fragment names.
+/// The file a markdown link's `destination` names, and the lines its fragment names, or
+/// else a suffix such as `:12` or `:12-20`, as Claude Code writes a place in a file.
 fn file(destination: &str) -> Option<(&str, Option<Lines>)> {
-    let (path, fragment) = destination.split_once('#').unwrap_or((destination, ""));
-    (!path.is_empty() && !scheme(path)).then(|| (path, lines(fragment)))
+    let (path, lines) = match destination.split_once('#') {
+        Some((path, fragment)) => (path, lines(fragment)),
+        None => destination
+            .rsplit_once(':')
+            .and_then(|(path, suffix)| Some((path, Some(range(suffix)?))))
+            .unwrap_or((destination, None)),
+    };
+    (!path.is_empty() && !scheme(path)).then_some((path, lines))
 }
 
 /// Whether `path` opens with a URL scheme, as `https:` or `mailto:` do.
@@ -159,7 +166,11 @@ fn scheme(path: &str) -> bool {
 
 /// The lines a fragment such as `L12` or `L12-L20` names.
 fn lines(fragment: &str) -> Option<Lines> {
-    let range = fragment.strip_prefix('L')?;
+    range(fragment.strip_prefix('L')?)
+}
+
+/// The lines `12`, `12-20` or `12-L20` names.
+fn range(range: &str) -> Option<Lines> {
     let (from, to) = range.split_once('-').unwrap_or((range, range));
     let from: usize = from.parse().ok()?;
     let to: usize = to.strip_prefix('L').unwrap_or(to).parse().ok()?;
@@ -345,6 +356,8 @@ mod tests {
         for (destination, path, lines) in [
             ("src/listen.rs#L588", "src/listen.rs", Some((588, 588))),
             ("src/listen.rs#L12-L20", "src/listen.rs", Some((12, 20))),
+            ("src/listen.rs:588", "src/listen.rs", Some((588, 588))),
+            ("README.md:12-20", "README.md", Some((12, 20))),
             ("/home/u/文档/a b.md", "/home/u/文档/a b.md", None),
             ("README.md#configuration", "README.md", None),
         ] {
@@ -425,8 +438,14 @@ mod tests {
 
     #[test]
     fn a_link_elsewhere_stays_as_it_was() {
-        let destinations = ["https://example.com/a.rs", "mailto:a@b.c", "#L3", ""];
-        assert_eq!(links().files(&destinations), [None, None, None, None]);
+        let destinations = [
+            "https://example.com/a.rs",
+            "https://example.com:8080",
+            "mailto:a@b.c",
+            "#L3",
+            "",
+        ];
+        assert_eq!(links().files(&destinations), [None, None, None, None, None]);
     }
 
     #[test]
