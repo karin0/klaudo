@@ -742,9 +742,10 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The prompt a review is typed into the session as: its message, or `Review:` without
-/// one, then a block per note, each opening with
-/// where it points, then the lines it suggests in a diff, or else the lines it comments
-/// on, quoted when they are all in the file as it is, then what the reviewer wrote.
+/// one, then a block per note, each opening with where it points, then the lines it
+/// suggests in a diff, or else the lines it comments on, quoted when they are all in the
+/// file as it is, then what the reviewer wrote. A suggestion's place is marked
+/// `(suggestion)`, so Claude judges it before applying it.
 /// `shown` writes a path of the file as it is as the session would. Removed lines are
 /// written as git names a file as of a commit, so Claude does not read them as lines of
 /// the file as it is.
@@ -787,7 +788,10 @@ fn prompt(review: &Review, shown: impl Fn(&str) -> String) -> Result<String, Str
                 _ => Err(format!("{place}: {line:?} is no line of a diff")),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut block = vec![place];
+        let mut block = vec![match suggestion {
+            Some(_) => format!("{place} (suggestion)"),
+            None => place,
+        }];
         match suggestion {
             Some(_) if old.is_some() => {
                 return Err("a suggestion rewrites lines of the file as it is".to_owned());
@@ -1124,7 +1128,7 @@ mod tests {
             prompt(&review(notes), str::to_owned).expect("a prompt"),
             "Review:\n\
              \n\
-             src/telegram.rs:622\n\
+             src/telegram.rs:622 (suggestion)\n\
              ```diff\n\
              -    let mut line_start = false;\n\
              +    let mut at_line_start = false;\n\
@@ -1136,7 +1140,7 @@ mod tests {
              >     written\n\
              这里为什么不直接返回？\n\
              \n\
-             README.md:3\n\
+             README.md:3 (suggestion)\n\
              ````diff\n\
              -```sh\n\
              ````"

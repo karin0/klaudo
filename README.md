@@ -407,7 +407,8 @@ the same file stretches it over the lines between, as a drag across line numbers
 A comment may span removed lines, which the prompt names as git names a
 file as of a commit, as in `0123456789ab:src/a.rs:3-4`, so Claude does not read them as
 lines of the file as it is. `Suggest change` fills an editor with the lines to rewrite,
-and only lines of the file as it is can be rewritten. The top of the page lists the
+and only lines of the file as it is can be rewritten. The prompt marks the place of a
+suggestion `(suggestion)`, so Claude judges it before applying it. The top of the page lists the
 comments saved, each scrolling the page to its lines on a tap. `Send review` types every
 comment into the session as one prompt, the way a reply from the chat is typed, so a
 guest's review goes behind the reminder and a session waiting on a dialog refuses it.
