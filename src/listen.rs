@@ -276,10 +276,6 @@ fn acquire(lock: &File) -> bool {
     }
 }
 
-/// Reads the chat and queues each update beside the requests, so events from the hooks
-/// and messages from the phone are handled in the order they landed. Messages older
-/// than this loop are the backlog Telegram still holds, and typing those into a terminal
-/// would replay an afternoon of asks.
 /// The link to the bot's main Mini App, which opens the files an answer names.
 fn main_app(telegram: &Telegram) -> &'static str {
     let bot = loop {
@@ -295,6 +291,10 @@ fn main_app(telegram: &Telegram) -> &'static str {
     web::app(&bot.username.expect("a bot's username")).leak()
 }
 
+/// Reads the chat and queues each update beside the requests, so events from the hooks
+/// and messages from the phone are handled in the order they landed. Messages older
+/// than this loop are the backlog Telegram still holds, and typing those into a terminal
+/// would replay an afternoon of asks.
 fn poll(
     telegram: &Telegram,
     landed: &Sender<Arrival>,
