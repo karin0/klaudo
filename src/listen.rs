@@ -36,7 +36,7 @@ use crate::web::{self, Links};
 use chat::{ATTACH, COMMANDS, tilde};
 use render::{code, took};
 use transcript::Transcript;
-use turn::{Ask, Closing, POLL, SETTLE, Thread, Turn};
+use turn::{Ask, Closing, POLL, Thread, Turn};
 use usage::{Limits, Status, Window};
 
 /// How long a session killed mid-turn keeps its message showing the turn as running.
@@ -852,7 +852,7 @@ impl Machine {
         turns()
             .flat_map(|(links, turn)| {
                 [
-                    turn.pending.first().map(|(at, _)| *at + SETTLE),
+                    turn.follow_due(),
                     turn.due(links.as_ref()),
                     (!turn.dialog).then_some(turn.typing),
                     turn.stop_due(),
@@ -887,7 +887,7 @@ impl Machine {
         for id in ids {
             self.close(&id, false);
             self.stopped(&id);
-            self.place(&id);
+            self.follow(&id);
             self.show(&id);
             self.keep_typing(&id);
         }

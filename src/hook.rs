@@ -120,38 +120,11 @@ impl Event {
         self.rest.get("reason").and_then(Value::as_str) == Some("resume")
     }
 
-    /// What a tool call says it is doing, in one line, empty where its tool describes
-    /// no call of itself.
-    pub fn description(&self) -> String {
-        self.field(&DESCRIPTION)
-    }
-
-    /// What a tool call is working on, in one line. An MCP call has its arguments
-    /// shown whole, so it has no subject.
-    pub fn subject(&self) -> String {
-        if self.mcp() {
-            return String::new();
+    pub fn tool(&self) -> Tool<'_> {
+        Tool {
+            name: self.tool_name.as_deref().unwrap_or_default(),
+            input: &self.tool_input,
         }
-        self.field(&SUBJECT)
-    }
-
-    /// Whether the call is to a tool of an MCP server, whose input and output follow
-    /// no schema Claude Code's own tools share.
-    pub fn mcp(&self) -> bool {
-        self.tool_name
-            .as_deref()
-            .is_some_and(|name| name.starts_with("mcp__"))
-    }
-
-    /// An MCP call's arguments as compact JSON, empty when it takes none.
-    pub fn arguments(&self) -> Option<String> {
-        self.mcp().then(|| {
-            if self.tool_input.is_empty() {
-                String::new()
-            } else {
-                Value::Object(self.tool_input.clone()).to_string()
-            }
-        })
     }
 
     /// What a finished call produced: an MCP call's whole text, and what Claude Code's
@@ -162,7 +135,7 @@ impl Event {
         let Some(response) = &self.tool_response else {
             return Produced::Summed(String::new());
         };
-        if self.mcp() {
+        if self.tool().mcp() {
             return Produced::Printed(text(response));
         }
         let count = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64);
@@ -194,23 +167,6 @@ impl Event {
             _ if response.is_object() => String::new(),
             _ => text(response),
         })
-    }
-
-    fn field(&self, keys: &[&str]) -> String {
-        let Some(value) = keys
-            .iter()
-            .find_map(|key| self.tool_input.get(*key)?.as_str())
-        else {
-            return String::new();
-        };
-        let flat = value.split_whitespace().collect::<Vec<_>>().join(" ");
-        if flat.chars().count() <= SUBJECT_MAX {
-            return flat;
-        }
-        flat.chars()
-            .take(SUBJECT_MAX)
-            .chain("\u{2026}".chars())
-            .collect()
     }
 
     fn tag(&self) -> String {
@@ -277,6 +233,61 @@ impl Event {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         serde_json::to_string(&kept).expect("a parsed object re-serializes")
+    }
+}
+
+/// A tool call's name and input, as a hook event or a transcript's `tool_use` block
+/// gives them.
+pub struct Tool<'a> {
+    pub name: &'a str,
+    pub input: &'a Map<String, Value>,
+}
+
+impl Tool<'_> {
+    /// What the call says it is doing, in one line, empty where its tool describes no
+    /// call of itself.
+    pub fn description(&self) -> String {
+        self.field(&DESCRIPTION)
+    }
+
+    /// What the call is working on, in one line. An MCP call has its arguments shown
+    /// whole, so it has no subject.
+    pub fn subject(&self) -> String {
+        if self.mcp() {
+            return String::new();
+        }
+        self.field(&SUBJECT)
+    }
+
+    /// Whether the call is to a tool of an MCP server, whose input and output follow
+    /// no schema Claude Code's own tools share.
+    pub fn mcp(&self) -> bool {
+        self.name.starts_with("mcp__")
+    }
+
+    /// An MCP call's arguments as compact JSON, empty when it takes none.
+    pub fn arguments(&self) -> Option<String> {
+        self.mcp().then(|| {
+            if self.input.is_empty() {
+                String::new()
+            } else {
+                Value::Object(self.input.clone()).to_string()
+            }
+        })
+    }
+
+    fn field(&self, keys: &[&str]) -> String {
+        let Some(value) = keys.iter().find_map(|key| self.input.get(*key)?.as_str()) else {
+            return String::new();
+        };
+        let flat = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.chars().count() <= SUBJECT_MAX {
+            return flat;
+        }
+        flat.chars()
+            .take(SUBJECT_MAX)
+            .chain("\u{2026}".chars())
+            .collect()
     }
 }
 
@@ -598,7 +609,7 @@ mod tests {
                 "session_id": "s",
                 "tool_input": input,
             }));
-            (event.description(), event.subject())
+            (event.tool().description(), event.tool().subject())
         };
         assert_eq!(
             call(serde_json::json!({"command": "cargo test", "description": "run the tests"})),
@@ -712,8 +723,11 @@ mod tests {
                 {"type": "image", "source": {"data": "UklGR"}},
             ],
         }));
-        assert_eq!(mcp.subject(), "");
-        assert_eq!(mcp.arguments().as_deref(), Some(r#"{"id":5,"q":"a"}"#));
+        assert_eq!(mcp.tool().subject(), "");
+        assert_eq!(
+            mcp.tool().arguments().as_deref(),
+            Some(r#"{"id":5,"q":"a"}"#)
+        );
         assert_eq!(
             mcp.result(),
             Produced::Printed("a thumbnail\n[image]".to_owned())
@@ -727,6 +741,7 @@ mod tests {
                 serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "s",
                                      "tool_name": "Read"})
             )
+            .tool()
             .arguments(),
             None
         );

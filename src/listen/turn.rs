@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::changes::{self, Start, Summary};
-use crate::hook::{self, Event, Produced};
+use crate::hook::{self, Event, Produced, Tool};
 use kuriero::Message;
 
 use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound};
@@ -16,10 +16,8 @@ use crate::web::Links;
 
 use super::Machine;
 use super::chat::{NEW, unreminded};
-use super::render::{
-    ARGUMENTS_MAX, Call, Outcome, RESULT_MAX, SUMMARY_MAX, first_line, listing, took,
-};
-use super::transcript::{self, Transcript};
+use super::render::{Call, Outcome, RESULT_MAX, SUMMARY_MAX, first_line, listing, took};
+use super::transcript::{self, Block, Transcript};
 use super::usage::status_line;
 
 /// The longest the message showing an open segment goes without its clock advancing,
@@ -36,11 +34,10 @@ const GROUP_REWRITE: Duration = Duration::from_secs(10);
 /// How often a running turn shows its session typing, within the five seconds Telegram
 /// shows a chat action for.
 const TYPING: Duration = Duration::from_secs(4);
-/// How long a tool call waits before it is filed, so words arriving within that time
-/// stand above it, and how long an open segment's text stays quiet before the message
-/// showing it is rewritten, so a `Stop` arriving milliseconds behind its answer takes
-/// over and the answer does not stand in the chat twice.
-pub(super) const SETTLE: Duration = Duration::from_millis(100);
+/// How long an open segment's text stays quiet before the message showing it is
+/// rewritten, so a `Stop` arriving milliseconds behind its answer takes over and the
+/// answer does not stand in the chat twice.
+const SETTLE: Duration = Duration::from_millis(100);
 /// What `/stop` reaching a session without a running turn is answered with.
 const NOTHING_RUNS: &str = "no turn is running in that conversation";
 /// How long a turn sent Escape has to show up interrupted in its transcript before the
@@ -50,7 +47,8 @@ const STOP_WAIT: Duration = Duration::from_secs(5);
 /// since Claude Code writes the turn's last call only along with it, after the Stop hooks
 /// have run. The figures under the answer leave that call out otherwise.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
-/// How often a transcript is read while a turn waits on it.
+/// How often a transcript is read while a turn waits on it, for a record of up to tens
+/// of milliseconds.
 pub(super) const POLL: Duration = Duration::from_millis(50);
 /// What Claude Code appends to the transcript as a user message when a turn is
 /// interrupted, ending in ` for tool use]` when it cut a tool call short. No hook reports
@@ -111,16 +109,67 @@ const PROMPT_MAX: usize = 40;
 /// while nothing has been said is the status line.
 struct Segment {
     calls: Vec<Call>,
-    /// The assistant message's id and its deltas by index, because three hook processes
-    /// run at once and one can arrive ahead of its predecessor.
-    said: Option<(String, BTreeMap<u32, String>)>,
+    said: Option<Words>,
     /// What the open message was last written with and when, absent until it exists.
     written: Option<(String, Instant)>,
-    /// The message this segment finished in, which is what a flush or an outcome
-    /// arriving later rewrites.
+    /// The message this segment finished in, which is what an outcome arriving later
+    /// rewrites.
     posted: Option<Posted>,
     /// When the segment last received text.
     heard: Instant,
+}
+
+/// The words a segment opens with. The hooks stream an assistant message's text as it is
+/// written, and the transcript records it whole along with the narration and tool calls
+/// of each message, in the order the terminal shows them, which is the order the chat
+/// follows. A hook's message id is its own, so a transcript's text is paired with the
+/// deltas it holds.
+enum Words {
+    /// The deltas of hook message `stream` by index, because three hook processes run at
+    /// once and one can arrive ahead of its predecessor.
+    Streamed {
+        stream: String,
+        chunks: BTreeMap<u32, String>,
+    },
+    /// The text the transcript recorded, which later deltas leave as it is. The stream is
+    /// absent while the transcript has recorded text whose first delta has not arrived.
+    Recorded {
+        stream: Option<String>,
+        text: String,
+    },
+    /// What the terminal shows above the tool calls of a message, which no hook reports.
+    Narration(String),
+}
+
+impl Words {
+    fn text(&self) -> String {
+        match self {
+            Self::Streamed { chunks, .. } => chunks.values().map(String::as_str).collect(),
+            Self::Recorded { text, .. } | Self::Narration(text) => text.clone(),
+        }
+    }
+
+    fn stream(&self) -> Option<&str> {
+        match self {
+            Self::Streamed { stream, .. } => Some(stream),
+            Self::Recorded { stream, .. } => stream.as_deref(),
+            Self::Narration(_) => None,
+        }
+    }
+
+    /// Whether these are deltas that the transcript's `text` records.
+    fn recorded_as(&self, text: &str) -> bool {
+        matches!(self, Self::Streamed { chunks, .. }
+            if chunks.values().all(|chunk| text.contains(chunk.as_str())))
+    }
+}
+
+/// What the hooks reported ahead of the transcript, which joins the chat once the
+/// transcript has recorded every call announced and the words streaming before it.
+enum Waiting {
+    Words(Words),
+    /// A subagent's tool call, which its own transcript records.
+    Call(Call),
 }
 
 /// A message a segment finished in.
@@ -146,21 +195,23 @@ impl Segment {
         }
     }
 
-    /// True for the assistant message or tool call `id` names.
+    fn saying(words: Words) -> Self {
+        Self {
+            said: Some(words),
+            ..Self::new()
+        }
+    }
+
+    /// True for the tool call `id`.
     fn holds(&self, id: &str) -> bool {
-        self.said.as_ref().is_some_and(|(said, _)| said == id)
-            || self.calls.iter().any(|call| call.id == id)
+        self.calls.iter().any(|call| call.id == id)
     }
 
     /// The words, then the run they introduce, with the calls a reader follows in view
     /// while the segment is `live`.
     fn text(&self, live: bool, links: Option<&Links>) -> String {
         let words = telegram::rich_markdown(
-            &self
-                .said
-                .iter()
-                .flat_map(|(_, chunks)| chunks.values().map(String::as_str))
-                .collect::<String>(),
+            &self.said.as_ref().map(Words::text).unwrap_or_default(),
             links,
         );
         match (words.as_str(), self.calls.as_slice()) {
@@ -232,9 +283,10 @@ pub(super) struct Turn {
     /// The segments the chat already has, kept because what belongs in one goes on
     /// arriving after it was posted.
     sealed: Vec<Segment>,
-    /// Tool calls announced but not filed yet, oldest first. A call the turn ended on
-    /// is dropped with the turn: the answer is what that message is for.
-    pub(super) pending: Vec<(Instant, Call)>,
+    /// The main conversation's tool calls announced and not yet recorded, with how each
+    /// went so far. A call takes its place in the turn once the transcript records it.
+    announced: Vec<(String, Outcome)>,
+    waiting: VecDeque<Waiting>,
     /// When the chat is next shown the session typing, unless it waits on a dialog.
     pub(super) typing: Instant,
     /// Whether the session waits on a dialog, which the Enter after a reply would answer
@@ -269,7 +321,8 @@ impl Turn {
             thread,
             live: None,
             sealed: Vec::new(),
-            pending: Vec::new(),
+            announced: Vec::new(),
+            waiting: VecDeque::new(),
             typing: Instant::now(),
             dialog: false,
             stopping: None,
@@ -303,6 +356,23 @@ impl Turn {
     /// When the transcript of a turn sent Escape is next read.
     pub(super) fn stop_due(&self) -> Option<Instant> {
         self.stopping.as_ref().map(|_| Instant::now() + POLL)
+    }
+
+    /// When the transcript is next read for what the hooks reported ahead of it.
+    pub(super) fn follow_due(&self) -> Option<Instant> {
+        (!self.announced.is_empty() || !self.waiting.is_empty()).then(|| Instant::now() + POLL)
+    }
+
+    /// Whether what waits can join the turn, which is once the transcript has recorded
+    /// every call announced and the words streaming, or at once without a transcript.
+    fn caught_up(&self, transcribed: bool) -> bool {
+        !transcribed
+            || self.announced.is_empty()
+                && self
+                    .segment
+                    .as_ref()
+                    .and_then(|segment| segment.said.as_ref())
+                    .is_none_or(|words| !matches!(words, Words::Streamed { .. }))
     }
 
     /// The run a tool call belongs to, which is the open one until the turn moves past
@@ -456,44 +526,63 @@ impl Machine {
         };
         if self.turn(id, event) {
             self.heard(id, message_id, index, delta.clone());
+            self.follow(id);
         }
     }
 
-    /// Text of the assistant message `message_id` reaching its segment, which a message
-    /// starting opens.
-    fn heard(&mut self, id: &str, message_id: &str, index: u32, delta: String) {
+    /// A delta of the hook message `stream`, which joins the words it streams wherever
+    /// they stand. A stream not heard before waits for the transcript to catch up, unless
+    /// the transcript has recorded its text already.
+    fn heard(&mut self, id: &str, stream: &str, index: u32, delta: String) {
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
         if let Some(segment) = turn
-            .sealed
-            .iter_mut()
-            .find(|sealed| sealed.holds(message_id))
+            .segment
+            .as_mut()
+            .filter(|segment| segment.said.as_ref().and_then(Words::stream) == Some(stream))
         {
-            if let Some((_, chunks)) = &mut segment.said {
+            if let Some(Words::Streamed { chunks, .. }) = &mut segment.said {
                 chunks.insert(index, delta);
+                segment.heard = Instant::now();
+                self.part(id);
             }
-            self.amend(id, message_id);
+            return;
+        }
+        if let Some(Words::Recorded {
+            stream: claimed,
+            text,
+        }) = turn
+            .segment
+            .as_mut()
+            .and_then(|segment| segment.said.as_mut())
+            && claimed.is_none()
+            && text.contains(&delta)
+        {
+            *claimed = Some(stream.to_owned());
             return;
         }
         if turn
-            .segment
-            .as_ref()
-            .is_none_or(|open| !open.holds(message_id))
+            .sealed
+            .iter()
+            .any(|sealed| sealed.said.as_ref().and_then(Words::stream) == Some(stream))
         {
-            self.seal(id);
-        }
-        let Some(turn) = self.turn_mut(id) else {
             return;
-        };
-        let segment = turn.segment.get_or_insert_with(Segment::new);
-        segment
-            .said
-            .get_or_insert_with(|| (message_id.to_owned(), BTreeMap::new()))
-            .1
-            .insert(index, delta);
-        segment.heard = Instant::now();
-        self.part(id);
+        }
+        if let Some(chunks) = turn.waiting.iter_mut().find_map(|waiting| match waiting {
+            Waiting::Words(Words::Streamed {
+                stream: own,
+                chunks,
+            }) if own == stream => Some(chunks),
+            _ => None,
+        }) {
+            chunks.insert(index, delta);
+            return;
+        }
+        turn.waiting.push_back(Waiting::Words(Words::Streamed {
+            stream: stream.to_owned(),
+            chunks: BTreeMap::from([(index, delta)]),
+        }));
     }
 
     /// A run that would overflow the message of the words introducing it goes on in one
@@ -529,62 +618,145 @@ impl Machine {
         }
     }
 
-    /// A tool call waits out `SETTLE` before it is filed, so the words its own message
-    /// ends with reach the chat first.
+    /// A call of the main conversation waits for the transcript to record it, since
+    /// `PreToolUse` names no message and fires ahead of the last deltas of the words that
+    /// introduce the call and of the narration above it.
     pub(super) fn calling(&mut self, id: &str, event: &Event) {
-        let (Some(tool_use_id), Some(name)) = (&event.tool_use_id, &event.tool_name) else {
+        let (Some(tool_use_id), Some(_)) = (&event.tool_use_id, &event.tool_name) else {
             return;
         };
         if !self.turn(id, event) {
             return;
         }
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        let transcribed = session.transcript.is_some();
+        let Some(turn) = session.turn.as_mut() else {
+            return;
+        };
+        if turn.holding(tool_use_id).is_some() {
+            return;
+        }
+        if transcribed && event.agent_id.is_none() {
+            turn.announced.push((tool_use_id.clone(), Outcome::Running));
+        } else {
+            turn.waiting.push_back(Waiting::Call(Call::new(
+                tool_use_id.clone(),
+                event.agent_type.clone(),
+                &event.tool(),
+            )));
+        }
+        self.follow(id);
+    }
+
+    /// Brings the turn up to what the transcript recorded, whose text and narration open
+    /// segments and whose calls join the open one, so a turn that talked, worked and
+    /// talked again leaves two messages in the chat, the first of them holding the run.
+    /// What the hooks reported ahead of the transcript joins after that once the
+    /// transcript has caught up with it.
+    pub(super) fn follow(&mut self, id: &str) {
+        let Some(session) = self.sessions.get_mut(id) else {
+            return;
+        };
+        if session.turn.is_none() {
+            return;
+        }
+        let transcribed = session.transcript.is_some();
+        let blocks = session
+            .transcript
+            .as_mut()
+            .map(Transcript::recorded)
+            .unwrap_or_default();
+        for block in blocks {
+            self.record(id, block);
+        }
+        while let Some(waiting) = self
+            .turn_mut(id)
+            .filter(|turn| turn.caught_up(transcribed))
+            .and_then(|turn| turn.waiting.pop_front())
+        {
+            match waiting {
+                Waiting::Words(words) => self.begin(id, words),
+                Waiting::Call(call) => self.file(id, call),
+            }
+        }
+    }
+
+    fn record(&mut self, id: &str, block: Block) {
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
-        turn.pending.push((
-            Instant::now(),
-            Call {
-                id: tool_use_id.clone(),
-                agent: event.agent_type.clone(),
-                name: name.clone(),
-                description: event.description(),
-                subject: event.subject(),
-                arguments: event
-                    .arguments()
-                    .map(|arguments| hook::head(&arguments, usize::MAX, ARGUMENTS_MAX)),
-                outcome: Outcome::Running,
-            },
-        ));
+        match block {
+            Block::Text(text) => {
+                if let Some(segment) = turn.segment.as_mut()
+                    && let Some(words) = segment.said.as_mut()
+                    && words.recorded_as(&text)
+                {
+                    *words = Words::Recorded {
+                        stream: words.stream().map(str::to_owned),
+                        text,
+                    };
+                    segment.heard = Instant::now();
+                    return;
+                }
+                let stream = turn
+                    .waiting
+                    .iter()
+                    .position(|waiting| {
+                        matches!(waiting, Waiting::Words(words) if words.recorded_as(&text))
+                    })
+                    .and_then(|at| turn.waiting.remove(at))
+                    .and_then(|waiting| match waiting {
+                        Waiting::Words(words) => words.stream().map(str::to_owned),
+                        Waiting::Call(_) => None,
+                    });
+                self.begin(id, Words::Recorded { stream, text });
+            }
+            Block::Narration(text) => self.begin(id, Words::Narration(text)),
+            Block::Call {
+                id: call,
+                name,
+                input,
+            } => {
+                let outcome = turn
+                    .announced
+                    .iter()
+                    .position(|(announced, _)| *announced == call)
+                    .map(|at| turn.announced.remove(at).1);
+                let mut call = Call::new(
+                    call,
+                    None,
+                    &Tool {
+                        name: &name,
+                        input: &input,
+                    },
+                );
+                if let Some(outcome) = outcome {
+                    call.outcome = outcome;
+                }
+                self.file(id, call);
+            }
+        }
     }
 
-    /// Files the calls that have waited long enough. They join the open segment, under
-    /// the words that introduce them, so a turn that talked, worked and talked again
-    /// leaves two messages in the chat, the first of them holding the run. Narration
-    /// fires no hook, so the transcript is read for the narration above each call, which
-    /// opens a segment as the words of an assistant message do.
-    pub(super) fn place(&mut self, id: &str) {
-        while let Some(call) = self.turn_mut(id).and_then(|turn| {
-            turn.pending
-                .first()
-                .is_some_and(|(at, _)| at.elapsed() >= SETTLE)
-                .then(|| turn.pending.remove(0).1)
-        }) {
-            let narration = self
-                .sessions
-                .get_mut(id)
-                .and_then(|session| session.transcript.as_mut())
-                .and_then(|transcript| transcript.narration(&call.id));
-            if let Some(narration) = narration {
-                self.heard(id, &call.id, 0, narration);
-            }
-            if let Some(turn) = self.turn_mut(id) {
-                turn.segment
-                    .get_or_insert_with(Segment::new)
-                    .calls
-                    .push(call);
-            }
-            self.part(id);
+    /// The open segment is complete, and `words` open the next.
+    fn begin(&mut self, id: &str, words: Words) {
+        self.seal(id);
+        if let Some(turn) = self.turn_mut(id) {
+            turn.segment = Some(Segment::saying(words));
         }
+    }
+
+    /// A call joins the run of the open segment.
+    fn file(&mut self, id: &str, call: Call) {
+        if let Some(turn) = self.turn_mut(id) {
+            turn.segment
+                .get_or_insert_with(Segment::new)
+                .calls
+                .push(call);
+        }
+        self.part(id);
     }
 
     /// How a call went, which reaches the run it belongs to, and the message that run
@@ -595,7 +767,7 @@ impl Machine {
         };
         let took = Duration::from_millis(event.duration_ms.unwrap_or_default());
         let printed = |text: &str| {
-            if event.mcp() {
+            if event.tool().mcp() {
                 hook::head(text, usize::MAX, RESULT_MAX)
             } else {
                 hook::head(text, hook::OUTPUT_LINES, hook::OUTPUT_MAX)
@@ -612,12 +784,19 @@ impl Machine {
         let Some(turn) = self.turn_mut(id) else {
             return;
         };
-        // A tool this quick reports before its call has been filed.
-        if let Some((_, call)) = turn
-            .pending
+        // A tool this quick reports before its call has taken its place.
+        if let Some((_, announced)) = turn
+            .announced
             .iter_mut()
-            .find(|(_, call)| call.id == tool_use_id)
+            .find(|(announced, _)| announced == tool_use_id)
         {
+            *announced = outcome;
+            return;
+        }
+        if let Some(call) = turn.waiting.iter_mut().find_map(|waiting| match waiting {
+            Waiting::Call(call) if call.id == tool_use_id => Some(call),
+            _ => None,
+        }) {
             call.outcome = outcome;
             return;
         }
@@ -675,10 +854,8 @@ impl Machine {
         turn.sealed.push(segment);
     }
 
-    /// A message the daemon has posted, rewritten with what reached its segment
-    /// afterwards. A message's last flushes race the hook of the tool call that ends
-    /// it, and a tool reports after the run it belongs to has been left behind, so both
-    /// land on a segment the chat already has.
+    /// A message the daemon has posted, rewritten with the outcome of a call that
+    /// reported after the turn left its run behind.
     fn amend(&mut self, id: &str, member: &str) {
         let Some(session) = self.sessions.get(id) else {
             return;
@@ -739,6 +916,7 @@ impl Machine {
         if !self.turn(id, event) {
             return;
         }
+        self.follow(id);
         // A segment holding a run keeps its message, and only an assistant message is
         // what this event repeats.
         if self
@@ -1228,11 +1406,15 @@ mod tests {
 
     #[test]
     fn deltas_arriving_out_of_order_still_read_in_order() {
-        let mut segment = Segment::new();
-        let (_, chunks) = segment.said.insert(("msg_1".to_owned(), BTreeMap::new()));
-        chunks.insert(2, "third".to_owned());
-        chunks.insert(0, "first ".to_owned());
-        chunks.insert(1, "second ".to_owned());
+        let mut segment = Segment::saying(Words::Streamed {
+            stream: "m1".to_owned(),
+            chunks: BTreeMap::new(),
+        });
+        if let Some(Words::Streamed { chunks, .. }) = &mut segment.said {
+            chunks.insert(2, "third".to_owned());
+            chunks.insert(0, "first ".to_owned());
+            chunks.insert(1, "second ".to_owned());
+        }
         assert_eq!(segment.text(true, None), "first second third");
         // The run the words introduce stands under them.
         segment.calls.push(Call {

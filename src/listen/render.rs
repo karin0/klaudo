@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::hook;
+use crate::hook::{self, Tool};
 
 /// How many calls a run lists before the oldest are counted instead.
 const RUN_MAX: usize = 30;
@@ -88,6 +88,21 @@ pub(super) struct Call {
 }
 
 impl Call {
+    /// A call that has yet to say how it went.
+    pub(super) fn new(id: String, agent: Option<String>, tool: &Tool) -> Self {
+        Self {
+            id,
+            agent,
+            name: tool.name.to_owned(),
+            description: tool.description(),
+            subject: tool.subject(),
+            arguments: tool
+                .arguments()
+                .map(|arguments| hook::head(&arguments, usize::MAX, ARGUMENTS_MAX)),
+            outcome: Outcome::Running,
+        }
+    }
+
     /// A mark for how it went, the tool and what it says it is doing, and the time it
     /// took. What it is working on and what it produced go on lines under that,
     /// where the eye finds them and a long command wraps without pushing the time away.

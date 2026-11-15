@@ -158,51 +158,70 @@ fn answer_is_filed(name: &str, answer: &str) {
     drop(daemon);
 }
 
-/// A segment growing past a rich message leaves the live message as it last fitted,
-/// goes as a markdown file once complete, and takes what arrives late into that file.
+/// A segment growing past a rich message leaves the live message as it last fitted and
+/// goes as a markdown file once complete, with the deltas that arrived after its tool
+/// call announced it.
 #[test]
 fn a_segment_past_a_rich_message_is_filed_once_complete() {
     let (temporary, calls, _chat) = prepare("filed");
     let root = temporary.path();
     let daemon = daemon(root);
-    let session = "0123456789abcdef";
+    let transcript = root.join("transcript.jsonl");
     let long = "字".repeat(12_000);
-
-    // A directory outside the group's project posts to the owner's chat, where the
-    // live message is rewritten every three seconds.
-    let turn = [
-        (
-            json!({"hook_event_name": "UserPromptSubmit", "prompt": "write it all"}),
-            0,
-        ),
-        (
-            json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "start"}),
-            3300,
-        ),
-        (
-            json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 1, "delta": long}),
-            3300,
-        ),
-        (
-            json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "next"}),
-            400,
-        ),
-        (
-            json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 2, "delta": "!"}),
-            400,
-        ),
-        (
-            json!({"hook_event_name": "Stop", "last_assistant_message": "next"}),
-            0,
-        ),
-    ];
-    for (mut event, pause) in turn {
-        event["session_id"] = json!(session);
+    let send = |event: serde_json::Value, pause| {
+        let mut event = event;
+        event["session_id"] = json!("0123456789abcdef");
         event["prompt_id"] = json!("fedcba9876543210");
+        // A directory outside the group's project posts to the owner's chat, where the
+        // live message is rewritten every three seconds.
         event["cwd"] = json!(root);
+        event["transcript_path"] = json!(transcript);
         hook(root, &event);
         std::thread::sleep(Duration::from_millis(pause));
-    }
+    };
+
+    send(
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "write it all"}),
+        0,
+    );
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "start"}),
+        3300,
+    );
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 1, "delta": long}),
+        3300,
+    );
+    send(
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+                "tool_input": {"command": "cargo test"}}),
+        0,
+    );
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 2, "delta": "!"}),
+        100,
+    );
+    record(
+        &transcript,
+        &[
+            json!({"type": "text", "text": format!("start{long}!")}),
+            json!({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}),
+        ],
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "next"}),
+        400,
+    );
+    send(
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+                "duration_ms": 30}),
+        400,
+    );
+    send(
+        json!({"hook_event_name": "Stop", "last_assistant_message": "next"}),
+        0,
+    );
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let live = made
@@ -219,57 +238,70 @@ fn a_segment_past_a_rich_message_is_filed_once_complete() {
         .find(|call| call.label == "sendDocument silent")
         .expect("the file");
     let document = file.document.as_deref().expect("the file's text");
-    assert!(document.ends_with(&format!("\n\nstart{long}")));
+    assert!(document.ends_with(&format!("\n\nstart{long}!")));
     assert!(
         made.iter()
             .any(|call| call.label == "deleteMessage" && call.target == Some(live.id)),
         "the file takes the live message's place"
     );
-    let refiled = made
-        .iter()
-        .find(|call| call.label == "editMessageMedia")
-        .expect("the late delta's rewrite");
-    assert_eq!(refiled.target, Some(file.id));
-    assert!(
-        refiled
-            .document
-            .as_deref()
-            .expect("the rewritten file")
-            .ends_with(&format!("start{long}!"))
-    );
-    assert_eq!(refiled.body["media"]["media"], json!("attach://document"));
     drop(daemon);
 }
 
-/// A delta landing late on a segment the chat already has can take it past a rich
-/// message, and the file it then goes as takes the message's place.
+/// A call reporting after the turn moved on can take the message of its run past a rich
+/// message, and the file it then goes as takes the message's place and is rewritten by
+/// the next call reporting late.
 #[test]
-fn a_late_delta_past_a_rich_message_turns_it_into_a_file() {
+fn a_late_outcome_past_a_rich_message_turns_it_into_a_file() {
     let (temporary, calls, _chat) = prepare("outgrown");
     let root = temporary.path();
     let daemon = daemon(root);
-    let session = "0123456789abcdef";
-    let long = "字".repeat(12_000);
-
-    let turn = [
-        json!({"hook_event_name": "UserPromptSubmit", "prompt": "write it all"}),
-        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "start"}),
-        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "next"}),
-        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 1, "delta": long}),
-        json!({"hook_event_name": "Stop", "last_assistant_message": "next"}),
-    ];
-    for mut event in turn {
-        event["session_id"] = json!(session);
+    let transcript = root.join("transcript.jsonl");
+    let words = "x".repeat(31_500);
+    let output = "y".repeat(1_500);
+    let send = |event: serde_json::Value| {
+        let mut event = event;
+        event["session_id"] = json!("0123456789abcdef");
         event["prompt_id"] = json!("fedcba9876543210");
         event["cwd"] = json!(project(root));
+        event["transcript_path"] = json!(transcript);
         hook(root, &event);
         std::thread::sleep(Duration::from_millis(400));
+    };
+    let called =
+        |call: &str| json!({"type": "tool_use", "id": call, "name": "mcp__x__y", "input": {}});
+
+    send(json!({"hook_event_name": "UserPromptSubmit", "prompt": "write it all"}));
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": words}),
+    );
+    for call in ["t1", "t2"] {
+        send(json!({"hook_event_name": "PreToolUse", "tool_use_id": call,
+                    "tool_name": "mcp__x__y", "tool_input": {}}));
     }
+    record(
+        &transcript,
+        &[
+            json!({"type": "text", "text": words}),
+            called("t1"),
+            called("t2"),
+        ],
+    );
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "next"}),
+    );
+    for (call, took) in [("t1", 30), ("t2", 40)] {
+        send(
+            json!({"hook_event_name": "PostToolUse", "tool_use_id": call,
+                    "tool_name": "mcp__x__y", "duration_ms": took,
+                    "tool_response": [{"type": "text", "text": output}]}),
+        );
+    }
+    send(json!({"hook_event_name": "Stop", "last_assistant_message": "next"}));
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let sealed = made
         .iter()
-        .find(|call| call.label == "sendRichMessage silent" && call.markdown.ends_with("start"))
+        .find(|call| call.label == "sendRichMessage silent" && call.markdown.contains(&words))
         .expect("the first segment's message");
     let file = made
         .iter()
@@ -279,13 +311,26 @@ fn a_late_delta_past_a_rich_message_turns_it_into_a_file() {
         file.document
             .as_deref()
             .expect("the file's text")
-            .ends_with(&format!("\n\nstart{long}"))
+            .contains("30ms")
     );
     assert!(
         made.iter()
             .any(|call| call.label == "deleteMessage" && call.target == Some(sealed.id)),
         "the file takes the message's place"
     );
+    let refiled = made
+        .iter()
+        .find(|call| call.label == "editMessageMedia")
+        .expect("the second outcome's rewrite");
+    assert_eq!(refiled.target, Some(file.id));
+    assert!(
+        refiled
+            .document
+            .as_deref()
+            .expect("the rewritten file")
+            .contains("40ms")
+    );
+    assert_eq!(refiled.body["media"]["media"], json!("attach://document"));
     drop(daemon);
 }
 
@@ -733,14 +778,14 @@ fn a_run_of_tool_calls_stands_under_the_words_that_introduce_it() {
 }
 
 /// Narration fires no hook, and Claude Code writes it to the transcript ahead of the tool
-/// call it introduces, so the chat shows it above that call as the words of a message.
+/// call it introduces, about a tenth of a second after `PreToolUse` and at times seconds
+/// after, so the chat shows it above that call as the words of a message.
 #[test]
 fn narration_stands_above_the_tool_call_it_introduces() {
     let (temporary, calls, _chat) = prepare("narration");
     let root = temporary.path();
     let daemon = daemon(root);
     let transcript = root.join("transcript.jsonl");
-    std::fs::write(&transcript, "").expect("the transcript");
     let send = |event: serde_json::Value| {
         let mut event = event;
         event["session_id"] = json!("0123456789abcdef");
@@ -749,24 +794,17 @@ fn narration_stands_above_the_tool_call_it_introduces() {
         hook(root, &event);
         std::thread::sleep(Duration::from_millis(400));
     };
-    let narrate = |text: &str, call: &str| {
-        let block = |content: serde_json::Value| json!({"type": "assistant", "message": {"id": "m", "content": [content]}});
-        let lines = [
-            block(json!({"type": "thinking", "thinking": "", "signature": "r"})),
-            block(json!({"type": "thinking", "thinking": text, "signature": "n"})),
-            block(json!({"type": "tool_use", "id": call, "name": "Read", "input": {}})),
-        ];
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&transcript)
-            .expect("the transcript");
-        for line in lines {
-            writeln!(file, "{line}").expect("a line");
-        }
-    };
-    let read = |call: &str, path: &str| {
+    let read = |call: &str, narration: &str, path: &str| {
         send(json!({"hook_event_name": "PreToolUse", "tool_use_id": call,
                     "tool_name": "Read", "tool_input": {"file_path": path}}));
+        record(
+            &transcript,
+            &[
+                json!({"type": "thinking", "thinking": "", "signature": "r"}),
+                json!({"type": "thinking", "thinking": narration, "signature": "n"}),
+                json!({"type": "tool_use", "id": call, "name": "Read", "input": {"file_path": path}}),
+            ],
+        );
         send(
             json!({"hook_event_name": "PostToolUse", "tool_use_id": call,
                     "tool_name": "Read", "duration_ms": 12,
@@ -775,10 +813,8 @@ fn narration_stands_above_the_tool_call_it_introduces() {
     };
 
     send(json!({"hook_event_name": "UserPromptSubmit", "prompt": "find the bug"}));
-    narrate("I start from `main`.\n\n", "t1");
-    read("t1", "/src/main.rs");
-    narrate("It calls `listen`.", "t2");
-    read("t2", "/src/listen.rs");
+    read("t1", "I start from `main`.\n\n", "/src/main.rs");
+    read("t2", "It calls `listen`.", "/src/listen.rs");
     send(json!({"hook_event_name": "Stop", "last_assistant_message": "found"}));
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
@@ -887,34 +923,42 @@ fn a_run_outgrowing_the_words_it_follows_goes_on_in_its_own_message() {
 
 /// An assistant message's last flush reaches the daemon after the hook of the tool
 /// call that message ends with, so the words introducing a call are announced after it.
-/// They belong above it in the chat all the same.
+/// They belong above it in the chat all the same, as the transcript records them.
 #[test]
 fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     let (temporary, calls, _chat) = prepare("settling");
     let root = temporary.path();
     let daemon = daemon(root);
-    let session = "0123456789abcdef";
-
-    let turn = [
-        json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}),
-        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
-               "tool_input": {"command": "cargo test"}}),
-        // The flush of the message that ends with that call, a few milliseconds behind.
-        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0,
-               "final": true, "delta": "let me check"}),
-        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
-        json!({"hook_event_name": "Stop", "last_assistant_message": "checked"}),
-    ];
-    let last = turn.len() - 1;
-    for (step, mut event) in turn.into_iter().enumerate() {
-        event["session_id"] = json!(session);
+    let transcript = root.join("transcript.jsonl");
+    let send = |event: serde_json::Value| {
+        let mut event = event;
+        event["session_id"] = json!("0123456789abcdef");
         event["cwd"] = json!(project(root));
+        event["transcript_path"] = json!(transcript);
         hook(root, &event);
-        // The call, its words and its outcome arrive together; the turn ends later.
-        if step == last - 1 {
-            std::thread::sleep(Duration::from_millis(600));
-        }
-    }
+    };
+
+    send(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    send(
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+                "tool_input": {"command": "cargo test"}}),
+    );
+    // The flush of the message that ends with that call, a few milliseconds behind.
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0,
+                "delta": "let me check"}),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    record(
+        &transcript,
+        &[
+            json!({"type": "text", "text": "let me check"}),
+            json!({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cargo test"}}),
+        ],
+    );
+    send(json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}));
+    std::thread::sleep(Duration::from_millis(600));
+    send(json!({"hook_event_name": "Stop", "last_assistant_message": "checked"}));
 
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     assert_eq!(
@@ -3826,6 +3870,20 @@ case "$1" in new-*) echo "%$(grep -c '^new-' "$log") $dir/tmux.sock" ;; esac
 
 /// The directory the sessions of a test run in, listed in `CHAT_PROJECTS`, so their
 /// turns go to the group and their heads read `project`.
+/// Appends the blocks of an assistant message to the transcript at `path`, each as an
+/// entry of its own, as Claude Code records them.
+fn record(path: &Path, blocks: &[serde_json::Value]) {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("the transcript");
+    for block in blocks {
+        let entry = json!({"type": "assistant", "message": {"id": "msg", "content": [block]}});
+        writeln!(file, "{entry}").expect("an entry");
+    }
+}
+
 fn project(root: &Path) -> PathBuf {
     root.join("project")
 }

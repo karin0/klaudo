@@ -30,11 +30,16 @@ from a clean transition to a duplicate to a crash. A `date_time` entity would ke
 status line's time current without rewrites, but clients show one inside a rich message
 as its fallback text.
 
-Claude Code fires `MessageDisplay` for the words introducing a tool call about a second
-after that call's `PreToolUse`, and `PreToolUse` names no message, so the hooks leave the
-two unordered. A flush or a tool outcome arriving after its call was filed is written
-into the message its segment became, which is why a turn keeps its segments until it
-ends.
+The hooks leave a turn unordered. `PreToolUse` names no message and can fire ahead of
+the last deltas of the words introducing its call, the message id of `MessageDisplay`
+appears nowhere else, and narration, the text the terminal shows above the tool calls of
+a message, fires no hook. The transcript records the text, narration and tool calls of
+each message in the order the terminal shows them, so the chat follows the transcript.
+A call takes its place once the transcript records it, about a tenth of a second after
+its `PreToolUse` and at times seconds after, and the deltas of a message are paired with
+the text the transcript records by the text they hold. A tool outcome arriving after
+the turn moved past its run is written into the message the run became, which is why a
+turn keeps its segments until it ends.
 
 While a turn runs, the bot shows as typing in the turn's topic, and the chat list shows
 that too, so a topic with a turn running stands out without being opened. A session
