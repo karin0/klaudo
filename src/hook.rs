@@ -153,17 +153,14 @@ impl Event {
             "Read" => response
                 .get("file")
                 .and_then(|file| count(file, "numLines"))
-                .map(|lines| format!("{lines} lines"))
-                .unwrap_or_default(),
+                .map_or_default(|lines| format!("{lines} lines")),
             "Edit" | "MultiEdit" | "Write" => patched(response),
             "Grep" if response.get("mode").and_then(Value::as_str) == Some("content") => {
-                count(response, "numLines")
-                    .map(|lines| format!("{lines} lines"))
-                    .unwrap_or_default()
+                count(response, "numLines").map_or_default(|lines| format!("{lines} lines"))
             }
-            "Grep" | "Glob" => count(response, "numFiles")
-                .map(|files| format!("{files} files"))
-                .unwrap_or_default(),
+            "Grep" | "Glob" => {
+                count(response, "numFiles").map_or_default(|files| format!("{files} files"))
+            }
             _ if response.is_object() => String::new(),
             _ => text(response),
         })

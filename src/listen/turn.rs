@@ -210,10 +210,7 @@ impl Segment {
     /// The words, then the run they introduce, with the calls a reader follows in view
     /// while the segment is `live`.
     fn text(&self, live: bool, links: Option<&Links>) -> String {
-        let words = telegram::rich_markdown(
-            &self.said.as_ref().map(Words::text).unwrap_or_default(),
-            links,
-        );
+        let words = telegram::rich_markdown(&self.said.as_ref().map_or_default(Words::text), links);
         match (words.as_str(), self.calls.as_slice()) {
             (_, []) => words,
             ("", calls) => listing(calls, live),
@@ -666,8 +663,7 @@ impl Machine {
         let blocks = session
             .transcript
             .as_mut()
-            .map(Transcript::recorded)
-            .unwrap_or_default();
+            .map_or_default(Transcript::recorded);
         for block in blocks {
             self.record(id, block);
         }

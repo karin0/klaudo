@@ -634,8 +634,7 @@ pub fn rich_markdown(markdown: &str, links: Option<&Links>) -> String {
         .collect();
     let destinations: Vec<&str> = destinations.iter().map(AsRef::as_ref).collect();
     let mut opened = links
-        .map(|links| links.files(&destinations))
-        .unwrap_or_default()
+        .map_or_default(|links| links.files(&destinations))
         .into_iter();
     let mut written = String::with_capacity(markdown.len());
     let mut copied = 0;

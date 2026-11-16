@@ -999,8 +999,7 @@ impl Machine {
             // through the markdown parser.
             let screen = pane
                 .screen()
-                .map(|screen| format!("\n\n```\n{screen}\n```"))
-                .unwrap_or_default();
+                .map_or_default(|screen| format!("\n\n```\n{screen}\n```"));
             return Err(format!("that terminal no longer holds the session{screen}"));
         }
         Ok(pane)
@@ -1241,7 +1240,7 @@ fn plain(text: &RichText) -> String {
     match text {
         RichText::Plain(text) => text.clone(),
         RichText::Pieces(pieces) => pieces.iter().map(plain).collect(),
-        RichText::Span(span) => span.text.as_deref().map(plain).unwrap_or_default(),
+        RichText::Span(span) => span.text.as_deref().map_or_default(plain),
     }
 }
 

@@ -117,8 +117,7 @@ impl Call {
         let took = self
             .outcome
             .took()
-            .map(|took| format!(" {}", (markup.bold)(&spent(took))))
-            .unwrap_or_default();
+            .map_or_default(|took| format!(" {}", (markup.bold)(&spent(took))));
         let printed = |text: &str| {
             text.lines()
                 .map(|line| (markup.code)(&indented(line)))

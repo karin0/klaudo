@@ -257,7 +257,7 @@ fn gauge(percentage: f64) -> String {
     format!(
         "<code>{}{}{}</code>  ",
         "█".repeat(full),
-        part.map(char::to_string).unwrap_or_default(),
+        part.map_or_default(char::to_string),
         "░".repeat(empty)
     )
 }

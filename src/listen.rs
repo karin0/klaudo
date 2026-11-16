@@ -808,9 +808,7 @@ impl Machine {
         let session = &self.sessions[id];
         let turn = session.turn.as_ref();
         let head = session.head(id, turn.map(|turn| turn.prompt_id.as_str()));
-        let took = turn
-            .map(|turn| took(turn.started.elapsed()))
-            .unwrap_or_default();
+        let took = turn.map_or_default(|turn| took(turn.started.elapsed()));
         let caption = format!("{}{took}", head.html());
         let thread = self.thread(session);
         Ok(Placement {
