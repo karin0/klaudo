@@ -20,6 +20,7 @@ fn price(model: &str) -> Option<Price> {
         _ => model,
     };
     let (input, output, cache_read) = match model {
+        "claude-fable-5-2" | "claude-mythos-5-2" => (8.0, 40.0, 0.2),
         "claude-fable-5-1" | "claude-mythos-5-1" => (10.0, 50.0, 0.25),
         "claude-fable-5" => (10.0, 50.0, 1.0),
         "claude-opus-5-5" => (4.0, 20.0, 0.2),
