@@ -104,12 +104,13 @@ impl Limits {
         ]
     }
 
-    /// The whole percentages and reset times, which the log records whenever they change.
+    /// The percentages as reported and the reset times, which the log records whenever
+    /// they change.
     fn logged(&self) -> String {
         let windows = self.windows().into_iter().filter_map(|(name, limit)| {
             limit.map(|limit| {
                 format!(
-                    "{name} {:.0}% until {}",
+                    "{name} {}% until {}",
                     limit.used_percentage, limit.resets_at
                 )
             })

@@ -4797,9 +4797,10 @@ fn a_turn_ends_with_a_status_line() {
     assert_eq!(
         logged,
         [
-            format!("limits: 5-hour 1% until {five}, 7-day 56% until {seven}"),
+            format!("limits: 5-hour 1% until {five}, 7-day 56.4% until {seven}"),
+            format!("limits: 5-hour 1.2% until {five}, 7-day 56.3% until {seven}"),
             "context aaaaaaaa: 1000000".to_owned(),
-            format!("limits: 5-hour 1% until {five}, 7-day 57% until {seven}"),
+            format!("limits: 5-hour 1.2% until {five}, 7-day 57% until {seven}"),
         ]
     );
 }
