@@ -32,7 +32,8 @@ ordered before the daemon.
 The daemon reads these variables from `$XDG_CONFIG_HOME/klaudo/env`, and a change applies
 after a restart. A switch is on at `1` and off at `0` or
 when absent. A message Klaŭdo ignores is logged with its chat's and sender's ids, so
-`journalctl --user -u klaudo` shows what to write here.
+`journalctl --user -u klaudo` shows what to write here. `RUST_LOG` in the daemon's
+environment filters the log, such as `info,kuriero=trace` to log every polled update.
 
 | Variable | Meaning |
 | --- | --- |
@@ -45,7 +46,6 @@ when absent. A message Klaŭdo ignores is logged with its chat's and sender's id
 | `IDLE_HOURS` | How long a window the daemon opened stays open while its session idles, 6 by default. |
 | `ATTACH_COMMAND` | The program `/attach` runs, with 10 seconds to finish. Without it, `/attach` is left out of the command menu. |
 | `WEB_LISTEN` | The address the review page is served on, such as `127.0.0.1:8080`. |
-| `TRACE_UPDATES` | A switch logging every polled update. |
 
 Whoever can type into a terminal can do as much as its shell, so who `GUEST_IDS` names
 and which projects `CHAT_PROJECTS` lists is the boundary of what a guest can do.

@@ -227,7 +227,7 @@ pub(super) fn serve(listener: TcpListener, telegram: Arc<Telegram>, landed: Send
             let stream = match listener.accept().await {
                 Ok((stream, _)) => stream,
                 Err(error) => {
-                    eprintln!("web accept: {error}");
+                    log::error!("web accept: {error}");
                     continue;
                 }
             };
@@ -245,7 +245,7 @@ pub(super) fn serve(listener: TcpListener, telegram: Arc<Telegram>, landed: Send
                     .await
                     && !error.is_timeout()
                 {
-                    eprintln!("web: {error}");
+                    log::warn!("web: {error}");
                 }
             });
         }
@@ -877,7 +877,7 @@ impl Machine {
             } => answer.send(self.reviewed(visit, prompt)).is_err(),
         };
         if refused {
-            eprintln!("web: the page stopped waiting for its answer");
+            log::info!("web: the page stopped waiting for its answer");
         }
     }
 

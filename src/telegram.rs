@@ -107,8 +107,6 @@ pub struct Telegram {
     projects: Vec<PathBuf>,
     /// The people besides the user answered in `CHAT_ID`, on the sessions of `projects`.
     guests: Vec<i64>,
-    /// Whether each update polled is logged as Telegram sent it.
-    trace: bool,
 }
 
 impl Telegram {
@@ -122,14 +120,12 @@ impl Telegram {
         let guests = setting("GUEST_IDS").map_or_else(Vec::new, |value| guests(chat_id, &value));
         // The test stands a recording server in front of the daemon here.
         let base = setting("API_BASE").unwrap_or_else(|| "https://api.telegram.org".to_owned());
-        let trace = flag("TRACE_UPDATES");
         Self {
             client: Client::new(&base, &token),
             chat_id,
             user_id,
             projects,
             guests,
-            trace,
         }
     }
 
@@ -488,10 +484,7 @@ impl Telegram {
 
     /// One long poll for what the chat has sent since `offset`.
     pub fn updates(&self, offset: i64) -> Option<Vec<Update>> {
-        logged(
-            "getUpdates",
-            self.client.get_updates(offset, POLL_SECONDS, self.trace),
-        )
+        logged("getUpdates", self.client.get_updates(offset, POLL_SECONDS))
     }
 
     /// Saves the file Telegram names `file_id` as `to`.
@@ -511,7 +504,6 @@ impl Telegram {
     }
 }
 
-/// A call that failed on every attempt worth making costs its message alone.
 fn bot_commands<'a>(commands: &[(&'a str, &'a str)]) -> Vec<BotCommand<'a>> {
     commands
         .iter()
@@ -522,9 +514,10 @@ fn bot_commands<'a>(commands: &[(&'a str, &'a str)]) -> Vec<BotCommand<'a>> {
         .collect()
 }
 
+/// A call that failed on every attempt worth making costs its message alone.
 fn logged<R>(method: &str, result: Result<R, kuriero::Error>) -> Option<R> {
     result
-        .inspect_err(|error| eprintln!("{method}: {error}"))
+        .inspect_err(|error| log::error!("{method}: {error}"))
         .ok()
 }
 

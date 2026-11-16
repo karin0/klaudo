@@ -3948,6 +3948,7 @@ fn within(root: &Path, program: &str) -> Command {
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("RUST_LOG")
         .stdin(Stdio::piped());
     command
 }
@@ -4801,7 +4802,7 @@ fn a_turn_ends_with_a_status_line() {
     let log = std::fs::read_to_string(root.join("log.txt")).expect("the log");
     let logged: Vec<&str> = log
         .lines()
-        .filter(|line| line.starts_with("limits: ") || line.starts_with("context "))
+        .filter_map(|line| Some(line.split_once("listen::usage > ")?.1))
         .collect();
     assert_eq!(
         logged,

@@ -52,6 +52,7 @@ enum Command {
 }
 
 fn main() {
+    krr_logger::init!().expect("the only logger");
     match cli().command {
         Some(Command::Listen) => listen::run(),
         Some(Command::Send { files }) => send(&files),

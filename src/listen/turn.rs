@@ -936,7 +936,7 @@ impl Machine {
         let mut answer = hook::message(event, &head, &took(turn.started.elapsed()), links.as_ref());
         let line = turn.start.as_ref().zip(links).and_then(|(start, links)| {
             review(&links, &start.top, &start.head, ".")
-                .inspect_err(|error| eprintln!("changes since {}: {error}", start.head))
+                .inspect_err(|error| log::warn!("changes since {}: {error}", start.head))
                 .ok()
                 .flatten()
         });

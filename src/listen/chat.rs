@@ -256,9 +256,10 @@ impl Machine {
             Ok(None) => "nothing",
             Err(error) => error,
         };
-        eprintln!(
+        log::info!(
             "chat {}/{:?}/{carrier} -> {to} by {by}",
-            place.chat, place.topic
+            place.chat,
+            place.topic
         );
         match addressee {
             Ok(Some(address)) if address == NEW => match replied.and_then(body) {
@@ -370,7 +371,7 @@ impl Machine {
         let admitted = self.telegram.accepts(sender, message);
         if admitted.is_none() {
             // The ids to put in the env file are read from here.
-            eprintln!(
+            log::info!(
                 "ignored: chat {} {:?} from {:?}",
                 message.chat.id,
                 message.chat.title.as_deref().unwrap_or_default(),
@@ -444,7 +445,7 @@ impl Machine {
                     self.telegram.delete(place.chat, menu);
                 }
             }
-            _ => eprintln!("press: {data}"),
+            _ => log::warn!("press: {data}"),
         }
     }
 

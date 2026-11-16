@@ -149,7 +149,7 @@ impl Machine {
                 .as_ref()
                 .is_none_or(|(old, _)| old.logged() != logged)
             {
-                eprintln!("limits: {logged}");
+                log::info!("limits: {logged}");
             }
             self.limits = Some((limits, now));
         }
@@ -163,7 +163,7 @@ impl Machine {
                 .as_ref()
                 .is_none_or(|(old, _)| old.context_window_size != size)
             {
-                eprintln!("context {}: {size}", status.session_id);
+                log::info!("context {}: {size}", status.session_id);
             }
             session.window = Some((window, now));
         }

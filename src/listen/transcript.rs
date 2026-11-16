@@ -242,7 +242,7 @@ fn charge(mut spent: Spent, call: &mut Option<String>, entries: &[Value], since:
         spent = match (spent, billed.cost(model)) {
             (Spent::Unpriced, _) => Spent::Unpriced,
             (_, None) => {
-                eprintln!("no price for {model}");
+                log::warn!("no price for {model}");
                 Spent::Unpriced
             }
             (Spent::Nothing, Some(cost)) => Spent::Dollars(cost),
@@ -285,7 +285,7 @@ pub(super) fn entries(path: &Path, from: u64) -> (Vec<serde_json::Value>, u64) {
     });
     if let Err(error) = read {
         if error.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("{}: {error}", path.display());
+            log::error!("{}: {error}", path.display());
         }
         return (Vec::new(), from);
     }

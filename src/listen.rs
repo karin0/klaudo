@@ -173,7 +173,7 @@ pub fn run() {
     // A list a different version wrote may not parse, and it only saves the sessions
     // from waiting for their next event, so that costs a warning.
     let running: Vec<Running> = load(&running_file).unwrap_or_else(|error| {
-        eprintln!("{}: {error}", running_file.display());
+        log::warn!("{}: {error}", running_file.display());
         Vec::new()
     });
     // The next save would overwrite a record that does not parse.
@@ -239,7 +239,7 @@ fn read(listener: &UnixListener, landed: &Sender<Arrival>) {
         let mut connection = match connection {
             Ok(connection) => connection,
             Err(error) => {
-                eprintln!("accept: {error}");
+                log::error!("accept: {error}");
                 continue;
             }
         };
@@ -248,7 +248,7 @@ fn read(listener: &UnixListener, landed: &Sender<Arrival>) {
             .expect("read timeout");
         let mut request = Vec::new();
         if let Err(error) = connection.read_to_end(&mut request) {
-            eprintln!("arrival: {error}");
+            log::error!("arrival: {error}");
             continue;
         }
         let arrival = match serde_json::from_slice(&request) {
@@ -256,7 +256,7 @@ fn read(listener: &UnixListener, landed: &Sender<Arrival>) {
             Ok(Request::Status { status }) => Arrival::Status(status),
             Ok(Request::Locate { locate }) => Arrival::Locate(locate, connection),
             Err(error) => {
-                eprintln!("unreadable arrival: {error}");
+                log::error!("unreadable arrival: {error}");
                 continue;
             }
         };
@@ -558,7 +558,7 @@ fn store(path: &Path, value: &impl Serialize) {
     let written = path.with_extension("tmp");
     let raw = serde_json::to_vec(value).expect("the state serializes");
     if let Err(error) = fs::write(&written, raw).and_then(|()| fs::rename(&written, path)) {
-        eprintln!("save {}: {error}", path.display());
+        log::error!("save {}: {error}", path.display());
     }
 }
 
@@ -617,7 +617,7 @@ impl Machine {
                 let placement = self.locate(question.session.as_deref(), &question.cwd);
                 let answer = serde_json::to_vec(&placement).expect("a placement serializes");
                 if let Err(error) = asker.write_all(&answer) {
-                    eprintln!("answer {}: {error}", question.cwd.display());
+                    log::warn!("answer {}: {error}", question.cwd.display());
                 }
             }
             Arrival::Press(press) => self.press(&press),
@@ -906,7 +906,7 @@ impl Machine {
                 && !tmux::has_children(session.pid)
                 && let Err(error) = pane.close()
             {
-                eprintln!("close {id}: {error}");
+                log::warn!("close {id}: {error}");
             }
         }
     }
