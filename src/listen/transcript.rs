@@ -275,7 +275,8 @@ fn unix_millis(timestamp: &str) -> Option<u64> {
 }
 
 /// The entries written to the transcript at `path` past byte `from`, and the byte after
-/// the last of them. A line still being written is left for the next read.
+/// the last of them. A line still being written is left for the next read, and a
+/// transcript not written yet holds nothing.
 pub(super) fn entries(path: &Path, from: u64) -> (Vec<serde_json::Value>, u64) {
     let mut appended = Vec::new();
     let read = File::open(path).and_then(|mut file| {
@@ -283,7 +284,9 @@ pub(super) fn entries(path: &Path, from: u64) -> (Vec<serde_json::Value>, u64) {
         file.read_to_end(&mut appended)
     });
     if let Err(error) = read {
-        eprintln!("{}: {error}", path.display());
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("{}: {error}", path.display());
+        }
         return (Vec::new(), from);
     }
     let end = appended
