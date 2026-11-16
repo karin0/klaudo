@@ -975,6 +975,67 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
     drop(daemon);
 }
 
+/// A session started with `--no-session-persistence` writes no transcript, though its
+/// hooks name one, so its words and calls join the turn as the hooks report them.
+#[test]
+fn a_session_writing_no_transcript_shows_its_turn_as_the_hooks_report_it() {
+    turn_unwritten("unwritten", false);
+}
+
+/// Resumed without a fork, such a session names the transcript of the session it resumed,
+/// which it leaves as it was.
+#[test]
+fn a_resumed_session_writing_no_transcript_shows_its_turn_as_the_hooks_report_it() {
+    turn_unwritten("unappended", true);
+}
+
+fn turn_unwritten(name: &str, resumed: bool) {
+    let (temporary, calls, _chat) = prepare(name);
+    let root = temporary.path();
+    let daemon = daemon(root);
+    let transcript = root.join("transcript.jsonl");
+    if resumed {
+        std::fs::write(&transcript, "").expect("the transcript");
+    }
+
+    let turn = [
+        json!({"hook_event_name": "UserPromptSubmit", "prompt": "check it"}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "checking"}),
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+               "tool_input": {"command": "cargo test"}}),
+        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "fine"}),
+        json!({"hook_event_name": "Stop", "last_assistant_message": "fine"}),
+    ];
+    for mut event in turn {
+        event["session_id"] = json!("0123456789abcdef");
+        event["cwd"] = json!(project(root));
+        event["transcript_path"] = json!(transcript);
+        // The hook's parent stands for the session, with the flag on its command line.
+        let mut session = within(root, "sh");
+        session.args([
+            "-c",
+            "\"$0\"; :",
+            env!("CARGO_BIN_EXE_klaudo"),
+            "--no-session-persistence",
+        ]);
+        report(session, &event);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    assert_eq!(
+        holding(&made),
+        [
+            ("silent", ">check it"),
+            ("silent", "checking\n\n● **Bash**  `cargo test` **30ms**"),
+            ("ring", "fine"),
+        ]
+        .map(|(sound, body)| (sound, body.to_owned()))
+    );
+    drop(daemon);
+}
+
 /// The three hook processes run at once, so a delta can land after the `Stop` of its own
 /// turn. Opening a second turn for it would leave a draft beside the answer showing
 /// something else, and carrying the status line under it.

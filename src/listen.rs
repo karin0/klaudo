@@ -724,6 +724,7 @@ impl Machine {
                 .transcript
                 .as_ref()
                 .is_none_or(|transcript| transcript.path != Path::new(path))
+            && transcript::kept(pid)
         {
             session.transcript = Some(Transcript::new(PathBuf::from(path)));
         }

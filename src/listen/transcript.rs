@@ -199,6 +199,17 @@ impl Transcript {
     }
 }
 
+/// Whether the Claude Code process `pid` writes the transcript its hooks name. In print
+/// mode `--no-session-persistence` keeps it from writing any, while its hooks still name
+/// the transcript of a new session, or of the session it resumes.
+pub(super) fn kept(pid: u32) -> bool {
+    !fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+        cmdline
+            .split(|&byte| byte == 0)
+            .any(|argument| argument == b"--no-session-persistence")
+    })
+}
+
 /// The transcripts of the subagents of the session whose transcript is at `path`.
 fn subagents(path: &Path) -> impl Iterator<Item = PathBuf> {
     fs::read_dir(path.with_extension("").join("subagents"))

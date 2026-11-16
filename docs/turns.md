@@ -35,6 +35,9 @@ the last deltas of the words introducing its call, the message id of `MessageDis
 appears nowhere else, and narration, the text the terminal shows above the tool calls of
 a message, fires no hook. The transcript records the text, narration and tool calls of
 each message in the order the terminal shows them, so the chat follows the transcript.
+A session started in print mode with `--no-session-persistence` writes none, though its
+hooks name a new transcript or that of the session it resumes, so the daemon tells it by
+the flag on its command line and shows its turns in the order the hooks report them.
 A call takes its place once the transcript records it, about a tenth of a second after
 its `PreToolUse` and at times seconds after, and the deltas of a message are paired with
 the text the transcript records by the text they hold. A tool outcome arriving after
