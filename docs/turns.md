@@ -117,13 +117,13 @@ rate limit naming a wait past 30 seconds fails the call at once.
 ## Usage figures
 
 `/usage` answers with the plan's limits and the context of the session a message would
-reach, from what the sessions' status lines last reported. Claude Code draws `/usage` as
-a dialog that takes every key until dismissed, which is why the daemon answers it. The
-message showing a running turn and the answer closing it end with the same figures, as
-in `45.6k/1m 99% · $1.23 · 1% 3h30m · 56% 2d14h`, where `99%` is the share of the turn's
-first call that Claude Code's transcript shows read from the prompt cache. Later calls of a
-turn follow within seconds and nearly always hit the cache, while the first one misses it
-once the cache has expired since the turn before.
+reach, from the newest figures the sessions' status lines reported. Claude Code draws
+`/usage` as a dialog that takes every key until dismissed, which is why the daemon answers
+it. The message showing a running turn and the answer closing it end with the same
+figures, as in `45.6k/1m 99% · $1.23 · 1% 3h30m · 56% 2d14h`, where `99%` is the share of
+the turn's first call that Claude Code's transcript shows read from the prompt cache.
+Later calls of a turn follow within seconds and nearly always hit the cache, while the
+first one misses it once the cache has expired since the turn before.
 
 `$1.23` is what the session's calls, its subagents' included, would cost at the API's
 list prices, except the call that compacts the conversation, which the transcript does

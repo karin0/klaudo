@@ -4740,17 +4740,21 @@ fn a_turn_ends_with_a_status_line() {
 
     turn("p1", "done");
     let now = now();
+    let (five, seven) = (now + 3 * 3600 + 29 * 60 + 30, now + 62 * 3600 + 30);
     // A program of its own reports the limits of a session the daemon never heard of.
-    status(
-        root,
-        &json!({
-            "session_id": "bbbbbbbb",
-            "rate_limits": {
-                "five_hour": {"used_percentage": 1, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
-                "seven_day": {"used_percentage": 56.4, "resets_at": now + 62 * 3600 + 30},
-            },
-        }),
-    );
+    let limits = |five_used: f64, five_resets: u64, seven_used: f64| {
+        status(
+            root,
+            &json!({
+                "session_id": "bbbbbbbb",
+                "rate_limits": {
+                    "five_hour": {"used_percentage": five_used, "resets_at": five_resets},
+                    "seven_day": {"used_percentage": seven_used, "resets_at": seven},
+                },
+            }),
+        );
+    };
+    limits(1.0, five, 56.4);
     turn("p2", "done\n\n1% 3h30m · 56% 2d14h");
     status(
         root,
@@ -4767,8 +4771,8 @@ fn a_turn_ends_with_a_status_line() {
                 "used_percentage": 5,
             },
             "rate_limits": {
-                "five_hour": {"used_percentage": 1.2, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
-                "seven_day": {"used_percentage": 56.3, "resets_at": now + 62 * 3600 + 30},
+                "five_hour": {"used_percentage": 1.2, "resets_at": five},
+                "seven_day": {"used_percentage": 56.3, "resets_at": seven},
             },
         }),
     );
@@ -4779,21 +4783,26 @@ fn a_turn_ends_with_a_status_line() {
             "session_id": "aaaaaaaa",
             "context_window": {"context_window_size": 1_000_000},
             "rate_limits": {
-                "five_hour": {"used_percentage": 1.2, "resets_at": now + 3 * 3600 + 29 * 60 + 30},
-                "seven_day": {"used_percentage": 57, "resets_at": now + 62 * 3600 + 30},
+                "five_hour": {"used_percentage": 1.2, "resets_at": five},
+                "seven_day": {"used_percentage": 57, "resets_at": seven},
             },
         }),
     );
     // Limits a later status line leaves out are still the ones reported last.
     status(root, &json!({"session_id": "aaaaaaaa"}));
     turn("p4", "done\n\n1% 3h30m · 57% 2d14h");
+    // An idle session redraws its status line with the limits of its last call.
+    limits(0.8, five, 50.0);
+    limits(90.0, now + 29 * 60 + 30, 50.0);
+    turn("p5", "done\n\n1% 3h30m · 57% 2d14h");
+    limits(0.0, five + 5 * 3600, 8.0);
+    turn("p6", "done\n\n0% 8h30m · 8% 2d14h");
     drop(daemon);
     let log = std::fs::read_to_string(root.join("log.txt")).expect("the log");
     let logged: Vec<&str> = log
         .lines()
         .filter(|line| line.starts_with("limits: ") || line.starts_with("context "))
         .collect();
-    let (five, seven) = (now + 3 * 3600 + 29 * 60 + 30, now + 62 * 3600 + 30);
     assert_eq!(
         logged,
         [
@@ -4801,6 +4810,10 @@ fn a_turn_ends_with_a_status_line() {
             format!("limits: 5-hour 1.2% until {five}, 7-day 56.3% until {seven}"),
             "context aaaaaaaa: 1000000".to_owned(),
             format!("limits: 5-hour 1.2% until {five}, 7-day 57% until {seven}"),
+            format!(
+                "limits: 5-hour 0% until {}, 7-day 8% until {seven}",
+                five + 5 * 3600
+            ),
         ]
     );
 }

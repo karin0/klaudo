@@ -82,7 +82,7 @@ impl Session {
     }
 }
 
-/// The plan's limits, which every session of the account reports alike.
+/// The plan's limits, which every session of the account receives alike with its API calls.
 #[derive(Deserialize)]
 pub(super) struct Limits {
     five_hour: Option<Limit>,
@@ -117,6 +117,19 @@ impl Limits {
         });
         windows.collect::<Vec<_>>().join(", ")
     }
+
+    /// Whether these limits were received before `other`. A session redraws its status line
+    /// with the limits of its own last API call, so an idle session reports an older
+    /// five-hour window, or the current one at a lower percentage.
+    fn precede(&self, other: &Self) -> bool {
+        let at = |limits: &Self| {
+            limits
+                .five_hour
+                .as_ref()
+                .map(|limit| (limit.resets_at, limit.used_percentage))
+        };
+        matches!((at(self), at(other)), (Some(older), Some(newer)) if older < newer)
+    }
 }
 
 impl Machine {
@@ -125,7 +138,11 @@ impl Machine {
     /// the limits nor the size of the context window, so the log does whenever they change.
     pub(super) fn status(&mut self, status: Status) {
         let now = now_millis() / 1000;
-        if let Some(limits) = status.rate_limits {
+        if let Some(limits) = status.rate_limits.filter(|limits| {
+            self.limits
+                .as_ref()
+                .is_none_or(|(held, _)| !limits.precede(held))
+        }) {
             let logged = limits.logged();
             if self
                 .limits
