@@ -8,7 +8,8 @@ The documents under `docs/` record the behavior and design of the code each one 
   `src/telegram.rs`, `src/main.rs` and `src/listen/turn.rs`, `render.rs`,
   `transcript.rs`, `usage.rs` and `price.rs`.
 - [docs/chat.md](docs/chat.md): messages from the chat and the terminals they are typed
-  into, in `src/tmux.rs` and `src/listen/chat.rs` and `attach.rs`.
+  into, in `src/tmux.rs` and `src/listen/chat.rs`, `attach.rs`, `issues.rs` and
+  `program.rs`.
 - [docs/topics.md](docs/topics.md): the topic a session stands in, `/resume` and
   `/rewind`, in `src/listen.rs` and `src/listen/chat.rs` and `rewind.rs`.
 - [docs/review.md](docs/review.md): the review page, in `src/web.rs`, `src/changes.rs`,

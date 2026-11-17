@@ -118,6 +118,21 @@ the `\;` inside single quotes. Both ssh connections need keys without a passphra
 inside tmux as `attach "$TMUX_PANE" "$(tmux display -p '#{socket_path}')"`, the program
 is tried without the chat.
 
+`/issues` runs the program `ISSUES_COMMAND` names in the directory of the session a
+message would reach, since a project may keep its issues somewhere its directory alone
+does not tell. Without an argument the program prints the project's issues, and with one,
+the text after `/issues` with its links and code written back as markdown, it files the
+text as an issue, its first line the title. The daemon posts what the program prints as
+markdown under the session's head, so a reply to the list reaches the session, and a
+Telegram message holds at most 4096 characters, so the program should keep the list
+short. With GitHub's `gh`:
+
+```sh
+#!/bin/sh
+[ $# -eq 0 ] && exec gh issue list --limit 30 --json number,title,url --jq '.[] | "- [#\(.number)](\(.url)) \(.title)"'
+exec gh issue create --title "$(printf '%s\n' "$1" | head -n 1)" --body "$(printf '%s\n' "$1" | tail -n +2)"
+```
+
 ## Slash commands
 
 Of Claude Code's own commands, `/compact`, `/branch`, and `/model`, `/effort` and
@@ -127,9 +142,10 @@ backticks, so Claude reads it as text and invokes a skill it names through its S
 tool, while a mistyped command, or one opening a dialog such as `/model` alone, opens
 nothing in the terminal. A command Claude Code adds later reaches Claude as text until
 the list of Claude Code's commands in `src/listen/chat.rs` includes it. The daemon's own
-commands other than `/new`, `/diff` and `/branch @` take no argument, so one followed by
-text, such as `/resume the design`, goes to a session the same way. The daemon lists
-these commands in the command menu of each person it answers, shown to that person alone.
+commands other than `/new`, `/diff`, `/issues` and `/branch @` take no argument, so one
+followed by text, such as `/resume the design`, goes to a session the same way. The
+daemon lists these commands in the command menu of each person it answers, shown to that
+person alone.
 
 ## Guests
 
@@ -149,7 +165,8 @@ Either with arguments follows the reminder, since instructions to `/compact` wou
 the summary every later turn reads, and `/branch @` is refused to them. Their other slash
 commands follow the reminder, so Claude Code reads them as text, which keeps `/model`,
 `/permissions` and the like out of a guest's reach. `/attach` would hand over the
-terminal itself, so a guest's menu leaves it out and the daemon refuses it to them.
+terminal itself, and `/issues` runs a program with the daemon's own access, so a guest's
+menu leaves them out and the daemon refuses them to guests.
 
 `GUEST_PUSH`, set to `1`, adds to the reminder that Claude may create commits and
 push them for a guest. Telegram gives no email, so Claude asks the guest for the name

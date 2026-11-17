@@ -45,12 +45,13 @@ environment filters the log, such as `info,kuriero=trace` to log every polled up
 | `GUEST_PUSH` | A switch letting Claude commit and push for a guest. |
 | `IDLE_HOURS` | How long a window the daemon opened stays open while its session idles, 6 by default. |
 | `ATTACH_COMMAND` | The program `/attach` runs, with 10 seconds to finish. Without it, `/attach` is left out of the command menu. |
+| `ISSUES_COMMAND` | The program `/issues` runs in the project's directory, with 10 seconds to finish. Without it, `/issues` is left out of the command menu. |
 | `WEB_LISTEN` | The address the review page is served on, such as `127.0.0.1:8080`. |
 
 Whoever can type into a terminal can do as much as its shell, so who `GUEST_IDS` names
 and which projects `CHAT_PROJECTS` lists is the boundary of what a guest can do.
 [docs/chat.md](docs/chat.md) describes what the daemon adds to a guest's prompts, and an
-`ATTACH_COMMAND` for a phone running Termux.
+`ATTACH_COMMAND` for a phone running Termux and an `ISSUES_COMMAND`.
 
 The review page needs a main Mini App, which BotFather sets up, and the daemon stops at
 start without one. Telegram opens a Mini App only over HTTPS, so a reverse proxy forwards
@@ -82,6 +83,7 @@ resumed first. A photo or a file sent in the chat reaches the session as its pat
 | `/rewind` | Copy the conversation up to the end of the turn it replies to. |
 | `/usage` | Show the plan's limits and the conversation's context. |
 | `/diff [directory]` | Link the unpushed changes for review. |
+| `/issues [text]` | List the project's issues, or file the text as one. |
 | `/attach` | Open the conversation's terminal on another device. |
 | `/cancel` | Close the reply box an earlier message keeps opening. |
 

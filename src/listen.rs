@@ -5,7 +5,9 @@
 mod attach;
 mod chat;
 mod diff;
+mod issues;
 mod price;
+mod program;
 mod render;
 mod review;
 mod rewind;
@@ -33,7 +35,8 @@ use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::{self, Pane, Start};
 use crate::web::{self, Links};
 
-use chat::{ATTACH, COMMANDS, tilde};
+use chat::{ATTACH, COMMANDS, ISSUES, tilde};
+use program::Program;
 use render::{code, took};
 use transcript::Transcript;
 use turn::{Ask, Closing, POLL, Thread, Turn};
@@ -145,17 +148,11 @@ pub fn run() {
     let listener = UnixListener::bind(&path).expect("bind");
     let (landed, arrivals) = channel();
     let telegram = Arc::new(Telegram::new());
-    let attach = crate::telegram::setting("ATTACH_COMMAND").map(PathBuf::from);
-    let commands: Vec<_> = COMMANDS
-        .iter()
-        .copied()
-        .filter(|&(command, _)| command != ATTACH || attach.is_some())
-        .collect();
-    let guests: Vec<_> = commands
-        .iter()
-        .copied()
-        .filter(|&(command, _)| command != ATTACH)
-        .collect();
+    let (attach, issues) = (
+        Program::new("ATTACH_COMMAND"),
+        Program::new("ISSUES_COMMAND"),
+    );
+    let (commands, guests) = menus(&attach, &issues);
     let poller = Arc::clone(&telegram);
     let updates = landed.clone();
     std::thread::spawn(move || poll(&poller, &updates, &commands, &guests, started));
@@ -215,6 +212,7 @@ pub fn run() {
         albums: Vec::new(),
         limits: None,
         attach,
+        issues,
         guest_push: crate::telegram::flag("GUEST_PUSH"),
         app,
         topical,
@@ -300,6 +298,29 @@ fn main_app(bot: &User) -> &'static str {
         "WEB_LISTEN is set, but the bot has no main Mini App"
     );
     web::app(bot.username.as_ref().expect("a bot's username")).leak()
+}
+
+/// Each command of a menu with the line it is listed under.
+type Menu = Vec<(&'static str, &'static str)>;
+
+/// The command menus of the user and of each guest. A command running a program is left
+/// out where the program is not set, and from a guest's menu, since a guest is refused it.
+fn menus(attach: &Program, issues: &Program) -> (Menu, Menu) {
+    let commands: Vec<_> = COMMANDS
+        .iter()
+        .copied()
+        .filter(|&(command, _)| match command {
+            ATTACH => attach.is_set(),
+            ISSUES => issues.is_set(),
+            _ => true,
+        })
+        .collect();
+    let guests = commands
+        .iter()
+        .copied()
+        .filter(|&(command, _)| ![ATTACH, ISSUES].contains(&command))
+        .collect();
+    (commands, guests)
 }
 
 /// Reads the chat and queues each update beside the requests, so events from the hooks
@@ -511,7 +532,9 @@ struct Machine {
     /// The limits a status line last reported, and when, in Unix seconds.
     limits: Option<(Limits, u64)>,
     /// The program `/attach` runs to show a pane on another terminal.
-    attach: Option<PathBuf>,
+    attach: Program,
+    /// The program `/issues` runs to list or file the issues of a project.
+    issues: Program,
     /// Whether Claude may create commits and push them for a guest.
     guest_push: bool,
     /// The Mini App link a file link in an answer opens, which lives as long as the
@@ -949,8 +972,9 @@ impl Machine {
             );
             let buttons: Vec<_> = self
                 .attach
-                .iter()
-                .map(|_| ("Attach".to_owned(), format!("{ATTACH} {}", opening.pane.id)))
+                .is_set()
+                .then(|| ("Attach".to_owned(), format!("{ATTACH} {}", opening.pane.id)))
+                .into_iter()
                 .collect();
             self.telegram
                 .buttoned(opening.ask.place(), &text, opening.ask.message(), &buttons);

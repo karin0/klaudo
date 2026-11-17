@@ -3293,6 +3293,83 @@ fn a_terminal_is_attached_by_the_program_the_env_file_names() {
     drop(daemon);
 }
 
+/// `/issues` runs `ISSUES_COMMAND` in the directory of the session a message would reach,
+/// with the text after it, its links and code kept, as its one argument, and posts what
+/// the program prints under the session's head.
+#[test]
+fn issues_are_listed_or_filed_by_the_program_the_env_file_names() {
+    let (temporary, calls, chat) = prepare("issues");
+    let root = temporary.path();
+    let ran = root.join("ran");
+    let program = root.join("issues");
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\nprintf '%s %s [%s]\\n' \"$(pwd -P)\" $# \"$*\" >> {}\n\
+             [ $# -eq 0 ] && exec echo '- #1 first'\necho filed\n",
+            ran.display()
+        ),
+    )
+    .expect("a program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("an executable program");
+    let mut env = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("config/klaudo/env"))
+        .expect("credentials");
+    writeln!(env, "ISSUES_COMMAND={}", program.display()).expect("the program");
+    let daemon = daemon(root);
+    // A guest is refused the issues, so their menu leaves `/issues` out.
+    let listing: Vec<_> = chat
+        .menus()
+        .iter()
+        .map(|menu| {
+            let listed = menu["commands"]
+                .to_string()
+                .contains(r#""command":"issues""#);
+            (menu["scope"]["user_id"].as_i64(), listed)
+        })
+        .collect();
+    assert_eq!(
+        listing,
+        [(None, true), (Some(OWNER), true), (Some(GUEST), false)]
+    );
+
+    hook(
+        root,
+        &json!({"hook_event_name": "SessionStart", "session_id": "fedcba9876543210",
+            "cwd": project(root)}),
+    );
+    let said = |text: &str, entities: serde_json::Value| {
+        chat.push(
+            json!({"chat": {"id": OWNER}, "from": person(OWNER), "text": text,
+            "entities": entities,
+            "reply_to_message": delivered(from_session("fedcba98"), OWNER)}),
+        );
+        let made = collect(&calls, |call| call.label == "sendRichMessage silent");
+        let said = made.last().expect("the answer");
+        assert_eq!(said.reply["message_id"], 9000);
+        said.markdown.clone()
+    };
+    assert_eq!(
+        said("/issues", json!([])),
+        "**project** `fedcba98`\n\n- #1 first"
+    );
+    assert_eq!(
+        said(
+            "/issues fix a\nin b",
+            json!([{"type": "code", "offset": 17, "length": 1}])
+        ),
+        "**project** `fedcba98`\n\nfiled"
+    );
+    let dir = project(root).canonicalize().expect("the project");
+    assert_eq!(
+        std::fs::read_to_string(&ran).expect("the program ran"),
+        format!("{0} 0 []\n{0} 1 [fix a\nin `b`]\n", dir.display())
+    );
+    drop(daemon);
+}
+
 /// A session in a window the daemon opened, unheard from for longer than `IDLE_HOURS`,
 /// has its window closed, unless a command it started is still running.
 #[test]
@@ -3818,6 +3895,7 @@ fn a_guest_is_refused_the_projects_outside_the_group() {
         &from_session("01234567"),
     );
     chat.replies(GROUP, GUEST, "/attach", &from_session("01234567"));
+    chat.replies(GROUP, GUEST, "/issues", &from_session("01234567"));
     chat.says(GROUP, GUEST, &format!("/new {}", project(root).display()));
     let made = collect(&calls, |call| {
         call.body["reply_markup"]["force_reply"] == true
@@ -3842,6 +3920,7 @@ fn a_guest_is_refused_the_projects_outside_the_group() {
                 Some(GROUP),
                 "a guest cannot attach to a terminal".to_owned()
             ),
+            (Some(GROUP), "a guest cannot list or file issues".to_owned()),
             (
                 Some(GROUP),
                 format!("**project** `new`\n\n{}", project(root).display())

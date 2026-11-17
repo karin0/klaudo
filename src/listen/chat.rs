@@ -10,10 +10,10 @@ use crate::hook;
 use crate::telegram::{Admitted, Place, Sound};
 use crate::tmux::{self, Pane, Start};
 
-use super::attach;
 use super::render::code;
 use super::turn::{Ask, Thread, take_typed};
 use super::{Awaiting, Last, Machine, Opening, Own, STALL, Session, Trail, now_millis};
+use super::{attach, issues};
 
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
@@ -26,6 +26,7 @@ const SPLIT: &str = "split";
 /// Claude Code's own command, which the daemon types into the terminal like any prompt.
 pub(super) const BRANCH: &str = "branch";
 pub(super) const ATTACH: &str = "attach";
+pub(super) const ISSUES: &str = "issues";
 const STOP: &str = "stop";
 const REWIND: &str = "rewind";
 
@@ -70,6 +71,10 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     (
         DIFF,
         "Link the unpushed changes of a directory, or of the conversation it replies to",
+    ),
+    (
+        ISSUES,
+        "List the issues of the project of the conversation it replies to, or file the text after it as one",
     ),
     (
         ATTACH,
@@ -152,18 +157,18 @@ impl Machine {
     }
 
     /// Carries out `text` where it is one of the daemon's own commands, which reach no
-    /// session, and says whether it was one. Only `/new`, `/diff` and `/branch @` take an
-    /// argument, so another command followed by text is a prompt that mentions it, and
-    /// `/branch` otherwise goes to Claude Code.
+    /// session, and says whether it was one. Only `/new`, `/diff`, `/issues` and
+    /// `/branch @` take an argument, so another command followed by text is a prompt that
+    /// mentions it, and `/branch` otherwise goes to Claude Code.
     fn commanded(
         &mut self,
         from: &Admitted,
-        text: &str,
+        text: &Written,
         carrier: i64,
         replied: Option<&Message>,
     ) -> bool {
         let place = from.place;
-        match command(text) {
+        match command(&text.shown) {
             Some((NEW, "")) => {
                 let lead = self.reached(place, replied);
                 if let Some(buttons) = self.choices(place, NEW, lead) {
@@ -208,6 +213,14 @@ impl Machine {
                     "closed the reply box, which Telegram Desktop shows once you switch away and back",
                 );
             }
+            Some((ISSUES, _)) if from.guest.is_some() => {
+                self.say(place, issues::GUEST);
+            }
+            // The issue keeps the links and code of the message.
+            Some((ISSUES, _)) => {
+                let argument = command(&text.marked).map_or("", |(_, argument)| argument);
+                self.issues(place, carrier, replied, argument);
+            }
             Some((ATTACH, "")) if from.guest.is_some() => {
                 self.say(place, attach::GUEST);
             }
@@ -239,7 +252,7 @@ impl Machine {
         }
         let carrier = message.id;
         let replied = message.replied.as_deref();
-        if files.is_empty() && self.commanded(&from, &text.shown, carrier, replied) {
+        if files.is_empty() && self.commanded(&from, &text, carrier, replied) {
             return;
         }
         let ask = Ask {
