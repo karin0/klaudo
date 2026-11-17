@@ -311,10 +311,11 @@ fn until(left: Duration, gap: &str) -> String {
     }
 }
 
-/// The figures under the answer that closes a turn. The first line is how much of each
-/// limit is used and how long until it resets. The second is how full the session's context
-/// is and how much of the turn's first call hit the cache, what the session has cost at
-/// list prices since the daemon heard of it, and its model and effort.
+/// The figures under the answer that closes a turn, each line a code span, whose
+/// monospace font a phone wraps past about 37 characters. The first line is what the
+/// session has cost at list prices since the daemon heard of it, and how much of each
+/// limit is used and how long until it resets. The second is how full the session's context is
+/// and how much of the turn's first call hit the cache, and its model and effort.
 pub(super) fn status_line(
     model: Option<&str>,
     context: Option<Context<'_>>,
@@ -347,16 +348,15 @@ pub(super) fn status_line(
             format!("{:.0}% {}", limit.used_percentage, until(left, ""))
         });
     let spent = spent.map(|dollars| format!("${dollars:.2}"));
-    let limits: Vec<String> = limits.collect();
+    let plan: Vec<String> = spent.into_iter().chain(limits).collect();
     let session: Vec<String> = context
         .into_iter()
-        .chain(spent)
         .chain(model.map(str::to_owned))
         .collect();
-    let lines: Vec<String> = [limits, session]
+    let lines: Vec<String> = [plan, session]
         .into_iter()
         .filter(|figures| !figures.is_empty())
-        .map(|figures| figures.join(" · "))
+        .map(|figures| format!("`{}`", figures.join(" · ")))
         .collect();
     // The rich markdown dialect breaks a line at a backslash before the newline.
     (!lines.is_empty()).then(|| lines.join("\\\n"))

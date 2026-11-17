@@ -125,15 +125,19 @@ rate limit naming a wait past 30 seconds fails the call at once.
 reach, from the newest figures the sessions' status lines reported. Claude Code draws
 `/usage` as a dialog that takes every key until dismissed, which is why the daemon answers
 it. The message showing a running turn and the answer closing it end with the same
-figures on two lines:
+figures on two lines, each a code span:
 
 ```
-1% 3h30m · 56% 2d14h
-45.6k/1m 99% · $1.23 · Opus 5.5 high
+$1.23 · 1% 3h30m · 56% 2d14h
+45.6k/1m 99% · Opus 5.5 high
 ```
 
-The first line is the plan's limits. The second is the session's context, its cost, and
-its model and effort, which a `/model` or `/effort` sent in the chat changes. `99%` is
+The first line is the session's cost and the plan's limits. The second is the session's
+context, and its model and effort, which a `/model` or `/effort` sent in the chat
+changes. A phone wraps a code span past about 37 characters, which is why the cost stands
+beside the limits, and Telegram draws every space outside a code span at one width, so
+the monospace font is what keeps the ` · ` between the figures wide enough to tell them
+apart. `99%` is
 the share of the turn's first call that Claude Code's transcript shows read from the
 prompt cache.
 Later calls of a turn follow within seconds and nearly always hit the cache, while the

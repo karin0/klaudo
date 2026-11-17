@@ -529,10 +529,10 @@ fn a_running_turn_shows_the_status_line_figures() {
             },
         }),
     );
-    let made = collect(&calls, |call| call.markdown.ends_with("45.6k/1m"));
+    let made = collect(&calls, |call| call.markdown.ends_with("`45.6k/1m`"));
     let live = &made.last().expect("a live message").markdown;
     let shown = live
-        .strip_suffix("\n\n45.6k/1m")
+        .strip_suffix("\n\n`45.6k/1m`")
         .expect("the figures under the status line");
     showing(shown, "");
     drop(daemon);
@@ -5090,7 +5090,7 @@ fn a_turn_ends_with_a_status_line() {
         );
     };
     limits(1.0, five, 56.4);
-    turn("p2", "done\n\n1% 3h30m · 56% 2d14h");
+    turn("p2", "done\n\n`1% 3h30m · 56% 2d14h`");
     status(
         root,
         &json!({
@@ -5111,7 +5111,7 @@ fn a_turn_ends_with_a_status_line() {
             },
         }),
     );
-    turn("p3", "done\n\n1% 3h30m · 56% 2d14h\\\n45.6k/1m");
+    turn("p3", "done\n\n`1% 3h30m · 56% 2d14h`\\\n`45.6k/1m`");
     status(
         root,
         &json!({
@@ -5125,13 +5125,13 @@ fn a_turn_ends_with_a_status_line() {
     );
     // Limits a later status line leaves out are still the ones reported last.
     status(root, &json!({"session_id": "aaaaaaaa"}));
-    turn("p4", "done\n\n1% 3h30m · 57% 2d14h");
+    turn("p4", "done\n\n`1% 3h30m · 57% 2d14h`");
     // An idle session redraws its status line with the limits of its last call.
     limits(0.8, five, 50.0);
     limits(90.0, now + 29 * 60 + 30, 50.0);
-    turn("p5", "done\n\n1% 3h30m · 57% 2d14h");
+    turn("p5", "done\n\n`1% 3h30m · 57% 2d14h`");
     limits(0.0, five + 5 * 3600, 8.0);
-    turn("p6", "done\n\n0% 8h30m · 8% 2d14h");
+    turn("p6", "done\n\n`0% 8h30m · 8% 2d14h`");
     drop(daemon);
     let log = std::fs::read_to_string(root.join("log.txt")).expect("the log");
     let logged: Vec<&str> = log
@@ -5153,7 +5153,7 @@ fn a_turn_ends_with_a_status_line() {
     );
 }
 
-/// The figures open with the model and the effort the session's status line last
+/// The figures end with the model and the effort the session's status line last
 /// reported. A model that takes no effort reports none.
 #[test]
 fn a_turn_ends_with_the_model_and_effort_of_its_session() {
@@ -5176,12 +5176,12 @@ fn a_turn_ends_with_the_model_and_effort_of_its_session() {
                     "used_percentage": 5,
                 },
             }),
-            "done\n\n45.6k/1m · Opus 5.5 high",
+            "done\n\n`45.6k/1m · Opus 5.5 high`",
         ),
         (
             "p2",
             json!({"model": {"display_name": "Haiku 4.5"}}),
-            "done\n\n45.6k/1m · Haiku 4.5",
+            "done\n\n`45.6k/1m · Haiku 4.5`",
         ),
     ] {
         let mut prompted = json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"});
@@ -5260,7 +5260,10 @@ fn a_session_without_a_status_line_counts_its_context_from_its_transcript() {
     .expect("the end of the turn");
     let made = collect(&calls, |call| call.label == "sendRichMessage ring");
     let answer = &made.last().expect("the answer").markdown;
-    assert!(answer.ends_with("done\n\n167.1k 99% · $0.04"), "{answer}");
+    assert!(
+        answer.ends_with("done\n\n`$0.04`\\\n`167.1k 99%`"),
+        "{answer}"
+    );
 
     chat.says(OWNER, OWNER, "/usage");
     let made = collect(&calls, |call| call.label == "sendMessage");
@@ -5334,7 +5337,10 @@ fn an_answer_goes_up_without_the_end_of_its_turn_in_time() {
         ),
     );
     let answer = answered();
-    assert!(answer.ends_with("done\n\n999.1k 99% · $0.21"), "{answer}");
+    assert!(
+        answer.ends_with("done\n\n`$0.21`\\\n`999.1k 99%`"),
+        "{answer}"
+    );
     assert!(
         stopped.elapsed() < Duration::from_secs(1),
         "{:?}",
@@ -5343,7 +5349,7 @@ fn an_answer_goes_up_without_the_end_of_its_turn_in_time() {
 
     let stopped = stop("p2");
     let answer = answered();
-    assert!(answer.ends_with("done\n\n999.1k · $0.21"), "{answer}");
+    assert!(answer.ends_with("done\n\n`$0.21`\\\n`999.1k`"), "{answer}");
     assert!(
         stopped.elapsed() >= Duration::from_secs(2),
         "{:?}",
