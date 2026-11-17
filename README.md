@@ -103,9 +103,10 @@ describes.
 While a session waits on a dialog in the terminal, such as a permission prompt, a
 message to it is refused. `/attach` and `/stop` reach the dialog.
 
-A session that opens a directory for the first time stops at the trust dialog and
-reports what it shows to the chat. Answer it once locally and the directory stays
-trusted.
+A session that opens a directory for the first time stops at the trust dialog. A window
+whose session has not started 5 seconds after it opened shows its screen in the chat,
+with a button that opens it on another device as `/attach` does. Answer the dialog once
+and the directory stays trusted.
 
 In a group, the bot receives messages that are not replies to it only once privacy mode
 is off in BotFather's `/setprivacy` or the bot is an admin, and it opens topics only with

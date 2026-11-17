@@ -93,6 +93,11 @@ for the dialogs a reply cannot answer, such as the `/rewind` picker. It runs the
 `ATTACH_COMMAND` names with the session's tmux pane and the socket of its tmux server as
 its two arguments, and marks the message with 👀 once the program succeeds. A session
 that has exited is resumed in a window first, which the terminal then shows starting.
+A window the daemon opened has no session to reach until its `SessionStart`, which
+Claude Code reports only after dialogs such as the one asking whether a folder is
+trusted. So a window whose session has not started 5 seconds after it opened, well past
+the second Claude Code takes to start, shows its screen once to the place that asked for
+it, with an `Attach` button that runs the same program with the window's pane.
 For a phone running Termux whose `sshd` this machine reaches as `phone`, and which
 reaches this machine as `pc`, the program asks Termux to open a session running ssh back:
 

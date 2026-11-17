@@ -43,6 +43,10 @@ use usage::{Limits, Status, Window};
 /// A session that exits on its own says so, and a message from the chat checks every
 /// session before it is routed.
 const SWEEP: Duration = Duration::from_secs(5);
+/// How long a window the daemon opened may go without its session starting before the
+/// chat is shown its screen, which may be a dialog only a terminal can answer. Claude
+/// Code is ready for input within a second.
+const STALL: Duration = Duration::from_secs(5);
 /// How many hours a session in a window the daemon opened goes unheard from between
 /// turns before the window is closed, which frees its memory and leaves a reply to resume
 /// it, unless `IDLE_HOURS` says otherwise. A background subagent reports nothing until it
@@ -580,6 +584,8 @@ struct Opening {
     start: Start,
     pane: Pane,
     ask: Awaiting,
+    /// When the chat is shown the window, unless its session has started by then.
+    stalls: Option<Instant>,
 }
 
 /// The messages of an album that have arrived, which wait until `due` for the next.
@@ -605,6 +611,15 @@ impl Awaiting {
             Self::Prompt(ask) => ask.place,
             Self::Terminal(place) => *place,
             Self::Branch(thread) => thread.place,
+        }
+    }
+
+    /// The message that asked, which a word about the window replies to.
+    fn message(&self) -> Option<i64> {
+        match self {
+            Self::Prompt(ask) => Some(ask.message),
+            Self::Terminal(_) => None,
+            Self::Branch(thread) => thread.prompt,
         }
     }
 }
@@ -836,7 +851,8 @@ impl Machine {
     /// The next moment `tick` has work: a tool call settling, a message falling due, a
     /// turn due to show its session typing or sent Escape and not seen stopping, an answer
     /// waiting for its transcript, a session idle long enough to close, or the sweep for a
-    /// session killed mid-turn or a window closed before its session started. With none, only an arrival wakes it.
+    /// session killed mid-turn or a window closed before its session started, or a window
+    /// whose session is late to start. With none, only an arrival wakes it.
     fn due(&self) -> Option<Instant> {
         let now = now_millis();
         let idle = self.sessions.values().filter_map(|session| {
@@ -870,6 +886,7 @@ impl Machine {
                     .map(|_| Instant::now() + POLL),
             )
             .chain(self.albums.iter().map(|album| album.due))
+            .chain(self.opening.iter().filter_map(|opening| opening.stalls))
             .min()
     }
 
@@ -877,6 +894,7 @@ impl Machine {
         if self.swept.elapsed() >= SWEEP {
             self.sweep();
         }
+        self.stalled();
         let now = Instant::now();
         let (complete, arriving): (Vec<_>, _) = std::mem::take(&mut self.albums)
             .into_iter()
@@ -912,6 +930,30 @@ impl Machine {
             {
                 log::warn!("close {id}: {error}");
             }
+        }
+    }
+
+    /// Shows the chat the screen of each window whose session is late to start, once,
+    /// with a button that attaches to it where `ATTACH_COMMAND` is set.
+    fn stalled(&mut self) {
+        let now = Instant::now();
+        for opening in &mut self.opening {
+            if opening.stalls.is_none_or(|at| at > now) {
+                continue;
+            }
+            opening.stalls = None;
+            let text = format!(
+                "the window opened in {} has not started its session{}",
+                code(&tilde(&opening.dir)),
+                chat::fenced(&opening.pane)
+            );
+            let buttons: Vec<_> = self
+                .attach
+                .iter()
+                .map(|_| ("Attach".to_owned(), format!("{ATTACH} {}", opening.pane.id)))
+                .collect();
+            self.telegram
+                .buttoned(opening.ask.place(), &text, opening.ask.message(), &buttons);
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kuriero::{CallbackQuery, Entity, Message, RichText, User};
 
@@ -10,9 +10,10 @@ use crate::hook;
 use crate::telegram::{Admitted, Place, Sound};
 use crate::tmux::{self, Pane, Start};
 
+use super::attach;
 use super::render::code;
 use super::turn::{Ask, Thread, take_typed};
-use super::{Awaiting, Last, Machine, Opening, Own, Session, Trail, now_millis};
+use super::{Awaiting, Last, Machine, Opening, Own, STALL, Session, Trail, now_millis};
 
 /// What a message from the chat addresses when it opens a conversation rather than
 /// continuing one.
@@ -208,7 +209,7 @@ impl Machine {
                 );
             }
             Some((ATTACH, "")) if from.guest.is_some() => {
-                self.say(place, "a guest cannot attach to a terminal");
+                self.say(place, attach::GUEST);
             }
             Some((ATTACH, "")) => {
                 self.attach(place, carrier, replied);
@@ -437,6 +438,7 @@ impl Machine {
                 }
             }
             Some((FORK, id)) => self.fork(&from, press.from.id, message, id),
+            Some((ATTACH, pane)) => self.attach_window(&from, pane),
             Some((SESSION, id)) => {
                 if let Some(anchor) = self.resumption(&from, id) {
                     self.summon(
@@ -929,6 +931,7 @@ impl Machine {
             .iter()
             .find(|opening| matches!(start, Start::Resume(_)) && opening.start == start)
             .map(|opening| opening.pane.clone());
+        let stalls = resuming.is_none().then(|| Instant::now() + STALL);
         let pane = resuming
             .map_or_else(|| tmux::open(&dir, &start), Ok)
             .map_err(|error| format!("tmux: {}", hook::prose(&error)))?;
@@ -937,6 +940,7 @@ impl Machine {
             start,
             pane: pane.clone(),
             ask,
+            stalls,
         });
         Ok(pane)
     }
@@ -1067,15 +1071,20 @@ impl Machine {
             });
         };
         if !pane.holds(session.pid) {
-            // A terminal draws whatever it likes, so it goes in a fence rather than
-            // through the markdown parser.
-            let screen = pane
-                .screen()
-                .map_or_default(|screen| format!("\n\n```\n{screen}\n```"));
-            return Err(format!("that terminal no longer holds the session{screen}"));
+            return Err(format!(
+                "that terminal no longer holds the session{}",
+                fenced(&pane)
+            ));
         }
         Ok(pane)
     }
+}
+
+/// What `pane` shows, as the end of a message about it. A terminal draws whatever it
+/// likes, so it goes in a fence rather than through the markdown parser.
+pub(super) fn fenced(pane: &Pane) -> String {
+    pane.screen()
+        .map_or_default(|screen| format!("\n\n```\n{screen}\n```"))
 }
 
 /// `text` from `guest` inside `<guest>`, behind a reminder that names the guest and limits

@@ -3127,6 +3127,82 @@ fn a_window_closed_before_its_session_started_is_reported() {
     drop(daemon);
 }
 
+/// A window whose session is late to start shows the chat its screen once, replying to
+/// the message that opened it, with a button that attaches to it while it is open.
+#[test]
+fn a_window_late_to_start_shows_its_screen() {
+    let (temporary, calls, chat) = prepare("stalled");
+    let root = temporary.path();
+    let attached = root.join("attached");
+    let program = root.join("attach");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\necho \"$1 $2\" >> {}\n", attached.display()),
+    )
+    .expect("a program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("an executable program");
+    let mut env = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("config/klaudo/env"))
+        .expect("credentials");
+    writeln!(env, "ATTACH_COMMAND={}", program.display()).expect("the program");
+    std::fs::write(
+        root.join("screen"),
+        " Is this a project you trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n",
+    )
+    .expect("the screen");
+    let daemon = daemon(root);
+
+    for event in ["SessionStart", "SessionEnd"] {
+        hook(
+            root,
+            &json!({
+                "hook_event_name": event,
+                "session_id": "fedcba9876543210",
+                "cwd": root,
+            }),
+        );
+    }
+    let replied = json!({"rich_message": {"blocks": [
+        {"type": "paragraph", "text": [{"type": "code", "text": "fedcba98"}]},
+    ]}});
+    chat.replies(OWNER, OWNER, "pick it up", &replied);
+    let made = collect(&calls, |call| call.markdown.contains("has not started"));
+    let said = made.last().expect("the word about the window");
+    assert_eq!(
+        said.markdown,
+        format!(
+            "the window opened in `{}` has not started its session\n\n```\n \
+             Is this a project you trust?\n ❯ No, exit\n   Yes, I trust this folder\n```",
+            root.display()
+        )
+    );
+    assert_eq!(said.chat, Some(OWNER));
+    assert_eq!(said.reply["message_id"], 9000);
+    assert_eq!(
+        said.body["reply_markup"],
+        json!({"inline_keyboard": [[{"text": "Attach", "callback_data": "attach %1"}]]})
+    );
+
+    chat.presses(OWNER, said, "attach %1");
+    let socket = format!("{}/bin/../tmux.sock", root.display());
+    wait_for(
+        || std::fs::read_to_string(&attached).is_ok_and(|ran| ran == format!("%1 {socket}\n")),
+        "the button attached nothing",
+    );
+
+    std::fs::write(root.join("closed"), "").expect("the window closes");
+    chat.presses(OWNER, said, "attach %1");
+    let made = collect(&calls, |call| call.markdown == "that window has closed");
+    assert!(
+        made.iter()
+            .all(|call| !call.markdown.contains("has not started")),
+        "the window was shown twice"
+    );
+    drop(daemon);
+}
+
 /// `/attach` runs `ATTACH_COMMAND` with the pane of the session a message would reach
 /// and its server's socket as arguments, resuming an exited session in a window first,
 /// and answers a program that fails with its complaint.
@@ -3996,8 +4072,8 @@ fn prepare(name: &str) -> (TempDir, Receiver<Call>, Chat) {
     // A window the daemon opens goes to a `tmux` that records how it was called, so a
     // test never reaches the tmux server of the machine it runs on. Its session exists
     // once a `new-session` has been recorded, every pane is in it and shows the terminal
-    // a `tty` file beside the log names, and its windows stay open until a `closed` file
-    // appears there. What is pasted into a pane is appended to a `typed` file there once the
+    // a `tty` file beside the log names and the text of a `screen` file there, and its
+    // windows stay open until a `closed` file appears there. What is pasted into a pane is appended to a `typed` file there once the
     // Enter after it is pressed, through a rename that replaces the file whole, so a test
     // never reads half a message, and the Enter is logged after that. The last argument of
     // each `new-` call, the window's command, is appended to a `commands` file.
@@ -4011,6 +4087,7 @@ log="$dir/tmux.log"
 [ "$1" = -S ] && shift 2
 case "$1" in
 has-session) grep -q '^new-session' "$log" 2>/dev/null; exit ;;
+capture-pane) cat "$dir/screen" 2>/dev/null; exit ;;
 display-message)
   [ -e "$dir/closed" ] && exit
   case "$*" in
