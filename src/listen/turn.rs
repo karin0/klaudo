@@ -992,8 +992,10 @@ impl Machine {
             return;
         }
         let mut closing = session.closing.take().expect("an answer waiting");
-        let (hit, spent) = (session.hit(), session.spent());
-        if let Some(line) = status_line(session.context(), hit, spent, self.limits.as_ref()) {
+        let (model, hit, spent) = (session.model.clone(), session.hit(), session.spent());
+        let context = session.context();
+        if let Some(line) = status_line(model.as_deref(), context, hit, spent, self.limits.as_ref())
+        {
             closing.answer.markdown = format!("{}\n\n{line}", closing.answer.markdown);
         }
         self.answer(id, &closing);
@@ -1130,8 +1132,10 @@ impl Machine {
         let live = turn.live;
         let thread = turn.thread;
         let mut footer = status(elapsed, turn.seed);
-        let (hit, spent) = (session.hit(), session.spent());
-        if let Some(line) = status_line(session.context(), hit, spent, self.limits.as_ref()) {
+        let (model, hit, spent) = (session.model.clone(), session.hit(), session.spent());
+        let context = session.context();
+        if let Some(line) = status_line(model.as_deref(), context, hit, spent, self.limits.as_ref())
+        {
             footer = format!("{footer}\n\n{line}");
         }
         let mut shown = hook::compose(&head, &took(elapsed), "", &running(&text, &footer));

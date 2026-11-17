@@ -377,6 +377,8 @@ struct Session {
     /// after it has been submitted.
     idle_since: u64,
     trail: Trail,
+    /// The model and the effort its status line last reported, as `Opus 5.5 high`.
+    model: Option<String>,
     /// The context its status line last reported, and when, in Unix seconds.
     window: Option<(Window, u64)>,
     transcript: Option<Transcript>,
@@ -477,6 +479,7 @@ impl Session {
             done: None,
             idle_since,
             trail: Trail::default(),
+            model: None,
             window: None,
             transcript: None,
             closing: None,

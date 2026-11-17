@@ -4862,6 +4862,8 @@ fn usage_is_answered_from_the_status_lines() {
         root,
         &json!({
             "session_id": "bbbbbbbb",
+            "model": {"display_name": "Opus 5.5"},
+            "effort": {"level": "high"},
             "context_window": {
                 "context_window_size": 200_000,
                 "current_usage": null,
@@ -4877,7 +4879,9 @@ fn usage_is_answered_from_the_status_lines() {
     let limits = limits(now);
     assert_eq!(
         ageless(&made),
-        format!("<b>a</b> <code>bbbbbbbb</code>\ncontext: nothing has been sent yet\n{limits}")
+        format!(
+            "<b>a</b> <code>bbbbbbbb</code>\nmodel: Opus 5.5 high\ncontext: nothing has been sent yet\n{limits}"
+        )
     );
     chat.replies(
         OWNER,
@@ -5107,7 +5111,7 @@ fn a_turn_ends_with_a_status_line() {
             },
         }),
     );
-    turn("p3", "done\n\n45.6k/1m · 1% 3h30m · 56% 2d14h");
+    turn("p3", "done\n\n1% 3h30m · 56% 2d14h\\\n45.6k/1m");
     status(
         root,
         &json!({
@@ -5147,6 +5151,55 @@ fn a_turn_ends_with_a_status_line() {
             ),
         ]
     );
+}
+
+/// The figures open with the model and the effort the session's status line last
+/// reported. A model that takes no effort reports none.
+#[test]
+fn a_turn_ends_with_the_model_and_effort_of_its_session() {
+    let (temporary, calls, _chat) = prepare("model");
+    let root = temporary.path();
+    let daemon = daemon(root);
+    for (prompt, reported, line) in [
+        (
+            "p1",
+            json!({
+                "model": {"display_name": "Opus 5.5"},
+                "effort": {"level": "high"},
+                "context_window": {
+                    "context_window_size": 1_000_000,
+                    "current_usage": {
+                        "input_tokens": 45_600,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    },
+                    "used_percentage": 5,
+                },
+            }),
+            "done\n\n45.6k/1m · Opus 5.5 high",
+        ),
+        (
+            "p2",
+            json!({"model": {"display_name": "Haiku 4.5"}}),
+            "done\n\n45.6k/1m · Haiku 4.5",
+        ),
+    ] {
+        let mut prompted = json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"});
+        let mut stopped = json!({"hook_event_name": "Stop", "last_assistant_message": "done"});
+        let mut reported = reported;
+        for event in [&mut prompted, &mut reported, &mut stopped] {
+            event["prompt_id"] = json!(prompt);
+            event["session_id"] = json!("aaaaaaaa");
+            event["cwd"] = json!(root);
+        }
+        hook(root, &prompted);
+        status(root, &reported);
+        hook(root, &stopped);
+        let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+        let answer = &made.last().expect("the answer").markdown;
+        assert!(answer.ends_with(line), "{answer}");
+    }
+    drop(daemon);
 }
 
 /// A session that draws no status line has its context counted from the latest call its

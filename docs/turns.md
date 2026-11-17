@@ -125,8 +125,17 @@ rate limit naming a wait past 30 seconds fails the call at once.
 reach, from the newest figures the sessions' status lines reported. Claude Code draws
 `/usage` as a dialog that takes every key until dismissed, which is why the daemon answers
 it. The message showing a running turn and the answer closing it end with the same
-figures, as in `45.6k/1m 99% · $1.23 · 1% 3h30m · 56% 2d14h`, where `99%` is the share of
-the turn's first call that Claude Code's transcript shows read from the prompt cache.
+figures on two lines:
+
+```
+1% 3h30m · 56% 2d14h
+45.6k/1m 99% · $1.23 · Opus 5.5 high
+```
+
+The first line is the plan's limits. The second is the session's context, its cost, and
+its model and effort, which a `/model` or `/effort` sent in the chat changes. `99%` is
+the share of the turn's first call that Claude Code's transcript shows read from the
+prompt cache.
 Later calls of a turn follow within seconds and nearly always hit the cache, while the
 first one misses it once the cache has expired since the turn before.
 
@@ -139,5 +148,5 @@ Anthropic does not publish how a plan's limits are spent, so the figure only com
 turns and sessions with each other. The prices are written in the code, since the few
 models Claude Code runs change seldom, and a session that called a model missing from
 them shows no cost from then on. A session in the VS Code extension draws no status
-line, so its context shows as the tokens alone, which the transcript records of each
-call.
+line, so its figures leave out the model and show its context as the tokens alone, which
+the transcript records of each call.

@@ -12,13 +12,26 @@ use crate::telegram::Admitted;
 use super::chat::{NEW, ago};
 use super::{Machine, Session, now_millis};
 
-/// What Claude Code hands a session's status line, as `klaudo status` forwards it. Both
-/// parts are absent until the session's first API call returns.
+/// What Claude Code hands a session's status line, as `klaudo status` forwards it. The
+/// context and the limits are absent until the session's first API call returns, and the
+/// effort on a model that takes none.
 #[derive(Deserialize)]
 pub(super) struct Status {
     session_id: String,
+    model: Option<Model>,
+    effort: Option<Effort>,
     context_window: Option<Window>,
     rate_limits: Option<Limits>,
+}
+
+#[derive(Deserialize)]
+struct Model {
+    display_name: String,
+}
+
+#[derive(Deserialize)]
+struct Effort {
+    level: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -153,10 +166,14 @@ impl Machine {
             }
             self.limits = Some((limits, now));
         }
-        if let (Some(window), Some(session)) = (
-            status.context_window,
-            self.sessions.get_mut(&status.session_id),
-        ) {
+        let Some(session) = self.sessions.get_mut(&status.session_id) else {
+            return;
+        };
+        if let Some(model) = status.model {
+            let effort = status.effort.map(|effort| format!(" {}", effort.level));
+            session.model = Some(model.display_name + effort.as_deref().unwrap_or_default());
+        }
+        if let Some(window) = status.context_window {
             let size = window.context_window_size;
             if session
                 .window
@@ -194,6 +211,9 @@ impl Machine {
         if let Some((id, _)) = &reached {
             let session = self.sessions.get_mut(id).expect("a session just found");
             head = Some(session.head(id, None).html());
+            if let Some(model) = &session.model {
+                rows.push(format!("model: {}", crate::hook::html(model)));
+            }
             rows.push(match session.context() {
                 Some(Context::Reported(window, at)) => {
                     ages.push(format!("context {}", ago_since(now, at)));
@@ -291,11 +311,12 @@ fn until(left: Duration, gap: &str) -> String {
     }
 }
 
-/// The figures under the answer that closes a turn: how full the context is and how much
-/// of the turn's first call hit the cache, what the session has cost at list prices since
-/// the daemon heard of it, then how much of each limit is used and how long until it
-/// resets.
+/// The figures under the answer that closes a turn. The first line is how much of each
+/// limit is used and how long until it resets. The second is how full the session's context
+/// is and how much of the turn's first call hit the cache, what the session has cost at
+/// list prices since the daemon heard of it, and its model and effort.
 pub(super) fn status_line(
+    model: Option<&str>,
     context: Option<Context<'_>>,
     hit: Option<f64>,
     spent: Option<f64>,
@@ -326,8 +347,19 @@ pub(super) fn status_line(
             format!("{:.0}% {}", limit.used_percentage, until(left, ""))
         });
     let spent = spent.map(|dollars| format!("${dollars:.2}"));
-    let figures: Vec<String> = context.into_iter().chain(spent).chain(limits).collect();
-    (!figures.is_empty()).then(|| figures.join(" · "))
+    let limits: Vec<String> = limits.collect();
+    let session: Vec<String> = context
+        .into_iter()
+        .chain(spent)
+        .chain(model.map(str::to_owned))
+        .collect();
+    let lines: Vec<String> = [limits, session]
+        .into_iter()
+        .filter(|figures| !figures.is_empty())
+        .map(|figures| figures.join(" · "))
+        .collect();
+    // The rich markdown dialect breaks a line at a backslash before the newline.
+    (!lines.is_empty()).then(|| lines.join("\\\n"))
 }
 
 /// A token count the way Claude Code writes one, as `45.6k` or `1m`.
