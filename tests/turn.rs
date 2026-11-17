@@ -2791,6 +2791,101 @@ fn a_session_outside_tmux_is_branched_once_confirmed() {
     drop(daemon);
 }
 
+/// `/branch @<directory> <name>` opens a window in that directory running a branch of the
+/// session the message would reach under the name. The branch goes to a topic of that
+/// name, `/branch` is answered with a link to it, and the session it branched from stays
+/// where it was. A directory that does not exist, or that belongs to another chat, is
+/// answered.
+#[test]
+fn a_branch_into_another_directory_runs_in_a_window_there() {
+    let (temporary, calls, chat) = prepare("branch-into");
+    let root = temporary.path();
+    let original = in_topic_77(root);
+    let other = project(root).join("other");
+    std::fs::create_dir(&other).expect("another directory");
+    let private = root.join("private");
+    std::fs::create_dir(&private).expect("a directory outside `CHAT_PROJECTS`");
+    let daemon = daemon(root);
+
+    chat.says_in(GROUP, 77, OWNER, "/branch @nowhere try it");
+    let made = collect(&calls, |call| call.markdown.contains("not a directory"));
+    assert_eq!(
+        made.last().expect("the answer").markdown,
+        "`@nowhere` is not a directory"
+    );
+    chat.says_in(GROUP, 77, OWNER, &format!("/branch @{}", private.display()));
+    let made = collect(&calls, |call| call.markdown.contains("another chat"));
+    assert!(
+        made.last()
+            .expect("the answer")
+            .markdown
+            .ends_with("private` belongs to another chat")
+    );
+    assert!(!root.join("commands").exists());
+
+    chat.says_in(
+        GROUP,
+        77,
+        OWNER,
+        &format!("/branch @{} try it there", other.display()),
+    );
+    let commands = root.join("commands");
+    wait_for(|| commands.exists(), "no window was opened");
+    let log = std::fs::read_to_string(root.join("tmux.log")).expect("the tmux log");
+    assert!(
+        log.contains(&format!(" -c {} -n other ", other.display())),
+        "{log}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&commands)
+            .expect("the window's command")
+            .lines()
+            .collect::<Vec<_>>(),
+        [format!(
+            "claude --resume '{original}' --fork-session --name 'try it there'"
+        )]
+    );
+
+    // The branch reports from the pane of the window, which the recording tmux names.
+    let branch = "fedcba9876543210";
+    let mut command = klaudo(root);
+    command
+        .env(
+            "TMUX",
+            format!("{},1,0", root.join("bin/../tmux.sock").display()),
+        )
+        .env("TMUX_PANE", "%1");
+    report(
+        command,
+        &json!({"hook_event_name": "SessionStart", "session_id": branch, "cwd": other,
+            "source": "fork", "session_title": "try it there"}),
+    );
+    let made = collect(&calls, |call| call.markdown.starts_with("branched"));
+    let opened = made
+        .iter()
+        .find(|call| call.label == "createForumTopic")
+        .expect("the topic");
+    assert_eq!(
+        opened.body,
+        json!({"chat_id": GROUP, "name": "try it there"})
+    );
+    let receipt = made.last().expect("the receipt");
+    assert_eq!(
+        receipt.markdown,
+        format!(
+            "branched `01234567` into [a topic of its own](https://t.me/c/1/{})",
+            opened.id
+        )
+    );
+    assert_eq!(receipt.body["message_thread_id"], json!(77));
+    assert_eq!(receipt.reply, replying_to(9000));
+    assert_eq!(
+        prompted_in(root, &calls, &[branch, original]),
+        [json!(opened.id), json!(77)]
+    );
+    drop(daemon);
+}
+
 /// A turn summoned while it runs goes on under the anchor: the message showing it moves
 /// there, and the answer replies to the anchor, while the prompt stays where it was.
 #[test]

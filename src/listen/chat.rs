@@ -56,7 +56,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         BRANCH,
-        "Branch the conversation it replies to into a topic of its own",
+        "Branch the conversation it replies to into a topic of its own, or with @<directory> [name] into that directory",
     ),
     (
         REWIND,
@@ -115,7 +115,7 @@ impl Machine {
             .rev()
             .filter_map(|index| match self.opening.remove(index).ask {
                 Awaiting::Prompt(ask) => Some(ask),
-                Awaiting::Terminal(_) => None,
+                Awaiting::Terminal(_) | Awaiting::Branch(_) => None,
             })
             .collect();
         for ask in asks.into_iter().rev() {
@@ -135,7 +135,7 @@ impl Machine {
                 let opening = &self.opening[index];
                 match &opening.start {
                     Start::Resume(resumed) => resumed == id,
-                    Start::Fork(_) => pane == Some(&opening.pane),
+                    Start::Fork { .. } => pane == Some(&opening.pane),
                     Start::New => false,
                 }
             })
@@ -151,8 +151,9 @@ impl Machine {
     }
 
     /// Carries out `text` where it is one of the daemon's own commands, which reach no
-    /// session, and says whether it was one. Only `/new` and `/diff` take an argument, so
-    /// another command followed by text is a prompt that mentions it.
+    /// session, and says whether it was one. Only `/new`, `/diff` and `/branch @` take an
+    /// argument, so another command followed by text is a prompt that mentions it, and
+    /// `/branch` otherwise goes to Claude Code.
     fn commanded(
         &mut self,
         from: &Admitted,
@@ -196,6 +197,9 @@ impl Machine {
             }
             Some((SPLIT, "")) => {
                 self.split_off(from, replied);
+            }
+            Some((BRANCH, argument)) if argument.starts_with('@') => {
+                self.branch_into(from, carrier, replied, argument);
             }
             Some((CANCEL, "")) => {
                 self.telegram.unanchor(
@@ -639,6 +643,60 @@ impl Machine {
         }
     }
 
+    /// `/branch @<directory> [name]`: opens a window in the directory, read as `/new`
+    /// reads it, running a branch of the session a message would reach under the name.
+    /// Claude Code's own `/branch` takes no directory.
+    fn branch_into(
+        &mut self,
+        from: &Admitted,
+        carrier: i64,
+        replied: Option<&Message>,
+        argument: &str,
+    ) {
+        let place = from.place;
+        if from.guest.is_some() {
+            return self.say(place, "a guest cannot branch into another directory");
+        }
+        let (directory, name) = argument
+            .split_once(char::is_whitespace)
+            .unwrap_or((argument, ""));
+        let Some(dir) = self
+            .located(place.chat, &directory[1..])
+            .filter(|dir| dir.is_dir())
+        else {
+            return self.say(place, &format!("{} is not a directory", code(directory)));
+        };
+        // A branch carries its conversation into the chat of its directory, where a guest
+        // may read it.
+        if self.telegram.chat(&dir) != place.chat {
+            let said = format!("{} belongs to another chat", code(&tilde(&dir)));
+            return self.say(place, &said);
+        }
+        let address = match self.addressee(place, replied) {
+            Ok(address) => address.filter(|address| address != NEW),
+            Err(error) => return self.say(place, error),
+        };
+        let Some(origin) = address.and_then(|address| {
+            self.known()
+                .find(|(id, _, _)| id.starts_with(&address))
+                .map(|(id, _, _)| id.to_owned())
+        }) else {
+            return self.say(place, NOTHING_RAN);
+        };
+        let name = name.trim();
+        let start = Start::Fork {
+            origin,
+            name: (!name.is_empty()).then(|| name.to_owned()),
+        };
+        let thread = Thread {
+            place,
+            prompt: Some(carrier),
+        };
+        if let Err(error) = self.open(dir, start, Awaiting::Branch(thread)) {
+            self.say(place, &error);
+        }
+    }
+
     /// The session branch `id` in `pane` was made from by `/branch`, which stays there
     /// until the branch has started: the one there to report last.
     pub(super) fn branched_from(&self, id: &str, pane: Option<&Pane>) -> Option<&str> {
@@ -654,17 +712,27 @@ impl Machine {
     /// A branch `/branch` sent from a topic made goes to a topic of its own, under the
     /// `title` Claude Code gave it, or with none, the prompt it carried over. A receipt
     /// replies to `/branch`: a link to that topic, or where the branch stays, its head,
-    /// which the next reply reaches.
+    /// which the next reply reaches. A branch into another directory runs in a window the
+    /// daemon opened for it, and any other in the pane `/branch` was typed into.
     pub(super) fn branched(&mut self, id: &str, title: Option<&str>) {
-        let pane = self.sessions[id].pane.clone();
-        let Some((origin, asked)) = self
-            .branched_from(id, pane.as_ref())
-            .map(str::to_owned)
-            .and_then(|origin| {
-                let asked = take_typed(&mut self.sessions.get_mut(&origin)?.asked, BRANCH)?;
-                Some((origin, asked))
-            })
-        else {
+        let session = &self.sessions[id];
+        let (dir, pane) = (session.dir.clone(), session.pane.clone());
+        let opened =
+            self.waiting(id, &dir, pane.as_ref())
+                .into_iter()
+                .find_map(|index| match &self.opening[index] {
+                    Opening {
+                        start: Start::Fork { origin, .. },
+                        ask: Awaiting::Branch(thread),
+                        ..
+                    } => Some((origin.clone(), *thread)),
+                    _ => None,
+                });
+        let Some((origin, asked)) = opened.or_else(|| {
+            let origin = self.branched_from(id, pane.as_ref())?.to_owned();
+            let asked = take_typed(&mut self.sessions.get_mut(&origin)?.asked, BRANCH)?;
+            Some((origin, asked))
+        }) else {
             return;
         };
         let branched = format!("branched {}", code(&hook::address(&origin, None)));
@@ -975,7 +1043,10 @@ impl Machine {
             message: asked.id,
             guest: from.guest.clone(),
         };
-        let start = Start::Fork(id.to_owned());
+        let start = Start::Fork {
+            origin: id.to_owned(),
+            name: None,
+        };
         match self.open(dir, start, Awaiting::Prompt(ask)) {
             Ok(_) => self.telegram.delete(place.chat, confirmation.id),
             Err(error) => self.say(place, &error),

@@ -145,12 +145,15 @@ impl Pane {
 }
 
 /// The conversation a window opens: a new one, the session an id names, or a branch of
-/// that session, which leaves the session itself to whatever runs it.
+/// that session under the name given, which leaves the session itself to whatever runs it.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Start {
     New,
     Resume(String),
-    Fork(String),
+    Fork {
+        origin: String,
+        name: Option<String>,
+    },
 }
 
 /// Opens a window running a session in `cwd` as `start` says, and returns its pane. That
@@ -177,11 +180,16 @@ pub fn open(cwd: &Path, start: &Start) -> Result<Pane, String> {
         .unwrap_or("claude");
     // tmux runs a command given as one argument through its `default-shell`, whose
     // startup files put the user's directories on `PATH`, and execs one given as several.
-    let resume = |id: &str| format!("claude --resume '{}'", id.replace('\'', r"'\''"));
+    let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
+    let resume = |id: &str| format!("claude --resume {}", quote(id));
     let claude = match start {
         Start::New => "claude".to_owned(),
         Start::Resume(id) => resume(id),
-        Start::Fork(id) => format!("{} --fork-session", resume(id)),
+        Start::Fork { origin, name: None } => format!("{} --fork-session", resume(origin)),
+        Start::Fork {
+            origin,
+            name: Some(name),
+        } => format!("{} --fork-session --name {}", resume(origin), quote(name)),
     };
     let output = command
         .args(["-P", "-F", "#{pane_id} #{socket_path}"])

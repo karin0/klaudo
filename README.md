@@ -78,15 +78,16 @@ resumed first. A photo or a file sent in the chat reaches the session as its pat
 | `/resume` | Resume a recent conversation and move it here. |
 | `/stop` | Interrupt the running turn. |
 | `/split` | Move the conversation into a topic of its own. |
+| `/branch @<directory> [name]` | Branch the conversation into another directory. |
 | `/rewind` | Copy the conversation up to the end of the turn it replies to. |
 | `/usage` | Show the plan's limits and the conversation's context. |
 | `/diff [directory]` | Link the unpushed changes for review. |
 | `/attach` | Open the conversation's terminal on another device. |
 | `/cancel` | Close the reply box an earlier message keeps opening. |
 
-`/compact`, `/branch`, and `/model`, `/effort` and `/rename` with an argument reach
-Claude Code as typed. Any other message starting with a slash reaches Claude as text, so
-it invokes a skill the message names. [docs/chat.md](docs/chat.md) and
+`/compact`, `/branch` without `@`, and `/model`, `/effort` and `/rename` with an argument
+reach Claude Code as typed. Any other message starting with a slash reaches Claude as
+text, so it invokes a skill the message names. [docs/chat.md](docs/chat.md) and
 [docs/topics.md](docs/topics.md) describe each command in full.
 
 Claude can post files to the turn's thread with `klaudo send <file>...`, and a line in

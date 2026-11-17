@@ -595,6 +595,8 @@ enum Awaiting {
     Prompt(Ask),
     /// The window alone, shown on another terminal by `/attach` asked in this place.
     Terminal(Place),
+    /// A branch, which `/branch` asked for in this thread.
+    Branch(Thread),
 }
 
 impl Awaiting {
@@ -602,6 +604,7 @@ impl Awaiting {
         match self {
             Self::Prompt(ask) => ask.place,
             Self::Terminal(place) => *place,
+            Self::Branch(thread) => thread.place,
         }
     }
 }
@@ -689,7 +692,7 @@ impl Machine {
                     .first()
                     .map(|&index| &self.opening[index]);
                 let origin = match opening.map(|opening| &opening.start) {
-                    Some(Start::Fork(origin)) => Some(origin.as_str()),
+                    Some(Start::Fork { origin, .. }) => Some(origin.as_str()),
                     _ if event.source.as_deref() == Some("fork") => {
                         self.branched_from(&id, session.pane.as_ref())
                     }

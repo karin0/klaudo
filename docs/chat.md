@@ -118,33 +118,33 @@ is tried without the chat.
 Of Claude Code's own commands, `/compact`, `/branch`, and `/model`, `/effort` and
 `/rename` with an argument go to a session like any other message, since they run without
 a dialog. Any other message starting with a slash is typed with its first word in
-backticks, so Claude reads it as text and invokes a skill it names through its Skill tool,
-while a mistyped command, or one opening a dialog such as `/model` alone, opens nothing in
-the terminal. A command Claude Code adds later reaches Claude as text until the list of
-Claude Code's commands in `src/listen/chat.rs` includes it. The daemon's own commands
-other than `/new` and `/diff` take no argument, so one followed by text, such as
-`/resume the design`, goes to a session the same way. The daemon lists these commands in
-the command menu of each person it answers, shown to that person alone.
+backticks, so Claude reads it as text and invokes a skill it names through its Skill
+tool, while a mistyped command, or one opening a dialog such as `/model` alone, opens
+nothing in the terminal. A command Claude Code adds later reaches Claude as text until
+the list of Claude Code's commands in `src/listen/chat.rs` includes it. The daemon's own
+commands other than `/new`, `/diff` and `/branch @` take no argument, so one followed by
+text, such as `/resume the design`, goes to a session the same way. The daemon lists
+these commands in the command menu of each person it answers, shown to that person alone.
 
 ## Guests
 
 Only `USER_ID` is answered, in `CHAT_ID` or in that person's private chat with the bot,
 and the guests in `GUEST_IDS`, in `CHAT_ID` alone. A guest reaches only the sessions and
-directories inside `CHAT_PROJECTS`, whichever message, anchor, menu or button names
-them, and is answered `that project is not open to guests` otherwise. Whoever can type
-into a terminal can do as much as its shell, so the grant itself, who and which
-projects, is the boundary. Within it, the daemon types each guest's text inside
-`<guest>`, behind a `<system-reminder>` that names the guest, says how to address them,
-and limits Claude to routine development in the session's directory, away from the files
-outside it other than the toolchain's and the files the guest sent with the prompt, the
-system's state and the local network. Each `@` a guest writes reaches the terminal as
-`&#64;`, since Claude Code would attach the file it names before Claude reads the
-reminder. A guest's `/compact` and `/branch` are typed as they were sent, since
-compacting and branching are routine work. Either with arguments follows the reminder,
-since instructions to `/compact` would write the summary every later turn reads. Their
-other slash commands follow the reminder, so Claude Code reads them as text, which keeps
-`/model`, `/permissions` and the like out of a guest's reach. `/attach` would hand over
-the terminal itself, so a guest's menu leaves it out and the daemon refuses it to them.
+directories inside `CHAT_PROJECTS`, whichever message, anchor, menu or button names them,
+and is answered `that project is not open to guests` otherwise. Whoever can type into a
+terminal can do as much as its shell, so the grant itself, who and which projects, is the
+boundary. Within it, the daemon types each guest's text inside `<guest>`, behind a
+`<system-reminder>` that names the guest, says how to address them, and limits Claude to
+routine development in the session's directory, away from the files outside it other than
+the toolchain's and the files the guest sent with the prompt, the system's state and the
+local network. Each `@` a guest writes reaches the terminal as `&#64;`, since Claude Code
+would attach the file it names before Claude reads the reminder. A guest's `/compact` and
+`/branch` are typed as they were sent, since compacting and branching are routine work.
+Either with arguments follows the reminder, since instructions to `/compact` would write
+the summary every later turn reads, and `/branch @` is refused to them. Their other slash
+commands follow the reminder, so Claude Code reads them as text, which keeps `/model`,
+`/permissions` and the like out of a guest's reach. `/attach` would hand over the
+terminal itself, so a guest's menu leaves it out and the daemon refuses it to them.
 
 `GUEST_PUSH`, set to `1`, adds to the reminder that Claude may create commits and
 push them for a guest. Telegram gives no email, so Claude asks the guest for the name

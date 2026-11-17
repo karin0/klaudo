@@ -18,15 +18,19 @@ moves the same way when the terminal or the Agent SDK resumes it, so a session r
 for every turn leaves the place it held before the chat was split.
 
 `/split` opens a topic for the session a message would reach, named after its latest
-prompt, and moves the session there the way `/resume` does. Claude Code's `/branch` starts
-a new session, the branch. Where `/branch` was sent from a topic, the daemon opens a
-topic for the branch under the name Claude Code gave it, or else its latest prompt, and
+prompt, and moves the session there the way `/resume` does. Claude Code's `/branch`
+starts a new session, the branch. Where `/branch` was sent from a topic, the daemon opens
+a topic for the branch under the name Claude Code gave it, or else its latest prompt, and
 answers `/branch` with a link to that topic. Elsewhere it answers with the branch's head,
-which the next reply reaches. A branch made in the terminal stays in the topic of the
-session it branched from. A session in a topic opened for it still counts toward the
-topic it left, so a new session of its project goes there, and each topic keeps one
-conversation. In a group, Telegram lets the bot open a topic only with the
-`can_manage_topics` right.
+which the next reply reaches. `/branch @<directory> [name]` makes the branch in a
+directory read as `/new` reads one, under the name. Claude Code's `/branch` takes no
+directory, so the daemon opens a window there running `claude --resume --fork-session`,
+and the session it branched from goes on in its own terminal. A directory whose sessions
+go to another chat is refused, since that chat would show the conversation to whoever
+reads it. A branch made in the terminal stays in the topic of the session it branched
+from. A session in a topic opened for it still counts toward the topic it left, so a new
+session of its project goes there, and each topic keeps one conversation. In a group,
+Telegram lets the bot open a topic only with the `can_manage_topics` right.
 
 `/resume` goes straight to the sessions of the project the message would reach, with a
 button back to the menu of projects, which it offers first when the message reaches no
