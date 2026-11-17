@@ -979,51 +979,69 @@ fn a_call_announced_before_the_words_that_introduce_it_still_follows_them() {
 /// hooks name one, so its words and calls join the turn as the hooks report them.
 #[test]
 fn a_session_writing_no_transcript_shows_its_turn_as_the_hooks_report_it() {
-    turn_unwritten("unwritten", false);
+    untranscribed("unwritten", false, true);
 }
 
 /// Resumed without a fork, such a session names the transcript of the session it resumed,
 /// which it leaves as it was.
 #[test]
 fn a_resumed_session_writing_no_transcript_shows_its_turn_as_the_hooks_report_it() {
-    turn_unwritten("unappended", true);
+    untranscribed("unappended", true, true);
 }
 
-fn turn_unwritten(name: &str, resumed: bool) {
+/// What the transcript of a session never records joins the turn when it ends, as the
+/// hooks reported it.
+#[test]
+fn what_the_transcript_never_records_joins_the_turn_at_its_end() {
+    untranscribed("unrecorded", true, false);
+}
+
+/// A turn whose transcript records nothing, of a session whose command line carries
+/// `--no-session-persistence` when `flagged`, which shows the turn as it runs.
+fn untranscribed(name: &str, written: bool, flagged: bool) {
     let (temporary, calls, _chat) = prepare(name);
     let root = temporary.path();
     let daemon = daemon(root);
     let transcript = root.join("transcript.jsonl");
-    if resumed {
+    if written {
         std::fs::write(&transcript, "").expect("the transcript");
     }
-
-    let turn = [
-        json!({"hook_event_name": "UserPromptSubmit", "prompt": "check it"}),
-        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "checking"}),
-        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
-               "tool_input": {"command": "cargo test"}}),
-        json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}),
-        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "fine"}),
-        json!({"hook_event_name": "Stop", "last_assistant_message": "fine"}),
-    ];
-    for mut event in turn {
+    let send = |event: serde_json::Value| {
+        let mut event = event;
         event["session_id"] = json!("0123456789abcdef");
         event["cwd"] = json!(project(root));
         event["transcript_path"] = json!(transcript);
-        // The hook's parent stands for the session, with the flag on its command line.
+        // The hook's parent stands for the session.
         let mut session = within(root, "sh");
-        session.args([
-            "-c",
-            "\"$0\"; :",
-            env!("CARGO_BIN_EXE_klaudo"),
-            "--no-session-persistence",
-        ]);
+        session.args(["-c", "\"$0\"; :", env!("CARGO_BIN_EXE_klaudo")]);
+        if flagged {
+            session.arg("--no-session-persistence");
+        }
         report(session, &event);
         std::thread::sleep(Duration::from_millis(400));
-    }
+    };
 
-    let made = collect(&calls, |call| call.label == "sendRichMessage ring");
+    send(json!({"hook_event_name": "UserPromptSubmit", "prompt": "check it"}));
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m1", "index": 0, "delta": "checking"}),
+    );
+    send(
+        json!({"hook_event_name": "PreToolUse", "tool_use_id": "t1", "tool_name": "Bash",
+                "tool_input": {"command": "cargo test"}}),
+    );
+    send(json!({"hook_event_name": "PostToolUse", "tool_use_id": "t1", "duration_ms": 30}));
+    send(
+        json!({"hook_event_name": "MessageDisplay", "message_id": "m2", "index": 0, "delta": "fine"}),
+    );
+    let mut made = drained(&calls);
+    assert_eq!(
+        made.iter().any(|call| call.markdown.contains("**Bash**")),
+        flagged,
+        "whether the call shows before the turn ends"
+    );
+    send(json!({"hook_event_name": "Stop", "last_assistant_message": "fine"}));
+
+    made.extend(collect(&calls, |call| call.label == "sendRichMessage ring"));
     assert_eq!(
         holding(&made),
         [

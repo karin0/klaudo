@@ -164,10 +164,14 @@ impl Words {
     }
 }
 
-/// What the hooks reported ahead of the transcript, which joins the chat once the
-/// transcript has recorded every call announced and the words streaming before it.
+/// What the hooks reported ahead of the transcript, in the order they reported it, which
+/// joins the chat once the transcript has recorded every call announced and the words
+/// streaming before it. What still waits when the turn ends joins in this order.
 enum Waiting {
     Words(Words),
+    /// A tool call of the main conversation, which takes its place in the turn once the
+    /// transcript records it.
+    Announced(Call),
     /// A subagent's tool call, which its own transcript records.
     Call(Call),
 }
@@ -280,9 +284,6 @@ pub(super) struct Turn {
     /// The segments the chat already has, kept because what belongs in one goes on
     /// arriving after it was posted.
     sealed: Vec<Segment>,
-    /// The main conversation's tool calls announced and not yet recorded, with how each
-    /// went so far. A call takes its place in the turn once the transcript records it.
-    announced: Vec<(String, Outcome)>,
     waiting: VecDeque<Waiting>,
     /// When the chat is next shown the session typing, unless it waits on a dialog.
     pub(super) typing: Instant,
@@ -318,7 +319,6 @@ impl Turn {
             thread,
             live: None,
             sealed: Vec::new(),
-            announced: Vec::new(),
             waiting: VecDeque::new(),
             typing: Instant::now(),
             dialog: false,
@@ -357,14 +357,17 @@ impl Turn {
 
     /// When the transcript is next read for what the hooks reported ahead of it.
     pub(super) fn follow_due(&self) -> Option<Instant> {
-        (!self.announced.is_empty() || !self.waiting.is_empty()).then(|| Instant::now() + POLL)
+        (!self.waiting.is_empty()).then(|| Instant::now() + POLL)
     }
 
     /// Whether what waits can join the turn, which is once the transcript has recorded
     /// every call announced and the words streaming, or at once without a transcript.
     fn caught_up(&self, transcribed: bool) -> bool {
         !transcribed
-            || self.announced.is_empty()
+            || !self
+                .waiting
+                .iter()
+                .any(|waiting| matches!(waiting, Waiting::Announced(_)))
                 && self
                     .segment
                     .as_ref()
@@ -635,15 +638,13 @@ impl Machine {
         if turn.holding(tool_use_id).is_some() {
             return;
         }
-        if transcribed && event.agent_id.is_none() {
-            turn.announced.push((tool_use_id.clone(), Outcome::Running));
+        let call = Call::new(tool_use_id.clone(), event.agent_type.clone(), &event.tool());
+        let waiting = if transcribed && event.agent_id.is_none() {
+            Waiting::Announced(call)
         } else {
-            turn.waiting.push_back(Waiting::Call(Call::new(
-                tool_use_id.clone(),
-                event.agent_type.clone(),
-                &event.tool(),
-            )));
-        }
+            Waiting::Call(call)
+        };
+        turn.waiting.push_back(waiting);
         self.follow(id);
     }
 
@@ -672,10 +673,29 @@ impl Machine {
             .filter(|turn| turn.caught_up(transcribed))
             .and_then(|turn| turn.waiting.pop_front())
         {
-            match waiting {
-                Waiting::Words(words) => self.begin(id, words),
-                Waiting::Call(call) => self.file(id, call),
-            }
+            self.join(id, waiting);
+        }
+    }
+
+    /// What the transcript never caught up with by the end of the turn joins it in the
+    /// order the hooks reported it, which can differ from the terminal's.
+    fn flush(&mut self, id: &str) {
+        let Some(turn) = self.turn_mut(id) else {
+            return;
+        };
+        let left = std::mem::take(&mut turn.waiting);
+        if !left.is_empty() {
+            log::warn!("{id}: {} reported, never transcribed", left.len());
+        }
+        for waiting in left {
+            self.join(id, waiting);
+        }
+    }
+
+    fn join(&mut self, id: &str, waiting: Waiting) {
+        match waiting {
+            Waiting::Words(words) => self.begin(id, words),
+            Waiting::Announced(call) | Waiting::Call(call) => self.file(id, call),
         }
     }
 
@@ -705,7 +725,7 @@ impl Machine {
                     .and_then(|at| turn.waiting.remove(at))
                     .and_then(|waiting| match waiting {
                         Waiting::Words(words) => words.stream().map(str::to_owned),
-                        Waiting::Call(_) => None,
+                        Waiting::Announced(_) | Waiting::Call(_) => None,
                     });
                 self.begin(id, Words::Recorded { stream, text });
             }
@@ -716,10 +736,16 @@ impl Machine {
                 input,
             } => {
                 let outcome = turn
-                    .announced
+                    .waiting
                     .iter()
-                    .position(|(announced, _)| *announced == call)
-                    .map(|at| turn.announced.remove(at).1);
+                    .position(|waiting| {
+                        matches!(waiting, Waiting::Announced(announced) if announced.id == call)
+                    })
+                    .and_then(|at| turn.waiting.remove(at))
+                    .and_then(|waiting| match waiting {
+                        Waiting::Announced(announced) => Some(announced.outcome),
+                        Waiting::Words(_) | Waiting::Call(_) => None,
+                    });
                 let mut call = Call::new(
                     call,
                     None,
@@ -781,16 +807,8 @@ impl Machine {
             return;
         };
         // A tool this quick reports before its call has taken its place.
-        if let Some((_, announced)) = turn
-            .announced
-            .iter_mut()
-            .find(|(announced, _)| announced == tool_use_id)
-        {
-            *announced = outcome;
-            return;
-        }
         if let Some(call) = turn.waiting.iter_mut().find_map(|waiting| match waiting {
-            Waiting::Call(call) if call.id == tool_use_id => Some(call),
+            Waiting::Announced(call) | Waiting::Call(call) if call.id == tool_use_id => Some(call),
             _ => None,
         }) {
             call.outcome = outcome;
@@ -913,6 +931,7 @@ impl Machine {
             return;
         }
         self.follow(id);
+        self.flush(id);
         // A segment holding a run keeps its message, and only an assistant message is
         // what this event repeats.
         if self

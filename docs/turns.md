@@ -40,7 +40,9 @@ hooks name a new transcript or that of the session it resumes, so the daemon tel
 the flag on its command line and shows its turns in the order the hooks report them.
 A call takes its place once the transcript records it, about a tenth of a second after
 its `PreToolUse` and at times seconds after, and the deltas of a message are paired with
-the text the transcript records by the text they hold. A tool outcome arriving after
+the text the transcript records by the text they hold. What the hooks reported and the
+transcript never recorded, as when the daemon restarts in the middle of a turn, joins the
+turn when it ends, in the order the hooks reported it. A tool outcome arriving after
 the turn moved past its run is written into the message the run became, which is why a
 turn keeps its segments until it ends.
 
