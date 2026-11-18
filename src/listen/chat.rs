@@ -1019,8 +1019,13 @@ impl Machine {
             code(&hook::address(id, None))
         );
         let button = ("Branch and send".to_owned(), format!("{FORK} {id}"));
-        self.telegram
-            .buttoned(ask.place, &text, Some(ask.message), &[button]);
+        self.telegram.buttoned(
+            ask.place,
+            &text,
+            Sound::Silent,
+            Some(ask.message),
+            &[button],
+        );
     }
 
     /// The press confirming a branch of session `id`, on `confirmation`: opens a window

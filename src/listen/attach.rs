@@ -7,11 +7,22 @@ use kuriero::Message;
 use crate::telegram::{Admitted, Place};
 use crate::tmux::{Pane, Start};
 
-use super::chat::{NEW, NOTHING_RAN, unseen};
+use super::chat::{ATTACH, NEW, NOTHING_RAN, unseen};
+use super::program::Program;
 use super::{Awaiting, Machine};
 
 /// What a guest asking to attach to a terminal is answered with.
 pub(super) const GUEST: &str = "a guest cannot attach to a terminal";
+
+/// The button under a message about `pane` that attaches to it, where `attach`,
+/// `ATTACH_COMMAND`, is set.
+pub(super) fn button(attach: &Program, pane: &Pane) -> Vec<(String, String)> {
+    attach
+        .is_set()
+        .then(|| ("Attach".to_owned(), format!("{ATTACH} {}", pane.id)))
+        .into_iter()
+        .collect()
+}
 
 impl Machine {
     /// Shows the pane of the session a message replying to `replied` would reach. A

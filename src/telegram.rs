@@ -281,17 +281,18 @@ impl Telegram {
         logged(method, sent).map(drop)
     }
 
-    /// A silent rich message with a button on each row, each `(label, data)`.
+    /// A rich message with a button on each row, each `(label, data)`.
     pub fn buttoned(
         &self,
         place: Place,
         markdown: &str,
+        sound: Sound,
         reply_to: Option<i64>,
         buttons: &[(String, String)],
     ) -> Option<i64> {
         let body = SendRichMessage {
             reply_markup: (!buttons.is_empty()).then(|| keyboard(buttons)),
-            ..rich(place, markdown, Sound::Silent, reply_to)
+            ..rich(place, markdown, sound, reply_to)
         };
         self.call(&body).map(|sent| sent.id)
     }

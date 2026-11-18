@@ -166,7 +166,7 @@ impl Event {
         })
     }
 
-    fn tag(&self) -> String {
+    pub fn tag(&self) -> String {
         match self.hook_event_name.as_str() {
             // The turn opens with what was asked; the tag belongs to what closes it.
             "UserPromptSubmit" => String::new(),

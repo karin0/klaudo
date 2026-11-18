@@ -15,7 +15,8 @@ use crate::telegram::{self, Admitted, MAX_BLOCKS, MAX_BYTES, Place, Post, Sound}
 use crate::web::Links;
 
 use super::Machine;
-use super::chat::{NEW, unreminded};
+use super::attach;
+use super::chat::{NEW, fenced, unreminded};
 use super::render::{Call, Outcome, RESULT_MAX, SUMMARY_MAX, first_line, listing, took};
 use super::transcript::{self, Block, Transcript};
 use super::usage::status_line;
@@ -1086,11 +1087,36 @@ impl Machine {
         self.telegram.typing(place);
     }
 
-    /// Anything else a session reports lands in the thread of the turn it happened in.
-    pub(super) fn aside(&mut self, id: &str, event: &Event, sound: Sound) {
+    /// A session waiting on a dialog rings in the thread of its turn with the screen of
+    /// its terminal, since Claude Code words every kind of dialog as a request for
+    /// permission, and with a button that attaches to the terminal.
+    pub(super) fn asking(&mut self, id: &str, event: &Event) {
         if let Some(kind) = &event.notification_type {
             log::info!("{id}: notification {kind}");
         }
+        let Some(session) = self.sessions.get(id) else {
+            return;
+        };
+        let prompt = session.turn.as_ref().map(|turn| turn.prompt_id.clone());
+        let head = session.head(id, prompt.as_deref());
+        let thread = self.thread(session);
+        let pane = session.pane.as_ref();
+        let body = format!(
+            "waiting on a dialog in the terminal{}",
+            pane.map_or_default(fenced)
+        );
+        let said = hook::compose(&head, "", &event.tag(), &body).markdown;
+        let buttons = pane.map_or_default(|pane| attach::button(&self.attach, pane));
+        let posted =
+            self.telegram
+                .buttoned(thread.place, &said, Sound::Ring, thread.prompt, &buttons);
+        if let Some(session) = self.sessions.get_mut(id) {
+            session.left(thread.place, posted);
+        }
+    }
+
+    /// Anything else a session reports lands in the thread of the turn it happened in.
+    pub(super) fn aside(&mut self, id: &str, event: &Event, sound: Sound) {
         let Some(session) = self.sessions.get(id) else {
             return;
         };

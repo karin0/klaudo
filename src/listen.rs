@@ -790,6 +790,7 @@ impl Machine {
             "PreCompact" => {}
             "PostCompact" if event.manual() => self.compacted(&id, event),
             // A session waiting on a dialog is the other thing worth coming back to.
+            "Notification" if event.dialog() => self.asking(&id, event),
             "Notification" => self.aside(&id, event, Sound::Ring),
             _ => self.aside(&id, event, Sound::Silent),
         }
@@ -973,14 +974,13 @@ impl Machine {
                 code(&tilde(&opening.dir)),
                 chat::fenced(&opening.pane)
             );
-            let buttons: Vec<_> = self
-                .attach
-                .is_set()
-                .then(|| ("Attach".to_owned(), format!("{ATTACH} {}", opening.pane.id)))
-                .into_iter()
-                .collect();
-            self.telegram
-                .buttoned(opening.ask.place(), &text, opening.ask.message(), &buttons);
+            self.telegram.buttoned(
+                opening.ask.place(),
+                &text,
+                Sound::Silent,
+                opening.ask.message(),
+                &attach::button(&self.attach, &opening.pane),
+            );
         }
     }
 

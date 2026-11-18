@@ -38,11 +38,13 @@ daemon's commands.
 A dialog in the terminal drops pasted text and takes the Enter after it as its default
 choice, which approves a permission prompt's tool call. So while a session waits on a
 dialog, from its `Notification` to the next event it reports, a message to it is typed
-nothing and answered with `/attach` and `/stop`, which reach the dialog. A dialog
-cancelled by Escape in the terminal reports nothing, so the session takes no message
-from the chat until it next reports. `settings.json` denies `AskUserQuestion`, whose
-dialog takes arrow keys and Enter, which pasted text cannot drive, so a session asks in
-text that a reply answers.
+nothing and answered with `/attach` and `/stop`, which reach the dialog. Claude Code words
+the `Notification` of every kind of dialog as a request for permission, so the daemon
+posts the end of the terminal's screen in its place, with a button that does what
+`/attach` does. A dialog cancelled by Escape in the terminal reports nothing, so the
+session takes no message from the chat until it next reports. `settings.json` denies
+`AskUserQuestion`, whose dialog takes arrow keys and Enter, which pasted text cannot
+drive, so a session asks in text that a reply answers.
 
 A message to a running session outside tmux, such as one in an editor, has no terminal
 to be typed into, so the daemon answers it with a button. Pressed by the message's

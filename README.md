@@ -103,7 +103,9 @@ describes.
 ## Caveats
 
 While a session waits on a dialog in the terminal, such as a permission prompt, a
-message to it is refused. `/attach` and `/stop` reach the dialog.
+message to it is refused. The chat is shown the dialog as the terminal draws it, with a
+button that opens the terminal on another device as `/attach` does, and `/stop` cancels
+the dialog.
 
 A session that opens a directory for the first time stops at the trust dialog. A window
 whose session has not started 5 seconds after it opened shows its screen in the chat,

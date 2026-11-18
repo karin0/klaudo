@@ -3650,12 +3650,28 @@ fn a_rewound_copy_resumes_from_the_end_of_a_turn() {
 }
 
 /// The Enter after a reply would answer a dialog with its default choice, which approves
-/// a tool call, so a session waiting on one is typed nothing until it reports again. A
-/// notification that only reports leaves it open to replies.
+/// a tool call, so a session waiting on one is typed nothing until it reports again. The
+/// chat is shown the end of the terminal's screen in place of Claude Code's own words,
+/// with a button that attaches to it. A notification that only reports leaves the
+/// session open to replies.
 #[test]
 fn a_session_waiting_on_a_dialog_is_typed_nothing() {
     let (temporary, calls, chat) = prepare("dialog");
     let root = temporary.path();
+    let mut env = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("config/klaudo/env"))
+        .expect("credentials");
+    writeln!(env, "ATTACH_COMMAND=/bin/true").expect("the program");
+    let scrolled = (0..20)
+        .map(|line| format!("earlier {line}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    std::fs::write(
+        root.join("screen"),
+        format!("{scrolled}────────\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"),
+    )
+    .expect("the screen");
     let daemon = daemon(root);
     let transcript = root.join("transcript.jsonl");
     std::fs::write(&transcript, "").expect("the transcript");
@@ -3692,9 +3708,25 @@ fn a_session_waiting_on_a_dialog_is_typed_nothing() {
     );
 
     go(1);
-    collect(&calls, |call| {
-        call.markdown.contains("needs your permission")
-    });
+    let made = collect(&calls, |call| call.markdown.contains("waiting on a dialog"));
+    let notice = made.last().expect("the notification");
+    let shown = (7..20)
+        .map(|line| format!("earlier {line}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    assert!(
+        notice.markdown.ends_with(&format!(
+            "waiting on a dialog in the terminal\n\n```\n{shown} Do you want to proceed?\n \
+             ❯ 1. Yes\n   2. No\n```"
+        )),
+        "{}",
+        notice.markdown
+    );
+    assert_eq!(notice.label, "sendRichMessage ring");
+    assert_eq!(
+        notice.body["reply_markup"],
+        json!({"inline_keyboard": [[{"text": "Attach", "callback_data": "attach %1"}]]})
+    );
     reply("hi");
     collect(&calls, |call| call.markdown.contains("waits on a dialog"));
     assert_eq!(entered(), 1, "a reply was typed into the dialog");

@@ -19,6 +19,10 @@ const PTS_MAJOR: u32 = 136;
 /// Claude Code folds a paste of four lines or of about 800 UTF-16 units into a
 /// `[Pasted text #N]` placeholder and submits it wrapped as content the user did not
 /// write, so a message goes in pieces below both, which each stay typed text.
+/// How many lines of a pane's screen a message about it shows, which hold a dialog of
+/// Claude Code.
+const SCREEN_LINES: usize = 16;
+
 const PIECE_NEWLINES: usize = 2;
 const PIECE_UNITS: usize = 700;
 
@@ -127,8 +131,10 @@ impl Pane {
             .args(["paste-buffer", "-b", BUFFER, "-t", &self.id, "-p", "-d"]))
     }
 
-    /// What the pane is showing, for reporting a session that stopped where the daemon
-    /// cannot type, such as the dialog that asks whether a folder is trusted.
+    /// The last lines of text the pane is showing, for reporting a session that stopped
+    /// where the daemon cannot type, such as the dialog that asks whether a folder is
+    /// trusted. A rule drawn across the terminal wraps into several lines on a phone, so
+    /// only a line holding a letter or a digit is kept.
     pub fn screen(&self) -> Option<String> {
         let output = self
             .tmux()
@@ -138,9 +144,10 @@ impl Pane {
         let screen = String::from_utf8_lossy(&output.stdout);
         let kept: Vec<&str> = screen
             .lines()
-            .filter(|line| !line.trim().is_empty())
+            .filter(|line| line.chars().any(char::is_alphanumeric))
             .collect();
-        (!kept.is_empty()).then(|| kept.join("\n"))
+        let shown = &kept[kept.len().saturating_sub(SCREEN_LINES)..];
+        (!shown.is_empty()).then(|| shown.join("\n"))
     }
 }
 
