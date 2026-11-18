@@ -1088,6 +1088,9 @@ impl Machine {
 
     /// Anything else a session reports lands in the thread of the turn it happened in.
     pub(super) fn aside(&mut self, id: &str, event: &Event, sound: Sound) {
+        if let Some(kind) = &event.notification_type {
+            log::info!("{id}: notification {kind}");
+        }
         let Some(session) = self.sessions.get(id) else {
             return;
         };

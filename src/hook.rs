@@ -82,7 +82,7 @@ pub struct Event {
     #[serde(default)]
     pub message: Option<String>,
     #[serde(default)]
-    notification_type: Option<String>,
+    pub notification_type: Option<String>,
     /// What started a compaction: `manual` for `/compact`, `auto` for a full context.
     #[serde(default)]
     pub trigger: Option<String>,
