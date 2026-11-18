@@ -208,10 +208,7 @@ impl Machine {
                 self.branch_into(from, carrier, replied, argument);
             }
             Some((CANCEL, "")) => {
-                self.telegram.unanchor(
-                    place,
-                    "closed the reply box, which Telegram Desktop shows once you switch away and back",
-                );
+                self.telegram.unanchor(place, "closed the reply box");
             }
             Some((ISSUES, _)) if from.guest.is_some() => {
                 self.say(place, issues::GUEST);
