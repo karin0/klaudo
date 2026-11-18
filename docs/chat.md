@@ -103,7 +103,7 @@ reaches this machine as `pc`, the program asks Termux to open a session running 
 
 ```sh
 #!/bin/sh
-exec ssh phone am startservice --user 0 -n com.termux/com.termux.app.RunCommandService -a com.termux.RUN_COMMAND --es com.termux.RUN_COMMAND_PATH /data/data/com.termux/files/usr/bin/ssh --esa com.termux.RUN_COMMAND_ARGUMENTS "'-t,pc,tmux -S $2 -u new-session -t $1 \; set-option destroy-unattached on \; select-pane -t $1'" --ez com.termux.RUN_COMMAND_BACKGROUND false
+exec ssh phone am startservice --user 0 -n com.termux/com.termux.app.RunCommandService -a com.termux.RUN_COMMAND --es com.termux.RUN_COMMAND_PATH /data/data/com.termux/files/usr/bin/ssh --esa com.termux.RUN_COMMAND_ARGUMENTS "'-t,pc,tmux -S $2 -u new-session -t $1 \; set-option destroy-unattached on \; select-window -t $1 \; select-pane -t $1'" --ez com.termux.RUN_COMMAND_BACKGROUND false
 ```
 
 The intent is Termux's
@@ -112,11 +112,13 @@ Termux takes only with `allow-external-apps = true` in `~/.termux/termux.propert
 and whose refusal shows as a notification on the phone while `am` still succeeds. The
 tmux command shows the pane in a session of its own, which shares the windows of the
 pane's session and is closed once detached, so a terminal already attached there keeps
-its window. Over ssh no login shell sets a locale, so `-u` keeps tmux from drawing
-non-ASCII as `_`. The phone's shell and this machine's both parse the arguments, hence
-the `\;` inside single quotes. Both ssh connections need keys without a passphrase. Run
-inside tmux as `attach "$TMUX_PANE" "$(tmux display -p '#{socket_path}')"`, the program
-is tried without the chat.
+its window. Such a session starts on its lowest-numbered window, and `select-pane` stays
+within a window, so `select-window` moves the session to the pane's window. Over ssh no
+login shell sets a locale, so `-u` keeps tmux from drawing non-ASCII as `_`. The phone's
+shell and this machine's both parse the arguments, hence the `\;` inside single quotes.
+Both ssh connections need keys without a passphrase. Run inside tmux as
+`attach "$TMUX_PANE" "$(tmux display -p '#{socket_path}')"`, the program is tried
+without the chat.
 
 `/issues` runs the program `ISSUES_COMMAND` names in the directory of the session a
 message would reach, since a project may keep its issues somewhere its directory alone
