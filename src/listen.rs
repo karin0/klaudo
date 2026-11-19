@@ -156,18 +156,21 @@ pub fn run() {
     let poller = Arc::clone(&telegram);
     let updates = landed.clone();
     std::thread::spawn(move || poll(&poller, &updates, &commands, &guests, started));
+    let kept = crate::state_home();
+    fs::create_dir_all(&kept).expect("state directory");
     let page = web::listen();
+    let lists = Arc::new(web::Lists::new(kept.join("links")));
     if let Some(listen) = page {
         let server = TcpListener::bind(listen)
             .unwrap_or_else(|error| panic!("WEB_LISTEN {listen}: {error}"));
-        let (telegram, landed) = (Arc::clone(&telegram), landed.clone());
-        std::thread::spawn(move || review::serve(server, telegram, landed));
+        let (telegram, landed, lists) = (Arc::clone(&telegram), landed.clone(), Arc::clone(&lists));
+        std::thread::spawn(move || review::serve(server, telegram, landed, lists));
     }
     std::thread::spawn(move || read(&listener, &landed));
     // The hooks reaching the socket meanwhile wait in `arrivals`, and nothing could be
     // sent while Telegram is out of reach anyway.
     let bot = answered(|| telegram.me());
-    let app = page.map(|_| main_app(&bot));
+    let app = page.map(|_| main_app(&bot, lists));
     let topical = answered(|| telegram.topical(&bot));
 
     let running_file = directory.join("state.json");
@@ -178,8 +181,6 @@ pub fn run() {
         Vec::new()
     });
     // The next save would overwrite a record that does not parse.
-    let kept = crate::state_home();
-    fs::create_dir_all(&kept).expect("state directory");
     let ended_file = kept.join("ended.json");
     let ended =
         load(&ended_file).unwrap_or_else(|error| panic!("{}: {error}", ended_file.display()));
@@ -291,13 +292,15 @@ fn answered<T>(call: impl Fn() -> Option<T>) -> T {
     }
 }
 
-/// The link to the bot's main Mini App, which opens the files an answer names.
-fn main_app(bot: &User) -> &'static str {
+/// The bot's main Mini App, which opens the files an answer names, with the `lists` it
+/// keeps of them.
+fn main_app(bot: &User, lists: Arc<web::Lists>) -> &'static web::App {
     assert!(
         bot.has_main_web_app,
         "WEB_LISTEN is set, but the bot has no main Mini App"
     );
-    web::app(bot.username.as_ref().expect("a bot's username")).leak()
+    let username = bot.username.as_ref().expect("a bot's username");
+    Box::leak(Box::new(web::App::new(username, lists)))
 }
 
 /// Each command of a menu with the line it is listed under.
@@ -540,9 +543,8 @@ struct Machine {
     issues: Program,
     /// Whether Claude may create commits and push them for a guest.
     guest_push: bool,
-    /// The Mini App link a file link in an answer opens, which lives as long as the
-    /// daemon.
-    app: Option<&'static str>,
+    /// The Mini App a file link in an answer opens, which lives as long as the daemon.
+    app: Option<&'static web::App>,
     /// The chats split into topics, where a project's sessions post in a topic of their
     /// own.
     topical: Vec<i64>,
@@ -1059,8 +1061,11 @@ impl Machine {
     /// Remembers a session that is not running, which a reply resumes.
     fn exited(&mut self, known: Known) {
         self.ended.push_back(known);
-        if self.ended.len() > ENDED_MAX {
-            self.ended.pop_front();
+        if self.ended.len() > ENDED_MAX
+            && let Some(forgotten) = self.ended.pop_front()
+            && let Some(app) = self.app
+        {
+            app.lists().forget(&forgotten.id);
         }
         self.save_ended();
     }

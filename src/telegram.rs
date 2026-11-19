@@ -852,7 +852,10 @@ mod tests {
 
     #[test]
     fn an_inline_link_to_a_file_opens_it_in_the_mini_app() {
-        let links = Links::new(Some("https://t.me/b/a"), "s", None);
+        let directory = tempfile::tempdir().expect("a directory");
+        let lists = crate::web::Lists::new(directory.path().to_owned());
+        let app = crate::web::App::new("b", std::sync::Arc::new(lists));
+        let links = Links::new(Some(&app), "s", None);
         let opened = |destinations: &[&str]| -> Vec<String> {
             links
                 .as_ref()

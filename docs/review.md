@@ -1,13 +1,14 @@
 # Review page
 
-Claude Code links to the files it talks about, as in `[listen.rs:588](src/listen.rs#L588)`.
-Once `WEB_LISTEN` is set, each inline link of a message whose target has no scheme opens
-a page of every file the message links to in the bot's main Mini App, which the daemon
-serves. The page opens at the link's own file and at the lines a fragment `#L12` or
-`#L12-L20` names, or else a suffix `:12` or `:12-20`, and tints the lines of every link.
-A message linking more files than a link can carry opens the link's own file alone, and
-a link too long even for that stays as Claude Code wrote it. A relative path resolves in
-the session's directory.
+Claude Code links to the files it talks about, as in
+`[listen.rs:588](src/listen.rs#L588)`. Once `WEB_LISTEN` is set, each inline link of a
+message whose target has no scheme opens a page of every file the message links to in
+the bot's main Mini App, which the daemon serves. The page opens at the link's own file
+and at the lines a fragment `#L12` or `#L12-L20` names, or else a suffix `:12` or
+`:12-20`, and tints the lines of every link. A link carries the files of its message.
+When they are more than a link can carry, the daemon keeps their list under
+`$XDG_STATE_HOME/klaudo/links/` for as long as it remembers the session, and the link
+names the list. A relative path resolves in the session's directory.
 
 A turn of a session in a git working tree that changed a tracked file there ends with a
 link to the changes, as in `[Review changes: 3 commits, 5 files, +120 -30](https://t.me/<bot>?startapp=…)`.

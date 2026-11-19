@@ -30,7 +30,7 @@ use tokio::sync::oneshot;
 use crate::changes::{self, Commit};
 use crate::hook;
 use crate::telegram::{Sound, Telegram};
-use crate::web::{self, Linked, Opens, Target};
+use crate::web::{self, Linked, Lists, Opens, Target};
 
 use super::chat::{IN_DIALOG, unseen};
 use super::turn::Ask;
@@ -200,9 +200,15 @@ struct Server {
     landed: Sender<Arrival>,
     /// The entity tag of each of `ASSETS`, so a browser keeps a page it already has.
     tags: Vec<String>,
+    lists: Arc<Lists>,
 }
 
-pub(super) fn serve(listener: TcpListener, telegram: Arc<Telegram>, landed: Sender<Arrival>) {
+pub(super) fn serve(
+    listener: TcpListener,
+    telegram: Arc<Telegram>,
+    landed: Sender<Arrival>,
+    lists: Arc<Lists>,
+) {
     let token = crate::telegram::setting("BOT_TOKEN").expect("the daemon has a BOT_TOKEN");
     let (bot, _) = token
         .split_once(':')
@@ -213,6 +219,7 @@ pub(super) fn serve(listener: TcpListener, telegram: Arc<Telegram>, landed: Send
         telegram,
         landed,
         tags: ASSETS.iter().map(|(_, _, body)| tag(body)).collect(),
+        lists,
     });
     listener
         .set_nonblocking(true)
@@ -488,8 +495,8 @@ impl Server {
             .telegram
             .guest(&signed.user)
             .map_err(|reason| (StatusCode::FORBIDDEN, reason.to_owned()))?;
-        let target = Target::decode(&signed.start)
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "the link names no file".to_owned()))?;
+        let target = Target::decode(&signed.start, &self.lists)
+            .map_err(|reason| (StatusCode::BAD_REQUEST, reason.to_owned()))?;
         let visit = Visit {
             session: target.session.clone(),
             guest,
