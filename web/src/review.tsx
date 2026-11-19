@@ -21,7 +21,7 @@ import {
   type Range,
   type Start,
 } from './api';
-import { excerpt, rows, type Point, type Row } from './diff';
+import { excerpt, real, rows, type Point, type Row, type Shift } from './diff';
 import {
   EMPTY,
   Editor,
@@ -38,10 +38,14 @@ import {
   type Draft,
 } from './notes';
 
-/** A file the page shows: its diff, and the lines a message's links name in it. */
+/**
+ * A file the page shows: its diff, the lines a message's links name in it, and where
+ * the lines of its old side really are when it hides changes.
+ */
 interface Shown {
   diff: FileDiffMetadata;
   marked: readonly Range[];
+  shifts: readonly Shift[];
 }
 
 /**
@@ -326,7 +330,7 @@ function listed(opened: Opened): Listed[] {
             ? diff.name
             : `${diff.prevName} → ${diff.name}`,
         hint: counts(diff),
-        shown: { diff, marked: [] },
+        shown: { diff, marked: [], shifts: [] },
       }));
   }
   return opened.files.map((file) => {
@@ -335,7 +339,7 @@ function listed(opened: Opened): Listed[] {
     }
     // A link naming no lines shows the whole file.
     const whole = [{ from: 1, to: Infinity }];
-    const diff = excerpt(
+    const { diff, shifts } = excerpt(
       { name: file.path, contents: file.old ?? file.content },
       { name: file.path, contents: file.content },
       file.lines.length > 0 ? file.lines : whole,
@@ -345,7 +349,7 @@ function listed(opened: Opened): Listed[] {
     return {
       path: file.path,
       hint: hint.filter(Boolean).join(' · '),
-      shown: { diff, marked: file.lines },
+      shown: { diff, marked: file.lines, shifts },
     };
   });
 }
@@ -391,16 +395,16 @@ export function Review({
   // The library loads a file whole into its metadata in place, so each stays one object.
   const list = useMemo(() => listed(opened), [opened]);
   const files = useMemo(() => list.flatMap(({ shown }) => shown ?? []), [list]);
-  const diffs = useMemo(
-    () => new Map(files.map(({ diff }) => [diff.name, diff])),
+  const shown = useMemo(
+    () => new Map(files.map((shown) => [shown.diff.name, shown])),
     [files],
   );
   const diff = (path: string) => {
-    const found = diffs.get(path);
+    const found = shown.get(path);
     if (found === undefined) {
       throw new Error(`${path} is in no diff`);
     }
-    return found;
+    return found.diff;
   };
 
   const since = opened.start?.since ?? null;
@@ -409,9 +413,15 @@ export function Review({
     notes: [...notes.values()].map(({ span, quote, draft }) => {
       const fileDiff = diff(span.path);
       const old = fileDiff.prevName ?? fileDiff.name;
+      // The prompt names removed lines by their numbers in the file as of the start.
+      const shifts = shown.get(span.path)?.shifts ?? [];
       return {
         new: quote.new && { path: fileDiff.name, ...quote.new },
-        old: quote.old && { path: old, ...quote.old },
+        old: quote.old && {
+          path: old,
+          from: real(shifts, quote.old.from),
+          to: real(shifts, quote.old.to),
+        },
         lines: quote.lines,
         text: draft.text.trim(),
         suggestion: draft.suggestion,

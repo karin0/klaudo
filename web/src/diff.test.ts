@@ -1,7 +1,7 @@
 import type { FileDiffMetadata } from '@pierre/diffs';
 import { describe, expect, test } from 'vitest';
 import type { Range } from './api';
-import { excerpt, rows } from './diff';
+import { excerpt, real, rows } from './diff';
 
 const CONTEXT = 5;
 const WHOLE = [{ from: 1, to: Infinity }];
@@ -22,7 +22,7 @@ const cut = (oldText: string, newText: string, marked: readonly Range[]) =>
     { name: 'a.ts', contents: newText },
     marked,
     CONTEXT,
-  );
+  ).diff;
 
 /** The first and last line each hunk takes of the old and the new side. */
 const spans = (diff: FileDiffMetadata) =>
@@ -31,7 +31,7 @@ const spans = (diff: FileDiffMetadata) =>
     new: [hunk.additionStart, hunk.additionStart + hunk.additionCount - 1],
   }));
 
-/** Asserts that expanding every collapsed region shows both files whole. */
+/** Asserts that expanding every collapsed region shows both sides whole. */
 function expandsTo(diff: FileDiffMetadata, oldText: string, newText: string) {
   expect(diff.isPartial).toBe(false);
   const all = rows(diff);
@@ -58,23 +58,73 @@ describe('excerpt', () => {
     expandsTo(diff, text, text);
   });
 
-  test('joins a change and a range whose context meets it into one hunk', () => {
+  test('shows a change inside the context of a range', () => {
     const oldText = lines(1, 40).join('');
     const newText = [...lines(1, 19), 'changed\n', ...lines(21, 40)].join('');
-    const diff = cut(oldText, newText, [{ from: 9, to: 9 }]);
-    expect(spans(diff)).toEqual([{ old: [4, 25], new: [4, 25] }]);
+    const diff = cut(oldText, newText, [{ from: 16, to: 16 }]);
+    expect(spans(diff)).toEqual([{ old: [11, 21], new: [11, 21] }]);
     expandsTo(diff, oldText, newText);
   });
 
-  test('keeps a change and a range apart when lines lie between their context', () => {
+  test('collapses a change no link names, which expands as the file is', () => {
     const oldText = lines(1, 40).join('');
     const newText = [...lines(1, 19), 'changed\n', ...lines(21, 40)].join('');
     const diff = cut(oldText, newText, [{ from: 2, to: 2 }]);
-    expect(spans(diff)).toEqual([
-      { old: [1, 7], new: [1, 7] },
-      { old: [15, 25], new: [15, 25] },
-    ]);
-    expandsTo(diff, oldText, newText);
+    expect(spans(diff)).toEqual([{ old: [1, 7], new: [1, 7] }]);
+    expect(rows(diff).every((row) => row.mark === ' ')).toBe(true);
+    expandsTo(diff, newText, newText);
+  });
+
+  test('collapses a change of the last line and its missing newline', () => {
+    const oldText = ended.slice(0, -1);
+    const newText = `${ended}more\n`;
+    const diff = cut(oldText, newText, [{ from: 1, to: 1 }]);
+    expect(spans(diff)).toEqual([{ old: [1, 6], new: [1, 6] }]);
+    expect(diff.hunks[0]).toMatchObject({
+      noEOFCRDeletions: false,
+      noEOFCRAdditions: false,
+    });
+    expandsTo(diff, newText, newText);
+  });
+
+  test('shows the whole of a change a link names a line of', () => {
+    const oldText = lines(1, 60).join('');
+    const changed = Array.from({ length: 12 }, () => 'changed\n');
+    const newText = [
+      ...lines(1, 3),
+      'added\n',
+      ...lines(4, 29),
+      ...changed,
+      ...lines(40, 60),
+    ].join('');
+    const { diff, shifts } = excerpt(
+      { name: 'a.ts', contents: oldText },
+      { name: 'a.ts', contents: newText },
+      [{ from: 35, to: 35 }],
+      CONTEXT,
+    );
+    // The old side takes the line added above, which the hunk hides, so it numbers the
+    // removed lines one past where the file as of the start has them.
+    expect(spans(diff)).toEqual([{ old: [26, 45], new: [26, 47] }]);
+    const all = rows(diff);
+    const removed = all.filter((row) => row.mark === '-');
+    expect(removed.map((row) => real(shifts, row.line))).toEqual(
+      Array.from({ length: 10 }, (_, index) => 30 + index),
+    );
+    expect(all.filter((row) => row.mark === '+')).toHaveLength(12);
+    const taking = [...lines(1, 3), 'added\n', ...lines(4, 60)].join('');
+    expandsTo(diff, taking, newText);
+  });
+
+  test('shows the lines removed between two lines a link names', () => {
+    const oldText = lines(1, 40).join('');
+    const newText = [...lines(1, 19), ...lines(23, 40)].join('');
+    const named = cut(oldText, newText, [{ from: 19, to: 20 }]);
+    expect(spans(named)).toEqual([{ old: [14, 28], new: [14, 25] }]);
+    // Past the context of a range, a removal stays collapsed.
+    const apart = cut(oldText, newText, [{ from: 10, to: 10 }]);
+    expect(spans(apart)).toEqual([{ old: [5, 15], new: [5, 15] }]);
+    expandsTo(apart, newText, newText);
   });
 
   test('keeps the whole file for a link naming no lines', () => {
@@ -119,7 +169,7 @@ describe('excerpt', () => {
   ])(
     'marks a missing newline at the end of %s',
     (_, oldText, newText, deletions, additions) => {
-      const diff = cut(oldText, newText, [{ from: 2, to: 2 }]);
+      const diff = cut(oldText, newText, [{ from: 20, to: 20 }]);
       expect(diff.hunks.at(-1)).toMatchObject({
         noEOFCRDeletions: deletions,
         noEOFCRAdditions: additions,

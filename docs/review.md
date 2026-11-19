@@ -20,16 +20,18 @@ Both links open one page, which shows a working tree since a commit: every chang
 or the files a message links to. The daemon records the commit checked out as a turn
 starts, and the page compares it with the working tree as it is when the page opens,
 untracked files included, so an older link shows everything since its turn began. A
-linked file in the session's working tree shows its changes since the commit, and any
-other linked file shows as it is. Each file shows its changes and the lines its links
-name, with 5 unchanged lines around each, and collapses the rest, which a tap expands. A
-link naming no lines shows its whole file. A menu on the page lists the latest 30
-commits of the first-parent history of `HEAD`, grouped by whether the changes take them
-in, and choosing one moves the start to its parent, so the changes then take in that
-commit, every later one, and the working tree. The menu can also move the start to
-`HEAD`, which leaves the working tree alone. The page also lists the files, each
-scrolling the page to itself on a tap, and a file the visitor cannot read shows why in
-the list. The arrow in a file's header folds it.
+changed file shows each of its changes. A file a message links to shows the lines its
+links name, and when the session's working tree holds it, each change since the commit
+that a link names a line of, so the places a message points at stand apart from the
+file's other changes. Both show 5 lines around each, where any other change shows too,
+and collapse the rest, which a tap expands as the file is, without the marks of the
+changes collapsed there. A link naming no lines shows its whole file. A menu on the page
+lists the latest 30 commits of the first-parent history of `HEAD`, grouped by whether
+the changes take them in, and choosing one moves the start to its parent, so the changes
+then take in that commit, every later one, and the working tree. The menu can also move
+the start to `HEAD`, which leaves the working tree alone. The page also lists the files,
+each scrolling the page to itself on a tap, and a file the visitor cannot read shows why
+in the list. The arrow in a file's header folds it.
 
 `/diff` posts such a link under the head of the session a message would reach, for the
 changes of its working tree since `HEAD` forked from its upstream, or since `HEAD` when
