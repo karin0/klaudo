@@ -27,7 +27,7 @@ use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use crate::changes::{self, Commit};
+use crate::changes::{self, Commit, Place};
 use crate::hook;
 use crate::telegram::{Sound, Telegram};
 use crate::web::{self, Linked, Lists, Opens, Target};
@@ -95,17 +95,15 @@ pub(super) struct Tree {
 
 type Refusal = (StatusCode, String);
 
-/// What the page sends back: its comments, the commit the changes it showed start from,
-/// which the lines it shows as removed belong to, and a message for the whole review.
+/// What the page sends back: its comments, and a message for the whole review.
 #[derive(Deserialize)]
 struct Review {
-    since: Option<String>,
     notes: Vec<Note>,
     text: String,
 }
 
-/// One comment of a review, on the lines it spans in the file as it is, in the file as
-/// of `since`, or in both.
+/// One comment of a review, on the lines it spans of the new side of the changes the
+/// page showed, of the old side, or of both.
 #[derive(Deserialize)]
 struct Note {
     new: Option<Lines>,
@@ -117,8 +115,10 @@ struct Note {
     suggestion: Option<String>,
 }
 
+/// Lines of a file as of `commit`, or of the file as it is without one.
 #[derive(Deserialize)]
 struct Lines {
+    commit: Option<String>,
     path: String,
     from: usize,
     to: usize,
@@ -186,8 +186,7 @@ enum Read {
     },
 }
 
-/// A changed file as of the start and as it is, for the page to show the lines around a
-/// change.
+/// A changed file on each side of a change, for the page to show the lines around it.
 #[derive(Serialize)]
 struct Contents {
     old: String,
@@ -263,6 +262,7 @@ impl Server {
     async fn answer(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
         let answered = match (request.method(), request.uri().path()) {
             (&Method::GET, "/api/open") => self.open(&request).await,
+            (&Method::GET, "/api/steps") => self.steps(&request).await,
             (&Method::GET, "/api/contents") => self.contents(&request).await,
             (&Method::POST, "/api/review") => self.review(request).await,
             (&Method::GET, path) => self.asset(path, &request),
@@ -363,39 +363,88 @@ impl Server {
         Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
     }
 
-    /// The file `?path=` names as it is, and as `?prev=` named it at `?since=`.
+    /// What each commit since `?since=` changed of what the link names.
+    async fn steps(&self, request: &Request<Incoming>) -> Result<Response<Full<Bytes>>, Refusal> {
+        let (visit, target) = self.visitor(request)?;
+        let since = parameter(request, "since")
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "no since given".to_owned()))?;
+        let (top, places) = match target.opens {
+            Opens::Changes { path, .. } => {
+                (self.tree(visit, path).await?.top.map_err(conflict)?, None)
+            }
+            Opens::Files { files, .. } => {
+                let top = self.tree(visit.clone(), ".".to_owned()).await?.top;
+                let top = top.map_err(conflict)?;
+                let paths = files.iter().map(|linked| linked.path.clone()).collect();
+                let found = self.files(visit, paths).await?;
+                // A file outside the working tree has no commits to show.
+                let places = files
+                    .into_iter()
+                    .zip(found)
+                    .filter_map(|(linked, found)| {
+                        let found = found.ok()?;
+                        Some(Place {
+                            path: found.strip_prefix(&top).ok()?.to_str()?.to_owned(),
+                            lines: linked.lines.iter().map(|l| (l.from, l.to)).collect(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (top, Some(places))
+            }
+        };
+        let steps = blocking(move || {
+            changes::verify(&top, &since)?;
+            changes::steps(&top, &since, places.as_deref())
+        })
+        .await?;
+        let body = serde_json::to_vec(&steps).expect("steps serialize");
+        Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
+    }
+
+    /// The file `?path=` names as of the commit `?at=`, or as it is without one, and as
+    /// `?prev=` named it at `?since=`. A side that has no such file is empty.
     async fn contents(
         &self,
         request: &Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, Refusal> {
         let (visit, target) = self.visitor(request)?;
-        let Opens::Changes { path: held, .. } = target.opens else {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "the link names no changes".to_owned(),
-            ));
-        };
         let missing = |name: &str| (StatusCode::BAD_REQUEST, format!("no {name} given"));
         let since = parameter(request, "since").ok_or_else(|| missing("since"))?;
         let path = parameter(request, "path").ok_or_else(|| missing("path"))?;
         let prev = parameter(request, "prev").ok_or_else(|| missing("prev"))?;
+        let at = parameter(request, "at");
         let top = self
-            .tree(visit.clone(), held)
+            .tree(visit.clone(), held(&target.opens))
             .await?
             .top
             .map_err(conflict)?;
-        let file = self
-            .files(visit, vec![top.join(&path).display().to_string()])
-            .await?
-            .pop()
-            .expect("a file for the path asked")
-            .map_err(|reason| (StatusCode::CONFLICT, reason))?;
-        let new = read(&file, &path)?;
-        let old = blocking(move || {
-            changes::verify(&top, &since)?;
-            changes::old(&top, &since, &prev)?.ok_or_else(|| format!("{since} has no {prev}"))
+        let new = if at.is_some() {
+            None
+        } else {
+            let file = self
+                .files(visit, vec![top.join(&path).display().to_string()])
+                .await?
+                .pop()
+                .expect("a file for the path asked")
+                .map_err(|reason| (StatusCode::CONFLICT, reason))?;
+            Some(read(&file, &path)?)
+        };
+        let (old, committed) = blocking({
+            let path = path.clone();
+            move || {
+                let side = |commit: &str, path: &str| -> Result<Vec<u8>, String> {
+                    changes::verify(&top, commit)?;
+                    Ok(changes::old(&top, commit, path)?.unwrap_or_default())
+                };
+                let committed = at.map(|at| side(&at, &path)).transpose()?;
+                Ok((side(&since, &prev)?, committed))
+            }
         })
         .await?;
+        let new = match (new, committed) {
+            (Some(new), _) => new,
+            (None, committed) => was(committed.unwrap_or_default(), &path)?,
+        };
         let old = was(old, &path)?;
         let body = serde_json::to_vec(&Contents { old, new }).expect("contents serialize");
         Ok(reply(StatusCode::OK, "application/json", Bytes::from(body)))
@@ -448,11 +497,7 @@ impl Server {
             .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
         // A path the page shows changes of is relative to the top of the working tree,
         // and the prompt writes it as the session would.
-        let held = match &target.opens {
-            Opens::Files { .. } => ".".to_owned(),
-            Opens::Changes { path, .. } => path.clone(),
-        };
-        let Tree { dir, top } = self.tree(visit.clone(), held).await?;
+        let Tree { dir, top } = self.tree(visit.clone(), held(&target.opens)).await?;
         let top = match target.opens {
             Opens::Files { .. } => top.ok(),
             Opens::Changes { .. } => Some(top.map_err(conflict)?),
@@ -520,6 +565,14 @@ impl Server {
             .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, late.to_owned()))?
             .expect("the machine answers every request")
             .map_err(|reason| (StatusCode::CONFLICT, reason))
+    }
+}
+
+/// The directory, in the session's, whose working tree a link shows the changes of.
+fn held(opens: &Opens) -> String {
+    match opens {
+        Opens::Files { .. } => ".".to_owned(),
+        Opens::Changes { path, .. } => path.clone(),
     }
 }
 
@@ -753,9 +806,9 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 /// suggests in a diff, or else the lines it comments on, quoted when they are all in the
 /// file as it is, then what the reviewer wrote. A suggestion's place is marked
 /// `(suggestion)`, so Claude judges it before applying it.
-/// `shown` writes a path of the file as it is as the session would. Removed lines are
-/// written as git names a file as of a commit, so Claude does not read them as lines of
-/// the file as it is.
+/// `shown` writes a path of the file as it is as the session would. Lines of a commit,
+/// as removed lines are, are written as git names a file as of a commit, so Claude does
+/// not read them as lines of the file as it is.
 fn prompt(review: &Review, shown: impl Fn(&str) -> String) -> Result<String, String> {
     if review.notes.is_empty() {
         return Err("the review holds no comment".to_owned());
@@ -770,18 +823,13 @@ fn prompt(review: &Review, shown: impl Fn(&str) -> String) -> Result<String, Str
             text,
             suggestion,
         } = note;
-        let since = || match &review.since {
-            Some(since) if changes::hash(since) => Ok(&since[..12]),
-            _ => Err("removed lines need the commit they were removed since".to_owned()),
-        };
+        if old.as_ref().is_some_and(|old| old.commit.is_none()) {
+            return Err("removed lines need the commit they were removed since".to_owned());
+        }
         let place = match (new, old) {
-            (Some(new), None) => new.at(&shown(&new.path))?,
-            (None, Some(old)) => old.at(&format!("{}:{}", since()?, old.path))?,
-            (Some(new), Some(old)) => format!(
-                "{} (was {})",
-                new.at(&shown(&new.path))?,
-                old.at(&format!("{}:{}", since()?, old.path))?
-            ),
+            (Some(new), None) => new.at(&shown)?,
+            (None, Some(old)) => old.at(&shown)?,
+            (Some(new), Some(old)) => format!("{} (was {})", new.at(&shown)?, old.at(&shown)?),
             (None, None) => return Err("a comment spans no lines".to_owned()),
         };
         let text = text.trim();
@@ -800,7 +848,7 @@ fn prompt(review: &Review, shown: impl Fn(&str) -> String) -> Result<String, Str
             None => place,
         }];
         match suggestion {
-            Some(_) if old.is_some() => {
+            Some(_) if old.is_some() || new.as_ref().is_some_and(|new| new.commit.is_some()) => {
                 return Err("a suggestion rewrites lines of the file as it is".to_owned());
             }
             Some(suggestion) => {
@@ -831,9 +879,15 @@ fn prompt(review: &Review, shown: impl Fn(&str) -> String) -> Result<String, Str
 }
 
 impl Lines {
-    /// `file` followed by the lines, as in `src/main.rs:3-5`.
-    fn at(&self, file: &str) -> Result<String, String> {
+    /// The file followed by the lines, as in `src/main.rs:3-5`: its path as `shown`
+    /// writes it, or behind the commit the lines are of, as in `0123456789ab:src/main.rs`.
+    fn at(&self, shown: impl Fn(&str) -> String) -> Result<String, String> {
         let Self { from, to, .. } = *self;
+        let file = match &self.commit {
+            None => shown(&self.path),
+            Some(commit) if changes::hash(commit) => format!("{}:{}", &commit[..12], self.path),
+            Some(commit) => return Err(format!("{commit} is no commit hash")),
+        };
         if from == 0 || to < from {
             return Err(format!("{file}: {from} to {to} is no range of lines"));
         }
@@ -1082,6 +1136,7 @@ mod tests {
 
     fn lines(path: &str, from: usize, to: usize) -> Lines {
         Lines {
+            commit: None,
             path: path.to_owned(),
             from,
             to,
@@ -1103,9 +1158,16 @@ mod tests {
 
     fn review(notes: Vec<Note>) -> Review {
         Review {
-            since: None,
             notes,
             text: String::new(),
+        }
+    }
+
+    /// Lines of a file as of the commit `SINCE`.
+    fn committed(path: &str, from: usize, to: usize) -> Lines {
+        Lines {
+            commit: Some(SINCE.to_owned()),
+            ..lines(path, from, to)
         }
     }
 
@@ -1157,25 +1219,26 @@ mod tests {
     const SINCE: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
-    fn removed_lines_are_named_as_of_the_start() {
+    fn lines_of_a_commit_are_named_as_git_names_them() {
         let replaced = Note {
             new: Some(lines("src/b.rs", 4, 4)),
-            old: Some(lines("src/a.rs", 3, 4)),
+            old: Some(committed("src/a.rs", 3, 4)),
             lines: vec![" x".to_owned(), "-y".to_owned(), "+z".to_owned()],
             text: "why".to_owned(),
             suggestion: None,
         };
         let removed = Note {
             new: None,
-            old: Some(lines("src/a.rs", 9, 9)),
+            old: Some(committed("src/a.rs", 9, 9)),
             lines: vec!["-w".to_owned()],
             ..note(0, 0, "", "gone?", None)
         };
-        let review = Review {
-            since: Some(SINCE.to_owned()),
-            notes: vec![replaced, removed],
-            text: String::new(),
+        let added = Note {
+            new: Some(committed("src/a.rs", 2, 2)),
+            lines: vec!["+v".to_owned()],
+            ..note(0, 0, "", "then?", None)
         };
+        let review = review(vec![replaced, removed, added]);
         assert_eq!(
             prompt(&review, |path| format!("sub/{path}")).expect("a prompt"),
             "Review:\n\
@@ -1192,7 +1255,11 @@ mod tests {
              ```diff\n\
              -w\n\
              ```\n\
-             gone?"
+             gone?\n\
+             \n\
+             0123456789ab:src/a.rs:2\n\
+             > v\n\
+             then?"
         );
     }
 
@@ -1230,31 +1297,33 @@ mod tests {
     }
 
     #[test]
-    fn removed_lines_need_their_start_and_take_no_suggestion() {
-        let removed = || Note {
+    fn removed_lines_need_their_commit_and_only_the_file_as_it_is_takes_a_suggestion() {
+        let removed = |old: Lines| Note {
             new: None,
-            old: Some(lines("a.rs", 2, 2)),
+            old: Some(old),
             lines: vec!["-x".to_owned()],
             ..note(0, 0, "", "why", None)
         };
-        assert!(prompt(&review(vec![removed()]), str::to_owned).is_err());
-        let suggested = Review {
-            since: Some(SINCE.to_owned()),
-            notes: vec![Note {
-                suggestion: Some("y".to_owned()),
-                ..removed()
-            }],
-            text: String::new(),
+        assert!(prompt(&review(vec![removed(lines("a.rs", 2, 2))]), str::to_owned).is_err());
+        let short = Lines {
+            commit: Some(SINCE[..12].to_owned()),
+            ..lines("a.rs", 2, 2)
         };
-        assert!(prompt(&suggested, str::to_owned).is_err());
-        let unmarked = Review {
-            since: Some(SINCE.to_owned()),
-            notes: vec![Note {
-                lines: vec!["x".to_owned()],
-                ..removed()
-            }],
-            text: String::new(),
+        assert!(prompt(&review(vec![removed(short)]), str::to_owned).is_err());
+        let suggested = Note {
+            suggestion: Some("y".to_owned()),
+            ..removed(committed("a.rs", 2, 2))
         };
-        assert!(prompt(&unmarked, str::to_owned).is_err());
+        assert!(prompt(&review(vec![suggested]), str::to_owned).is_err());
+        let past = Note {
+            new: Some(committed("a.rs", 2, 2)),
+            ..note(0, 0, "x", "", Some("y"))
+        };
+        assert!(prompt(&review(vec![past]), str::to_owned).is_err());
+        let unmarked = Note {
+            lines: vec!["x".to_owned()],
+            ..removed(committed("a.rs", 2, 2))
+        };
+        assert!(prompt(&review(vec![unmarked]), str::to_owned).is_err());
     }
 }

@@ -5684,7 +5684,7 @@ fn a_review_from_the_mini_app_is_typed_into_its_session() {
     let (daemon, port) = served(root, pid);
 
     let owner = signed(OWNER, &link(SHARED, "src/a.rs"));
-    let review = json!({"since": null, "notes": [{"new": {"path": "src/a.rs", "from": 2, "to": 2},
+    let review = json!({"notes": [{"new": {"commit": null, "path": "src/a.rs", "from": 2, "to": 2},
         "old": null, "lines": [" fn b() {}"], "text": "rename it", "suggestion": null}], "text": ""});
     let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
     assert_eq!(status, 204, "{refusal}");
@@ -5813,17 +5813,11 @@ fn a_turn_that_changed_its_working_tree_links_to_its_changes() {
         ])
     );
 
-    let contents = format!("/api/contents?since={head}&path=src/a.rs&prev=src/a.rs");
-    let (status, contents) = page(port, "GET", &contents, &owner, "");
-    assert_eq!(status, 200, "{contents}");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&contents).expect("contents"),
-        json!({"old": "fn a() {}\nfn b() {}\n", "new": "fn a() {}\nfn c() {}\n"})
-    );
+    uncommitted(port, &head, &[&owner, &signed(OWNER, &files)]);
 
-    let review = json!({"since": head, "notes": [{
-        "new": {"path": "src/a.rs", "from": 2, "to": 2},
-        "old": {"path": "src/a.rs", "from": 2, "to": 2},
+    let review = json!({"notes": [{
+        "new": {"commit": null, "path": "src/a.rs", "from": 2, "to": 2},
+        "old": {"commit": head, "path": "src/a.rs", "from": 2, "to": 2},
         "lines": ["-fn b() {}", "+fn c() {}"], "text": "why c?", "suggestion": null}], "text": ""});
     let (status, refusal) = page(port, "POST", "/api/review", &owner, &review.to_string());
     assert_eq!(status, 204, "{refusal}");
@@ -5973,6 +5967,32 @@ fn telegram_public_key() -> String {
         .as_ref()
         .iter()
         .fold(String::new(), |key, byte| format!("{key}{byte:02x}"))
+}
+
+/// Asserts what the page of each of `links` is answered about the commits since `head`,
+/// the commit checked out, and about `src/a.rs`, which the working tree has edited.
+fn uncommitted(port: u16, head: &str, links: &[&str]) {
+    // No commit since the start has a change to show, of the lines linked or of any.
+    let steps = format!("/api/steps?since={head}");
+    for link in links {
+        let (status, steps) = page(port, "GET", &steps, link, "");
+        assert_eq!(status, 200, "{steps}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&steps).expect("steps"),
+            json!({"steps": [], "more": false})
+        );
+    }
+    // A change is expanded with the file as it is, and a commit's change with the file
+    // as of the commit.
+    for (at, new) in [("", "fn c() {}"), (&*format!("&at={head}"), "fn b() {}")] {
+        let contents = format!("/api/contents?since={head}{at}&path=src/a.rs&prev=src/a.rs");
+        let (status, contents) = page(port, "GET", &contents, links[0], "");
+        assert_eq!(status, 200, "{contents}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&contents).expect("contents"),
+            json!({"old": "fn a() {}\nfn b() {}\n", "new": format!("fn a() {{}}\n{new}\n")})
+        );
+    }
 }
 
 /// The `initData` Telegram hands the Mini App of the test's bot when `user` opens it from

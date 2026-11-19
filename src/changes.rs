@@ -51,6 +51,36 @@ pub struct Commit {
     pub included: bool,
 }
 
+/// What one commit changed, as a git patch.
+#[derive(Serialize)]
+pub struct Step {
+    pub commit: Commit,
+    pub patch: String,
+}
+
+/// The latest commits since a start that changed what a page shows, oldest first, and
+/// whether more of them came before.
+#[derive(Default, Serialize)]
+pub struct Steps {
+    pub steps: Vec<Step>,
+    pub more: bool,
+}
+
+/// A file a link names by its path from the top of a working tree, and the lines it
+/// names there, from 1, none for the whole file.
+pub struct Place {
+    pub path: String,
+    pub lines: Vec<(usize, usize)>,
+}
+
+/// The lines a hunk of a patch without context takes of each side: where they start,
+/// or the line before them when there are none, and how many they are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Hunk {
+    old: (usize, usize),
+    new: (usize, usize),
+}
+
 fn git(top: &Path) -> Command {
     let mut git = Command::new("git");
     git.arg("-C").arg(top).args(["-c", "core.quotePath=false"]);
@@ -251,19 +281,162 @@ pub fn commits(top: &Path, since: &str) -> Result<Vec<Commit>, String> {
     while let (Some(hash), Some(parents), Some(time), Some(subject)) =
         (fields.next(), fields.next(), fields.next(), fields.next())
     {
-        commits.push(Commit {
-            hash: hash.to_owned(),
-            parent: parents
-                .split(' ')
-                .next()
-                .filter(|parent| !parent.is_empty())
-                .map(str::to_owned),
-            time: time.parse().unwrap_or_default(),
-            subject: subject.to_owned(),
-            included: included.lines().any(|line| line == hash),
-        });
+        let included = included.lines().any(|line| line == hash);
+        commits.push(commit(hash, parents, time, subject, included));
     }
     Ok(commits)
+}
+
+/// A commit from the fields `git log` prints of it: its hash, its parents' hashes with
+/// spaces between, its time in Unix seconds, and its subject.
+fn commit(hash: &str, parents: &str, time: &str, subject: &str, included: bool) -> Commit {
+    Commit {
+        hash: hash.to_owned(),
+        parent: parents
+            .split(' ')
+            .next()
+            .filter(|parent| !parent.is_empty())
+            .map(str::to_owned),
+        time: time.parse().unwrap_or_default(),
+        subject: subject.to_owned(),
+        included,
+    }
+}
+
+/// What each commit since `since`, which `verify` passed, changed: all of it, or with
+/// `places`, what it changed of their lines, which git follows back from `HEAD` through
+/// the commits that moved them.
+pub fn steps(top: &Path, since: &str, places: Option<&[Place]>) -> Result<Steps, String> {
+    let range = format!("{since}..HEAD");
+    // git refuses to follow lines through no commit.
+    if run(git(top).args(["rev-list", "--max-count=1", &range]))?.is_empty() {
+        return Ok(Steps::default());
+    }
+    let mut log = git(top);
+    log.args([
+        "log",
+        "--first-parent",
+        "--no-color",
+        "--no-ext-diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--date=unix",
+        "--format=%x00%H%x00%P%x00%cd%x00%s%x00",
+        &format!("--max-count={}", COMMITS_MAX + 1),
+    ]);
+    match places {
+        None => {
+            log.args(["--patch", "--diff-merges=first-parent", "-M"])
+                .arg(format!("--unified={CONTEXT}"));
+        }
+        Some(places) => {
+            let followed = followed(top, places)?;
+            if followed.is_empty() {
+                return Ok(Steps::default());
+            }
+            log.args(followed);
+        }
+    }
+    let logged = text(&run(log.arg(range))?);
+    let mut fields = logged.split('\0').skip(1);
+    let mut steps = Vec::new();
+    while let (Some(hash), Some(parents), Some(time), Some(subject), Some(patch)) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) {
+        steps.push(Step {
+            commit: commit(hash, parents, time, subject, true),
+            patch: patch.trim_start_matches('\n').to_owned(),
+        });
+    }
+    let more = steps.len() > COMMITS_MAX;
+    steps.truncate(COMMITS_MAX);
+    steps.reverse();
+    Ok(Steps { steps, more })
+}
+
+/// The `-L` options that have `git log` follow `places` from `HEAD`. A link names lines
+/// of the working tree, so its lines are those of `HEAD` they came from, and a place
+/// `HEAD` has no line of is left out.
+fn followed(top: &Path, places: &[Place]) -> Result<Vec<String>, String> {
+    let mut followed = Vec::new();
+    for Place { path, lines } in places {
+        let Some(head) = old(top, "HEAD", path)? else {
+            continue;
+        };
+        let count = head.split_inclusive(|byte| *byte == b'\n').count();
+        let whole = [(1, count)];
+        let hunks = if lines.is_empty() {
+            Vec::new()
+        } else {
+            let patch = text(&run(git(top).args([
+                "--literal-pathspecs",
+                "diff-index",
+                "--patch",
+                "--no-color",
+                "--no-ext-diff",
+                "--unified=0",
+                "HEAD",
+                "--",
+                path,
+            ]))?);
+            patch.lines().filter_map(hunk).collect()
+        };
+        for &(from, to) in if lines.is_empty() { &whole[..] } else { lines } {
+            if let Some((from, to)) = before(&hunks, from, to)
+                && from <= count
+            {
+                followed.push(format!("-L{from},{}:{path}", to.min(count)));
+            }
+        }
+    }
+    Ok(followed)
+}
+
+/// The hunk a `line` of a patch opens, as in `@@ -3,2 +4 @@`, where a side of one line
+/// leaves its count out.
+fn hunk(line: &str) -> Option<Hunk> {
+    let mut sides = line.strip_prefix("@@ -")?.split(' ');
+    let side = |side: &str| {
+        let (start, count) = side.split_once(',').unwrap_or((side, "1"));
+        Some((start.parse().ok()?, count.parse().ok()?))
+    };
+    Some(Hunk {
+        old: side(sides.next()?)?,
+        new: side(sides.next()?.strip_prefix('+')?)?,
+    })
+}
+
+/// The lines of the old side that the lines `from` to `to` of the new side came from,
+/// through the `hunks` between the sides, in order: a line a hunk added came from the
+/// lines the hunk removed. `None` when the old side has none of them.
+fn before(hunks: &[Hunk], from: usize, to: usize) -> Option<(usize, usize)> {
+    // Where the line `at` came from, as its first line or its last.
+    let came = |at: usize, first: bool| {
+        let mut shift = 0isize;
+        for &Hunk { old, new } in hunks {
+            // A hunk adding no line stands after the line it names.
+            let (start, end) = (new.0 + usize::from(new.1 == 0), new.0 + new.1);
+            if at < start {
+                break;
+            }
+            if at < end {
+                // A hunk removing no line names the line before it.
+                return if first {
+                    old.0 + usize::from(old.1 == 0)
+                } else {
+                    old.0 + old.1.saturating_sub(1)
+                };
+            }
+            shift += old.1.cast_signed() - new.1.cast_signed();
+        }
+        at.saturating_add_signed(shift)
+    };
+    let (from, to) = (came(from, true), came(to, false));
+    (from >= 1 && from <= to).then_some((from, to))
 }
 
 /// Appends to `patch` the untracked file `name`, read from `file`, as git writes a new
@@ -493,6 +666,76 @@ mod tests {
         assert_eq!(seen(dir, "a"), Ok(true));
         assert_eq!(seen(dir, "binary"), Ok(true));
         assert_eq!(seen(dir, "ignored"), Ok(false));
+    }
+
+    #[test]
+    fn lines_of_the_working_tree_come_from_the_lines_of_head_before_its_changes() {
+        // Two lines added after line 2, lines 6 and 7 replaced by one, line 12 removed.
+        let patch = "@@ -2,0 +3,2 @@\n+a\n+b\n@@ -6,2 +8 @@\n-x\n-y\n+z\n@@ -12 +12,0 @@\n-w\n";
+        let hunks: Vec<Hunk> = patch.lines().filter_map(hunk).collect();
+        assert_eq!(
+            hunks,
+            [((2, 0), (3, 2)), ((6, 2), (8, 1)), ((12, 1), (12, 0))]
+                .map(|(old, new)| Hunk { old, new })
+        );
+        for (new, old) in [
+            ((1, 2), Some((1, 2))),
+            ((3, 4), None),
+            ((2, 5), Some((2, 3))),
+            ((4, 6), Some((3, 4))),
+            ((8, 8), Some((6, 7))),
+            ((7, 9), Some((5, 8))),
+            ((12, 13), Some((11, 13))),
+            ((13, 13), Some((13, 13))),
+        ] {
+            assert_eq!(before(&hunks, new.0, new.1), old, "{new:?}");
+        }
+    }
+
+    #[test]
+    fn each_commit_since_a_start_shows_what_it_changed_of_the_lines_followed() {
+        let temporary = tempfile::tempdir().expect("a directory");
+        let dir = temporary.path();
+        let (first, _) = repository(dir);
+        let git = |args: &[&str]| {
+            run(git(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args))
+            .expect("git runs")
+        };
+        fs::write(dir.join("a"), "0\n1\ntwo\n3\n").expect("an edit");
+        git(&["commit", "-qam", "third"]);
+        fs::write(dir.join("b"), "b\n").expect("a file");
+        git(&["add", "b"]);
+        git(&["commit", "-qm", "fourth"]);
+        // An uncommitted line above moves the line `two` to line 4.
+        fs::write(dir.join("a"), "new\n0\n1\ntwo\n3\n").expect("an edit");
+
+        let subjects = |steps: &Steps| -> Vec<String> {
+            let subjects = steps.steps.iter().map(|step| step.commit.subject.clone());
+            subjects.collect()
+        };
+        let all = steps(dir, &first, None).expect("steps");
+        assert_eq!(subjects(&all), ["second", "third", "fourth"]);
+        assert!(!all.more);
+        assert!(all.steps[2].patch.starts_with("diff --git a/b b/b\n"));
+
+        let place = |path: &str, lines: &[(usize, usize)]| Place {
+            path: path.to_owned(),
+            lines: lines.to_vec(),
+        };
+        let line = steps(dir, &first, Some(&[place("a", &[(4, 4)])])).expect("steps");
+        assert_eq!(subjects(&line), ["second"]);
+        assert!(line.steps[0].patch.ends_with("@@ -2,1 +2,1 @@\n-2\n+two\n"));
+        let whole = [place("a", &[]), place("untracked", &[(1, 1)])];
+        let whole = steps(dir, &first, Some(&whole)).expect("steps");
+        assert_eq!(subjects(&whole), ["second", "third"]);
+        // A line added since `HEAD` has no commit to show.
+        let added = steps(dir, &first, Some(&[place("a", &[(1, 1)])])).expect("steps");
+        assert!(added.steps.is_empty());
+        let head = start(dir).expect("a start").head;
+        let none = steps(dir, &head, Some(&[place("a", &[])])).expect("steps");
+        assert!(none.steps.is_empty());
     }
 
     #[test]

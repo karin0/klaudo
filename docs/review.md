@@ -34,6 +34,15 @@ the start to `HEAD`, which leaves the working tree alone. The page also lists th
 each scrolling the page to itself on a tap, and a file the visitor cannot read shows why
 in the list. The arrow in a file's header folds it.
 
+The link chooses the lines a page shows and the page chooses the commits it shows them
+over, each apart from the other. `Commits` on the page switches between the changes
+since the start together and one by one: what each commit changed, oldest first, under
+its hash and subject, then what the working tree changed since `HEAD`. Of a message's
+files, a commit shows what it changed of the lines the links name. Git follows those
+lines back from `HEAD` through each commit, so a commit that moved them in from another
+place shows them as added there, and the commits before it show none of them. The page
+shows the latest 30 commits that changed what it shows.
+
 `/diff` posts such a link under the head of the session a message would reach, for the
 changes of its working tree since `HEAD` forked from its upstream, or since `HEAD` when
 there is no upstream. `/diff <directory>` links the working tree holding that directory,
@@ -44,9 +53,9 @@ own directory still goes to the session.
 
 On the page, a tap on a line number opens a comment there, and a tap on another in
 the same file stretches it over the lines between, as a drag across line numbers does.
-A comment may span removed lines, which the prompt names as git names a
-file as of a commit, as in `0123456789ab:src/a.rs:3-4`, so Claude does not read them as
-lines of the file as it is. `Suggest change` fills an editor with the lines to rewrite,
+A comment may span removed lines or lines of a commit's change, which the prompt names
+as git names a file as of a commit, as in `0123456789ab:src/a.rs:3-4`, so Claude does
+not read them as lines of the file as it is. `Suggest change` fills an editor with the lines to rewrite,
 and only lines of the file as it is can be rewritten. The prompt marks the place of a
 suggestion `(suggestion)`, so Claude judges it before applying it. The top of the page lists the
 comments saved, each scrolling the page to its lines on a tap. `Send review` types every

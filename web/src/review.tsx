@@ -20,8 +20,18 @@ import {
   type Opened,
   type Range,
   type Start,
+  type Steps,
 } from './api';
-import { excerpt, real, rows, type Point, type Row, type Shift } from './diff';
+import {
+  excerpt,
+  isolated,
+  real,
+  rows,
+  undone,
+  type Point,
+  type Row,
+  type Shift,
+} from './diff';
 import {
   EMPTY,
   Editor,
@@ -39,13 +49,24 @@ import {
 } from './notes';
 
 /**
- * A file the page shows: its diff, the lines a message's links name in it, and where
- * the lines of its old side really are when it hides changes.
+ * A file the page shows, under an `id` of its own: its diff, the lines a message's
+ * links name in it, and where the lines of its old side really are when it hides
+ * changes. The diff is what the commit `step` changed, or without one, the changes of
+ * the file as it is since the commit `since`, `null` for none to compare with.
  */
 interface Shown {
+  id: string;
   diff: FileDiffMetadata;
   marked: readonly Range[];
   shifts: readonly Shift[];
+  since: string | null;
+  step: Commit | null;
+}
+
+/** The changes since a start commit by commit, then those of the working tree. */
+export interface Stepped {
+  steps: Steps;
+  tree: Opened;
 }
 
 /**
@@ -58,9 +79,9 @@ interface Listed {
   shown: Shown | null;
 }
 
-/** The rows of a file from `start` to `end`, in the order the view shows them. */
+/** The rows of the shown file `file` from `start` to `end`, in the order the view shows them. */
 interface Span {
-  path: string;
+  file: string;
   start: Point;
   end: Point;
 }
@@ -96,17 +117,18 @@ function find(rows: readonly Row[], { side, line }: Point): number {
 
 const point = ({ side, line }: Row): Point => ({ side, line });
 
-/** The span of `diff` between `one` and `other`, whichever the view shows first. */
-function spanned(diff: FileDiffMetadata, one: Point, other: Point): Span {
+/** The span of `shown` between `one` and `other`, whichever the view shows first. */
+function spanned({ id, diff }: Shown, one: Point, other: Point): Span {
   const all = rows(diff);
   const ends = [find(all, one), find(all, other)];
   const [start, end] = [all[Math.min(...ends)], all[Math.max(...ends)]];
   return start === undefined || end === undefined
-    ? { path: diff.name, start: one, end: other }
-    : { path: diff.name, start: point(start), end: point(end) };
+    ? { file: id, start: one, end: other }
+    : { file: id, start: point(start), end: point(end) };
 }
 
-function quoted(diff: FileDiffMetadata, { start, end }: Span): Quote {
+/** What `span` covers of `shown`, whose lines a suggestion rewrites only as the file is. */
+function quoted({ diff, step }: Shown, { start, end }: Span): Quote {
   const all = rows(diff);
   const shown = all.slice(find(all, start), find(all, end) + 1);
   const reach = (side: SelectionSide): Range | null => {
@@ -122,7 +144,10 @@ function quoted(diff: FileDiffMetadata, { start, end }: Span): Quote {
     new: reach('additions'),
     old,
     lines: shown.map((row) => row.mark + row.text),
-    original: old === null ? shown.map((row) => row.text).join('\n') : null,
+    original:
+      old === null && step === null
+        ? shown.map((row) => row.text).join('\n')
+        : null,
   };
 }
 
@@ -140,8 +165,8 @@ function label(quote: Quote): string {
     : `${span(added)}, replacing ${removed}`;
 }
 
-const key = ({ path, end }: Span) =>
-  `${path}\n${end.side}\n${String(end.line)}`;
+const key = ({ file, end }: Span) =>
+  `${file}\n${end.side}\n${String(end.line)}`;
 
 function range({ start, end }: Span): SelectedLineRange {
   return {
@@ -152,13 +177,20 @@ function range({ start, end }: Span): SelectedLineRange {
   };
 }
 
-/** The start of the changes, which a tap opens a sheet to move. */
+/**
+ * The start of the changes, which a tap opens a sheet to move, and whether the page
+ * shows them commit by commit, which a tap switches.
+ */
 function Commits({
   start,
+  stepped,
   onMove,
+  onStep,
 }: {
   start: Start;
+  stepped: boolean;
   onMove: (since: string) => void;
+  onStep: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [head] = start.commits;
@@ -178,6 +210,12 @@ function Commits({
         <span>Changes from</span>
         <span className="hint value">{shown}</span>
         <span className="hint">›</span>
+      </button>
+      <button className="start" onClick={onStep}>
+        <span>Commits</span>
+        <span className="hint value">
+          {stepped ? 'One by one' : 'Together'}
+        </span>
       </button>
       {open && (
         <Starts
@@ -295,19 +333,19 @@ function Files({
   onJump,
 }: {
   files: readonly Listed[];
-  onJump: (path: string) => void;
+  onJump: (id: string) => void;
 }) {
   return (
     <section className="section">
       <div className="label">Files</div>
       {files.map(({ path, hint, shown }) => (
         <button
-          key={path}
+          key={shown?.id ?? path}
           className="file"
           disabled={shown === null}
           onClick={() => {
             if (shown !== null) {
-              onJump(shown.diff.name);
+              onJump(shown.id);
             }
           }}
         >
@@ -319,19 +357,45 @@ function Files({
   );
 }
 
+/**
+ * The files of a git `patch`, each with what `shown` makes of its diff and its hint. A
+ * patch of some lines of a file hides the file's other changes, so each diff is
+ * numbered as `isolated` has it.
+ */
+function patched(
+  patch: string,
+  shown: (diff: FileDiffMetadata, shifts: readonly Shift[]) => Shown,
+  hinted: (counts: string) => string,
+): Listed[] {
+  const { patch: numbered, shifts } = isolated(patch);
+  return parsePatchFiles(numbered)
+    .flatMap((parsed) => parsed.files)
+    .map((diff, index) => ({
+      path:
+        diff.prevName === undefined
+          ? diff.name
+          : `${diff.prevName} → ${diff.name}`,
+      hint: hinted(counts(diff)),
+      shown: shown(diff, shifts[index] ?? []),
+    }));
+}
+
 /** What the page lists and shows of the files `opened` holds. */
 function listed(opened: Opened): Listed[] {
+  const since = opened.start?.since ?? null;
   if (opened.kind === 'changes') {
-    return parsePatchFiles(opened.patch)
-      .flatMap((patch) => patch.files)
-      .map((diff) => ({
-        path:
-          diff.prevName === undefined
-            ? diff.name
-            : `${diff.prevName} → ${diff.name}`,
-        hint: counts(diff),
-        shown: { diff, marked: [], shifts: [] },
-      }));
+    return patched(
+      opened.patch,
+      (diff, shifts) => ({
+        id: diff.name,
+        diff,
+        marked: [],
+        shifts,
+        since,
+        step: null,
+      }),
+      (counts) => counts,
+    );
   }
   return opened.files.map((file) => {
     if (!('content' in file)) {
@@ -349,9 +413,41 @@ function listed(opened: Opened): Listed[] {
     return {
       path: file.path,
       hint: hint.filter(Boolean).join(' · '),
-      shown: { diff, marked: file.lines, shifts },
+      shown: {
+        id: file.path,
+        diff,
+        marked: file.lines,
+        shifts,
+        since,
+        step: null,
+      },
     };
   });
+}
+
+/**
+ * What the page lists and shows commit by commit: what each of `steps` changed, then
+ * the files the working tree changed since `HEAD`, which `tree` holds.
+ */
+function stepwise({ steps, tree }: Stepped): Listed[] {
+  const committed = steps.steps.flatMap(({ commit, patch }) =>
+    patched(
+      patch,
+      (diff, shifts) => ({
+        id: `${commit.hash}\n${diff.name}`,
+        diff,
+        marked: [],
+        shifts,
+        since: commit.parent,
+        step: commit,
+      }),
+      (counts) => `${commit.hash.slice(0, 7)} · ${counts}`,
+    ),
+  );
+  const changed = listed(tree).filter(
+    ({ shown }) => shown === null || counts(shown.diff) !== '',
+  );
+  return [...committed, ...changed];
 }
 
 /**
@@ -377,10 +473,12 @@ function codeStyle(files: readonly Shown[]): string {
 
 export function Review({
   opened,
+  stepped,
   onMove,
 }: {
   opened: Opened;
-  onMove: (since: string) => void;
+  stepped: Stepped | null;
+  onMove: (since: string, stepped: boolean) => void;
 }) {
   const scheme = useScheme();
   useKeyboardReveal();
@@ -393,32 +491,37 @@ export function Review({
   const view = useRef<CodeViewHandle<Extension, undefined>>(null);
 
   // The library loads a file whole into its metadata in place, so each stays one object.
-  const list = useMemo(() => listed(opened), [opened]);
+  const list = useMemo(
+    () => (stepped === null ? listed(opened) : stepwise(stepped)),
+    [opened, stepped],
+  );
   const files = useMemo(() => list.flatMap(({ shown }) => shown ?? []), [list]);
-  const shown = useMemo(
-    () => new Map(files.map((shown) => [shown.diff.name, shown])),
+  const shownBy = useMemo(
+    () => new Map(files.map((shown) => [shown.id, shown])),
     [files],
   );
-  const diff = (path: string) => {
-    const found = shown.get(path);
+  const shown = (id: string) => {
+    const found = shownBy.get(id);
     if (found === undefined) {
-      throw new Error(`${path} is in no diff`);
+      throw new Error(`the page shows no ${id}`);
     }
-    return found.diff;
+    return found;
   };
 
   const since = opened.start?.since ?? null;
+  // The lines of a commit's change are of the commit and of its parent, and any other
+  // file's are of the file as it is and of its start. The prompt names removed lines by
+  // their numbers in the file as of that commit.
   const review = () => ({
-    since,
     notes: [...notes.values()].map(({ span, quote, draft }) => {
-      const fileDiff = diff(span.path);
-      const old = fileDiff.prevName ?? fileDiff.name;
-      // The prompt names removed lines by their numbers in the file as of the start.
-      const shifts = shown.get(span.path)?.shifts ?? [];
+      const { diff, shifts, since, step } = shown(span.file);
+      const [before, after] =
+        step === null ? [since, null] : [step.parent, step.hash];
       return {
-        new: quote.new && { path: fileDiff.name, ...quote.new },
+        new: quote.new && { commit: after, path: diff.name, ...quote.new },
         old: quote.old && {
-          path: old,
+          commit: before,
+          path: diff.prevName ?? diff.name,
           from: real(shifts, quote.old.from),
           to: real(shifts, quote.old.to),
         },
@@ -429,29 +532,28 @@ export function Review({
     }),
   });
 
-  const moved = (since: string) => {
+  const moved = (since: string, stepped: boolean) => {
     if (notes.size === 0 && editing === null) {
-      onMove(since);
+      onMove(since, stepped);
       return;
     }
-    app.showConfirm('Moving the start drops your comments.', (confirmed) => {
+    app.showConfirm('This drops your comments.', (confirmed) => {
       if (confirmed) {
-        onMove(since);
+        onMove(since, stepped);
       }
     });
   };
 
   // A tap on a line number opens the editor there, and a tap on another in the same file
   // while it is open stretches it over the lines between.
-  const tapped = (path: string, at: Point) => {
-    const fileDiff = diff(path);
+  const tapped = (file: string, at: Point) => {
     if (editing === null) {
-      const here = spanned(fileDiff, at, at);
+      const here = spanned(shown(file), at, at);
       const note = notes.get(key(here));
       setEditing(note?.span ?? here);
       setDraft(note?.draft ?? EMPTY);
-    } else if (editing.path === path) {
-      setEditing(spanned(fileDiff, editing.start, at));
+    } else if (editing.file === file) {
+      setEditing(spanned(shown(file), editing.start, at));
     }
   };
 
@@ -459,9 +561,9 @@ export function Review({
     dragging.current = false;
     setDragged(null);
   });
-  const across = (path: string, range: SelectedLineRange): Span =>
+  const across = (file: string, range: SelectedLineRange): Span =>
     spanned(
-      diff(path),
+      shown(file),
       { side: range.side ?? 'additions', line: range.start },
       { side: range.endSide ?? range.side ?? 'additions', line: range.end },
     );
@@ -480,34 +582,46 @@ export function Review({
       if (range === null) {
         return;
       }
-      const path = context.item.id;
+      const file = context.item.id;
       if (!drag) {
-        tapped(path, { side: range.side ?? 'additions', line: range.start });
+        tapped(file, { side: range.side ?? 'additions', line: range.start });
         return;
       }
       if (editing === null) {
         setDraft(EMPTY);
       }
-      setEditing(across(path, range));
+      setEditing(across(file, range));
     },
   );
 
-  // Only the changes come as a patch, whose files the library loads to expand them.
+  // A file that came in a patch is loaded whole to expand it: its two sides, of which
+  // the library hands back the diff it was given.
   const loaded = useStableCallback(async (fileDiff: FileDiffMetadata) => {
+    const found = files.find(({ diff }) => diff === fileDiff);
     const prev = fileDiff.prevName ?? fileDiff.name;
     const query = new URLSearchParams({
-      since: since ?? '',
+      since: found?.since ?? '',
       path: fileDiff.name,
       prev,
     });
+    if (found?.step != null) {
+      query.set('at', found.step.hash);
+    }
     try {
       const response = await call(`api/contents?${query.toString()}`);
       const contents = (await response.json()) as { old: string; new: string };
       const newFile = { name: fileDiff.name, contents: contents.new };
       // The library takes no old side for a file renamed and left as it was.
-      return fileDiff.type === 'rename-pure'
-        ? { oldFile: null, newFile }
-        : { oldFile: { name: prev, contents: contents.old }, newFile };
+      if (fileDiff.type === 'rename-pure') {
+        return { oldFile: null, newFile };
+      }
+      const old = undone(
+        contents.old,
+        contents.new,
+        fileDiff,
+        found?.shifts ?? [],
+      );
+      return { oldFile: { name: prev, contents: old }, newFile };
     } catch (error) {
       app.showAlert(failure(error));
       throw error;
@@ -523,7 +637,7 @@ export function Review({
       context: { item: { id: string } },
     ) => {
       node.dataset.file = String(
-        files.findIndex(({ diff }) => diff.name === context.item.id),
+        files.findIndex(({ id }) => id === context.item.id),
       );
     },
   );
@@ -548,23 +662,22 @@ export function Review({
 
   const items = useMemo(
     () =>
-      files.map(({ diff: fileDiff }): CodeViewDiffItem<Extension> => {
-        const path = fileDiff.name;
+      files.map(({ id, diff: fileDiff }): CodeViewDiffItem<Extension> => {
         const saved = [...notes.values()].filter(
           (note) =>
-            note.span.path === path &&
+            note.span.file === id &&
             (editing === null || key(note.span) !== key(editing)),
         );
         const at = ({ side, line }: Point) => ({ side, lineNumber: line });
         const annotations: DiffLineAnnotation<Extension>[] = [
-          ...(editing?.path === path
+          ...(editing?.file === id
             ? [{ ...at(editing.end), metadata: editing }]
             : []),
           ...saved.map((note) => ({ ...at(note.span.end), metadata: note })),
         ];
-        const collapsed = folded.has(path);
+        const collapsed = folded.has(id);
         return {
-          id: path,
+          id,
           type: 'diff',
           fileDiff,
           annotations,
@@ -575,15 +688,15 @@ export function Review({
     [files, notes, editing, folded],
   );
 
-  const fold = (path: string) => {
+  const fold = (id: string) => {
     const next = new Set(folded);
-    if (!next.delete(path)) {
-      next.add(path);
+    if (!next.delete(id)) {
+      next.add(id);
     }
     setFolded(next);
   };
-  const jump = (path: string) => {
-    view.current?.scrollTo({ type: 'item', id: path, align: 'start' });
+  const jump = (id: string) => {
+    view.current?.scrollTo({ type: 'item', id, align: 'start' });
   };
   const reveal = (target: CodeViewScrollTarget & { id: string }) => {
     const scroll = () => {
@@ -601,14 +714,14 @@ export function Review({
   // A page of files opens at the file and lines of the link tapped, once the view has
   // drawn.
   useEffect(() => {
-    if (opened.kind !== 'files') {
+    if (opened.kind !== 'files' || stepped !== null) {
       return;
     }
     const target = list[opened.file]?.shown;
     if (target === undefined || target === null) {
       return;
     }
-    const id = target.diff.name;
+    const id = target.id;
     requestAnimationFrame(() => {
       view.current?.scrollTo(
         opened.lines === null
@@ -622,15 +735,15 @@ export function Review({
             },
       );
     });
-  }, [opened, list]);
+  }, [opened, stepped, list]);
 
-  const order = (note: Note): [number, number] => {
-    const fileDiff = diff(note.span.path);
-    return [
-      files.findIndex(({ diff }) => diff === fileDiff),
-      find(rows(fileDiff), note.span.end),
-    ];
-  };
+  /** The path of a shown file, behind the commit whose change it is. */
+  const named = ({ diff, step }: Shown) =>
+    step === null ? diff.name : `${step.hash.slice(0, 7)}:${diff.name}`;
+  const order = (note: Note): [number, number] => [
+    files.findIndex(({ id }) => id === note.span.file),
+    find(rows(shown(note.span.file).diff), note.span.end),
+  ];
   const entries = [...notes.values()]
     .map((note) => ({ note, at: order(note) }))
     .sort(
@@ -639,12 +752,12 @@ export function Review({
     )
     .map(({ note: { span, quote, draft } }) => ({
       key: key(span),
-      label: `${span.path} · ${label(quote)}`,
+      label: `${named(shown(span.file))} · ${label(quote)}`,
       draft,
       onJump: () => {
         reveal({
           type: 'line',
-          id: span.path,
+          id: span.file,
           lineNumber: span.end.line,
           side: span.end.side,
           align: 'center',
@@ -653,7 +766,7 @@ export function Review({
     }));
 
   const selection = dragged ?? editing;
-  const quote = editing === null ? null : quoted(diff(editing.path), editing);
+  const quote = editing === null ? null : quoted(shown(editing.file), editing);
 
   return (
     <main className="changes" onMouseDown={keepFocus}>
@@ -665,12 +778,23 @@ export function Review({
         selectedLines={
           selection === null
             ? null
-            : { id: selection.path, range: range(selection) }
+            : { id: selection.file, range: range(selection) }
         }
         renderCodeViewHeader={() => (
           <>
             {opened.start !== null && (
-              <Commits start={opened.start} onMove={moved} />
+              <Commits
+                start={opened.start}
+                stepped={stepped !== null}
+                onMove={(since) => {
+                  moved(since, stepped !== null);
+                }}
+                onStep={() => {
+                  if (since !== null) {
+                    moved(since, stepped === null);
+                  }
+                }}
+              />
             )}
             {(list.length > 1 || files.length < list.length) && (
               <Files
@@ -684,9 +808,11 @@ export function Review({
             <div className="hint status">
               {list.length === 0 && since !== null
                 ? `No changes since ${since.slice(0, 7)}.`
-                : files.length > 0 &&
-                  notes.size === 0 &&
-                  'Tap or drag line numbers to comment.'}
+                : stepped?.steps.more === true
+                  ? `Only the latest ${String(stepped.steps.steps.length)} commits are shown.`
+                  : files.length > 0 &&
+                    notes.size === 0 &&
+                    'Tap or drag line numbers to comment.'}
             </div>
           </>
         )}
@@ -704,10 +830,23 @@ export function Review({
             {folded.has(id) ? '▸' : '▾'}
           </button>
         )}
+        // In the changes commit by commit, a file's header says whose change it is.
+        renderHeaderMetadata={({ id }) => {
+          const step = stepped === null ? null : shown(id).step;
+          return (
+            stepped !== null && (
+              <span className="hint step">
+                {step === null
+                  ? 'Working tree'
+                  : `${step.hash.slice(0, 7)} ${step.subject}`}
+              </span>
+            )
+          );
+        }}
         renderAnnotation={(...[{ metadata: extension }]) =>
           !('draft' in extension) ? (
             <Editor
-              path={extension.path}
+              path={shown(extension.file).diff.name}
               label={quote === null ? '' : label(quote)}
               original={quote?.original ?? null}
               draft={draft}
@@ -737,7 +876,7 @@ export function Review({
           ) : (
             <NoteView
               label={label(extension.quote)}
-              path={extension.span.path}
+              path={shown(extension.span.file).diff.name}
               draft={extension.draft}
               original={extension.quote.original}
               onEdit={

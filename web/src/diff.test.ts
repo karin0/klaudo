@@ -1,7 +1,11 @@
-import type { FileDiffMetadata } from '@pierre/diffs';
+import {
+  hydratePartialDiff,
+  parsePatchFiles,
+  type FileDiffMetadata,
+} from '@pierre/diffs';
 import { describe, expect, test } from 'vitest';
 import type { Range } from './api';
-import { excerpt, real, rows } from './diff';
+import { excerpt, isolated, real, rows, undone } from './diff';
 
 const CONTEXT = 5;
 const WHOLE = [{ from: 1, to: Infinity }];
@@ -200,5 +204,68 @@ describe('excerpt', () => {
     const diff = cut('', '', WHOLE);
     expect(diff.hunks).toEqual([]);
     expandsTo(diff, '', '');
+  });
+});
+
+describe('isolated', () => {
+  const oldText = lines(1, 40).join('');
+  const newText = [
+    ...lines(1, 4),
+    'added\n',
+    'added\n',
+    ...lines(5, 29),
+    'changed\n',
+    ...lines(31, 40),
+  ].join('');
+  // As `git log -L` writes the change of the line that reads `changed` alone.
+  const patch = [
+    'diff --git a/a.ts b/a.ts',
+    '--- a/a.ts',
+    '+++ b/a.ts',
+    '@@ -30 +32 @@ fn x()',
+    '-line 30',
+    '+changed',
+    '',
+  ].join('\n');
+
+  test('numbers a hunk as if the changes outside the patch were made', () => {
+    const numbered = isolated(patch);
+    expect(numbered.patch).toContain('\n@@ -32,1 +32,1 @@ fn x()\n');
+    expect(numbered.shifts).toEqual([[{ from: 32, to: 32, shift: -2 }]]);
+    const [diff] = parsePatchFiles(numbered.patch).flatMap(
+      (parsed) => parsed.files,
+    );
+    if (diff === undefined) {
+      throw new Error('the patch parses to no diff');
+    }
+    const taking = undone(oldText, newText, diff, numbered.shifts[0] ?? []);
+    expect(taking).toBe(newText.replace('changed\n', 'line 30\n'));
+    const whole = hydratePartialDiff('merge', diff, {
+      oldFile: { name: 'a.ts', contents: taking },
+      newFile: { name: 'a.ts', contents: newText },
+    });
+    expandsTo(whole, taking, newText);
+  });
+
+  test('leaves a patch of every change of a file as git numbered it', () => {
+    const every = [
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -4,0 +5,2 @@',
+      '+added',
+      '+added',
+      '@@ -30,1 +32,1 @@',
+      '-line 30',
+      '+changed',
+      '',
+    ].join('\n');
+    const numbered = isolated(every);
+    expect(numbered).toEqual({ patch: every, shifts: [[]] });
+    const [diff] = parsePatchFiles(every).flatMap((parsed) => parsed.files);
+    if (diff === undefined) {
+      throw new Error('the patch parses to no diff');
+    }
+    expect(undone(oldText, newText, diff, [])).toBe(oldText);
   });
 });

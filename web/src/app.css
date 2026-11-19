@@ -347,3 +347,12 @@ button:disabled {
   padding: 8px;
   color: var(--hint);
 }
+
+/* Whose change a file is, which gives way to the file's name in its header. */
+.step {
+  display: block;
+  overflow: hidden;
+  max-width: 45vw;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

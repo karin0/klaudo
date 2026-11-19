@@ -48,10 +48,24 @@ const git = (...args: string[]) =>
  * `/mock?changes` on the link to a turn's changes, and `dark` in either query the dark
  * theme. Both show the daemon's own working tree since three commits back, untracked
  * files left out. The files are some of the daemon's own and one refused, opening at the
- * second link to `src/telegram.rs`. A review sent is printed by the dev server. A
+ * second link to `src/telegram.rs`, and their lines count as lines of `HEAD` in the
+ * changes commit by commit. A review sent is printed by the dev server. A
  * browser draws no `MainButton`, so `Telegram.WebView.receiveEvent('main_button_pressed')`
  * in the console presses it.
  */
+/** The files the mocked file link names, with the lines it names in each. */
+const LINKED: [string, [number, number][]][] = [
+  ['src/web.rs', [[13, 14]]],
+  [
+    'src/telegram.rs',
+    [
+      [22, 24],
+      [600, 610],
+    ],
+  ],
+  ['README.md', []],
+];
+
 function mock(): Plugin {
   return {
     name: 'klaudo-mock',
@@ -129,13 +143,8 @@ function mock(): Plugin {
             kind: 'files',
             start,
             files: [
-              linked('src/web.rs', [[13, 14]]),
-              linked('src/telegram.rs', [
-                [22, 24],
-                [600, 610],
-              ]),
+              ...LINKED.map(([path, lines]) => linked(path, lines)),
               { path: '../outside', lines: [], refusal: 'no such file' },
-              linked('README.md', []),
             ],
             file: 1,
             lines: { from: 600, to: 610 },
@@ -158,14 +167,59 @@ function mock(): Plugin {
           ),
         });
       });
+      server.middlewares.use('/api/steps', (request, response) => {
+        const data = request.headers.authorization?.replace(/^tma /, '') ?? '';
+        const query = new URLSearchParams(request.url?.split('?')[1]);
+        const followed = LINKED.flatMap(([path, lines]) =>
+          (lines.length > 0
+            ? lines
+            : [[1, git('show', `HEAD:${path}`).split('\n').length - 1]]
+          ).map(([from, to]) => `-L${String(from)},${String(to)}:${path}`),
+        );
+        const log = git(
+          'log',
+          '--first-parent',
+          '--max-count=30',
+          '--date=unix',
+          '--format=%x00%H%x00%P%x00%cd%x00%s%x00',
+          '--src-prefix=a/',
+          '--dst-prefix=b/',
+          ...(new URLSearchParams(data).get('start_param') === 'file'
+            ? followed
+            : ['--patch', '-M', '--unified=5']),
+          `${query.get('since') ?? ''}..HEAD`,
+        );
+        const fields = log.split('\0').slice(1);
+        const steps = [];
+        for (let at = 0; at + 4 < fields.length; at += 5) {
+          const [hash, parents = '', time, subject, patch = ''] = fields.slice(
+            at,
+            at + 5,
+          );
+          const [parent = null] = parents.split(' ').filter(Boolean);
+          steps.unshift({
+            commit: {
+              hash,
+              parent,
+              time: Number(time),
+              subject,
+              included: true,
+            },
+            patch: patch.replace(/^\n+/, ''),
+          });
+        }
+        answer(response, { steps, more: false });
+      });
       server.middlewares.use('/api/contents', (request, response) => {
         const query = new URLSearchParams(request.url?.split('?')[1]);
         const [since, path, prev] = ['since', 'path', 'prev'].map(
           (name) => query.get(name) ?? '',
         );
+        const at = query.get('at');
         answer(response, {
           old: git('show', `${since ?? ''}:${prev ?? ''}`),
-          new: read(path ?? ''),
+          new:
+            at === null ? read(path ?? '') : git('show', `${at}:${path ?? ''}`),
         });
       });
       server.middlewares.use('/api/review', (request, response) => {

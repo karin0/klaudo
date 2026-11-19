@@ -116,6 +116,81 @@ export const real = (shifts: readonly Shift[], line: number) =>
   (shifts.find(({ from, to }) => line >= from && line <= to)?.shift ?? 0);
 
 /**
+ * A git `patch` with the old side of each file numbered as if only the changes of its
+ * hunks were made, as the library draws it, and where the lines of each file's old side
+ * really are. A patch of every change of a file is numbered so already.
+ */
+export function isolated(patch: string): { patch: string; shifts: Shift[][] } {
+  const shifts: Shift[][] = [];
+  let skew = 0;
+  const lines = patch.split('\n').map((line) => {
+    if (line.startsWith('diff --git ')) {
+      shifts.push([]);
+      skew = 0;
+      return line;
+    }
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/su.exec(
+      line,
+    );
+    if (header === null) {
+      return line;
+    }
+    // A side of one line leaves its count out.
+    const count = (field: string | undefined) =>
+      field === undefined ? 1 : Number(field);
+    const [oldStart, oldCount] = [Number(header[1]), count(header[2])];
+    const [newStart, newCount] = [Number(header[3]), count(header[4])];
+    // A side of no lines counts from the line before it.
+    const from = (newCount === 0 ? newStart : newStart - 1) + skew;
+    const shift = (oldCount === 0 ? oldStart : oldStart - 1) - from;
+    if (oldCount > 0 && shift !== 0) {
+      shifts.at(-1)?.push({ from: from + 1, to: from + oldCount, shift });
+    }
+    skew += oldCount - newCount;
+    const start = oldCount === 0 ? from : from + 1;
+    return `@@ -${String(start)},${String(oldCount)} +${String(newStart)},${String(newCount)} @@${header[5] ?? ''}`;
+  });
+  return { patch: lines.join('\n'), shifts };
+}
+
+/** The lines of `text`, each with the newline that ends it. */
+const split = (text: string) => text.match(/[^\n]*\n|[^\n]+$/gu) ?? [];
+
+/**
+ * The old side of `diff`, which is numbered as `isolated` has it, with the changes its
+ * hunks hide: `newText` with the lines each hunk adds replaced by the lines of
+ * `oldText` it removes, which `shifts` finds there.
+ */
+export function undone(
+  oldText: string,
+  newText: string,
+  diff: FileDiffMetadata,
+  shifts: readonly Shift[],
+): string {
+  const [before, after] = [split(oldText), split(newText)];
+  const lines: string[] = [];
+  let at = 0;
+  for (const hunk of diff.hunks) {
+    // A side of no lines counts from the line before it.
+    const from =
+      hunk.additionCount === 0 ? hunk.additionStart : hunk.additionStart - 1;
+    const removed = real(shifts, hunk.deletionStart) - 1;
+    lines.push(...after.slice(at, from));
+    if (hunk.deletionCount > 0) {
+      lines.push(...before.slice(removed, removed + hunk.deletionCount));
+    }
+    at = from + hunk.additionCount;
+  }
+  lines.push(...after.slice(at));
+  // Only the last line of a file may lack its newline.
+  return lines
+    .map((line, index) =>
+      index < lines.length - 1 && !line.endsWith('\n') ? `${line}\n` : line,
+    )
+    .join('');
+}
+
+/**
  * The diff from `oldFile` to `newFile` at the `marked` lines of the new side: its hunks
  * hold those lines and each change a link names a line of, with `context` lines around
  * them, so the view collapses the rest until it is expanded. A change no link names

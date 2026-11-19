@@ -25,15 +25,18 @@ export interface Range {
   to: number;
 }
 
+/** Lines of a file as of `commit`, or of the file as it is without one. */
+export type Lines = Range & { commit: string | null; path: string };
+
 /**
- * What `POST /api/review` takes: the comments, the commit removed lines belong to, and a
- * message for the whole review, empty for none.
+ * What `POST /api/review` takes: the comments, each on lines of the new side of the
+ * changes the page showed, of the old side, or of both, and a message for the whole
+ * review, empty for none.
  */
 export interface Review {
-  since: string | null;
   notes: {
-    new: (Range & { path: string }) | null;
-    old: (Range & { path: string }) | null;
+    new: Lines | null;
+    old: Lines | null;
     /** The lines as a unified diff shows them, each behind ` `, `-` or `+`. */
     lines: string[];
     text: string;
@@ -49,6 +52,21 @@ export interface Commit {
   time: number;
   subject: string;
   included: boolean;
+}
+
+/** What one commit changed, as a git patch. */
+export interface Step {
+  commit: Commit;
+  patch: string;
+}
+
+/**
+ * What `GET /api/steps` answers: the latest commits since a start that changed what the
+ * link names, oldest first, and whether more of them came before.
+ */
+export interface Steps {
+  steps: Step[];
+  more: boolean;
 }
 
 /** The commit the changes start from, and the commits the page moves it along. */
