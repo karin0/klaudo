@@ -18,4 +18,7 @@ The documents under `docs/` record the behavior and design of the code each one 
 ## Checks
 
 `./check.sh` runs every check and the release build. `pnpm -C web dev` serves the
-review page in a browser, as `web/vite.config.ts` describes.
+review page in a browser, as `web/vite.config.ts` describes. No check draws the page, so
+after a change to what it shows, draw it with `CHROME=<a Chromium binary> pnpm -C web
+shot <path> <file>`, which saves a screenshot of the page that server mocks at `<path>`
+and fails when the page throws or logs an error, as `web/shot.ts` describes.

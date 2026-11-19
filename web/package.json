@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "shot": "node shot.ts",
     "build": "vite build",
     "check": "prettier --check . && tsc --noEmit && oxlint && vitest run"
   },
