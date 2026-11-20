@@ -1184,6 +1184,7 @@ fn a_topic_holds_its_own_conversations() {
             "id": session,
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": seen,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": seen}},
@@ -1255,6 +1256,7 @@ fn a_resumed_session_returns_to_its_topic() {
             "id": session,
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
@@ -1298,6 +1300,7 @@ fn a_new_session_takes_the_topic_of_its_project() {
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
@@ -1336,6 +1339,7 @@ fn a_project_without_a_topic_opens_one_in_a_forum() {
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 5, "at": 0}},
@@ -1385,6 +1389,7 @@ fn exited_in_general(root: &Path) -> &'static str {
             "id": id,
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 5, "at": 0}},
@@ -1522,6 +1527,7 @@ fn a_new_conversation_belongs_to_the_topic_it_was_asked_from() {
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
@@ -1588,6 +1594,7 @@ fn a_topic_reaches_no_session_outside_it() {
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": seen,
             "trail": {"prompt": "", "last": null},
@@ -1628,6 +1635,7 @@ fn a_topic_resumes_its_latest_session() {
                 "id": exited,
                 "dir": project(root),
                 "pid": std::process::id(),
+                "started": started(std::process::id()),
                 "pane": null,
                 "idle_since": seen - 1000,
                 "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": seen - 1000}},
@@ -1636,6 +1644,7 @@ fn a_topic_resumes_its_latest_session() {
                 "id": outside,
                 "dir": project(root),
                 "pid": std::process::id(),
+                "started": started(std::process::id()),
                 "pane": null,
                 "idle_since": seen,
                 "trail": {"prompt": "", "last": null},
@@ -1675,6 +1684,7 @@ fn a_topic_resumes_its_most_recent_session_whichever_ended_last() {
             "id": id,
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": seen,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": seen}},
@@ -1717,6 +1727,7 @@ fn a_topic_message_passes_a_session_that_has_said_nothing() {
             "id": spoke,
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": at,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": 5, "at": at}},
@@ -1755,6 +1766,7 @@ fn a_topic_message_reaches_the_conversation_that_left_its_last_message() {
             "id": id,
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": idle_since,
             "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 79}, "message": message, "at": at}},
@@ -1876,8 +1888,9 @@ fn a_turn_whose_session_was_killed_stops_reading_as_running() {
 
 /// A session idle through a restart of the daemon stays reachable, and so does one that
 /// ended before it, though the daemon that heard them was killed with no chance to
-/// write anything on its way out. The one that ended stays reachable after a reboot
-/// too, which clears the runtime directory.
+/// write anything on its way out. Both stay reachable after a reboot too, which clears
+/// the runtime directory and may give the id of a session's process to another, and a
+/// message resumes the one that was running.
 #[test]
 fn what_the_daemon_knows_outlives_a_restart() {
     let (temporary, calls, chat) = prepare("restart");
@@ -1915,18 +1928,21 @@ fn what_the_daemon_knows_outlives_a_restart() {
     collect(&calls, |call| {
         call.chat == Some(GROUP) && call.markdown.starts_with("`01234567` ")
     });
-    let resumed = || {
-        std::fs::read_to_string(root.join("tmux.log"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| line.ends_with("--resume 'fedcba9876543210'"))
-            .count()
-    };
-    assert_eq!(resumed(), 1);
+    let resumed = std::fs::read_to_string(root.join("tmux.log")).expect("tmux was called");
+    assert_eq!(resumed.matches("--resume 'fedcba9876543210'").count(), 1);
     drop(daemon);
 
     std::fs::remove_dir_all(root.join("run")).expect("the runtime directory");
     std::fs::create_dir(root.join("run")).expect("a fresh runtime directory");
+    // The test is the process of the running session, so the reboot gives its id to
+    // another process by changing when the recorded one started.
+    let state = root.join("state/klaudo/state.json");
+    let mut running: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state).expect("the state")).expect("JSON");
+    for session in running.as_array_mut().expect("the running sessions") {
+        session["started"] = json!(session["started"].as_u64().expect("a start") + 1);
+    }
+    std::fs::write(&state, running.to_string()).expect("the state");
     let daemon = self::daemon(root);
     chat.replies(
         OWNER,
@@ -1936,9 +1952,17 @@ fn what_the_daemon_knows_outlives_a_restart() {
             {"type": "paragraph", "text": [{"type": "code", "text": "fedcba98"}]},
         ]}}),
     );
+    chat.says(GROUP, OWNER, "carry on again");
+    let windows = |session: &str| {
+        std::fs::read_to_string(root.join("tmux.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.ends_with(&format!("--resume '{session}'")))
+            .count()
+    };
     wait_for(
-        || resumed() == 2,
-        "the exited session was forgotten at the reboot",
+        || windows("fedcba9876543210") == 2 && windows("0123456789abcdef") == 1,
+        "a session was forgotten at the reboot",
     );
     drop(daemon);
 }
@@ -2163,6 +2187,7 @@ fn a_bare_name_opens_in_the_most_recent_project_of_that_name() {
             "id": id,
             "dir": dir,
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "", "last": {"place": {"chat": OWNER, "topic": null}, "message": 5, "at": at}},
@@ -2397,6 +2422,7 @@ fn in_topic_77(root: &Path) -> &'static str {
             "id": id,
             "dir": project(root),
             "pid": std::process::id(),
+            "started": started(std::process::id()),
             "pane": null,
             "idle_since": 0,
             "trail": {"prompt": "fix the parser", "last": {"place": {"chat": GROUP, "topic": 77}, "message": 5, "at": 0}},
@@ -2475,6 +2501,7 @@ fn branching_in(root: &Path, pid: u32, place: &serde_json::Value) -> &'static st
                 "id": id,
                 "dir": project(root),
                 "pid": pid,
+                "started": started(pid),
                 "pane": {"server": root.join("tmux.sock"), "id": "%1"},
                 "idle_since": seen - 1000,
                 "trail": {"prompt": "fix the parser", "last": {"place": place, "message": 5, "at": seen - 1000}},
@@ -2483,6 +2510,7 @@ fn branching_in(root: &Path, pid: u32, place: &serde_json::Value) -> &'static st
                 "id": "1111111111111111",
                 "dir": project(root),
                 "pid": std::process::id(),
+                "started": started(std::process::id()),
                 "pane": null,
                 "idle_since": seen,
                 "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": 88}, "message": 6, "at": seen}},
@@ -2665,7 +2693,7 @@ fn a_branch_typed_in_the_terminal_stays_in_its_topic() {
     let branch = "fedcba9876543210";
     branched_in_pane(root, branch);
     assert_eq!(prompted_in(root, &calls, &[branch]), [json!(77)]);
-    let running = std::fs::read_to_string(root.join("run/klaudo/state.json")).expect("the state");
+    let running = std::fs::read_to_string(root.join("state/klaudo/state.json")).expect("the state");
     assert!(!running.contains(original), "{running}");
     assert!(
         drained(&calls)
@@ -3394,6 +3422,7 @@ fn a_window_idle_for_long_is_closed_unless_a_command_still_runs() {
             "id": id,
             "dir": project(root),
             "pid": pid,
+            "started": started(pid),
             "pane": {"server": root.join("tmux.sock"), "id": pane},
             "idle_since": hours_ago,
             "trail": {"prompt": "", "last": null},
@@ -3442,6 +3471,7 @@ fn a_window_just_typed_into_is_not_closed_for_idling() {
             "id": "0123456789abcdef",
             "dir": project(root),
             "pid": pid,
+            "started": started(pid),
             "pane": {"server": root.join("tmux.sock"), "id": "%1"},
             "idle_since": now() * 1000 - 60 * 60 * 1000 + margin,
             "trail": {"prompt": "", "last": null},
@@ -3760,6 +3790,7 @@ fn a_message_after_a_reply_follows_it() {
                 "id": replied,
                 "dir": project(root),
                 "pid": pid,
+                "started": started(pid),
                 "pane": {"server": root.join("tmux.sock"), "id": "%1"},
                 "idle_since": seen - 1000,
                 "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 10, "at": seen - 1000}},
@@ -3768,6 +3799,7 @@ fn a_message_after_a_reply_follows_it() {
                 "id": other,
                 "dir": project(root),
                 "pid": std::process::id(),
+                "started": started(std::process::id()),
                 "pane": null,
                 "idle_since": seen,
                 "trail": {"prompt": "", "last": {"place": {"chat": GROUP, "topic": null}, "message": 20, "at": seen}},
@@ -4065,6 +4097,7 @@ fn guested(root: &Path, pid: u32) -> Daemon {
             "id": id,
             "dir": dir,
             "pid": pid,
+            "started": started(pid),
             "pane": {"server": root.join("tmux.sock"), "id": "%1"},
             "idle_since": now() * 1000,
             "trail": {"prompt": "", "last": null},
@@ -4597,8 +4630,20 @@ fn delivered(mut message: serde_json::Value, chat: i64) -> serde_json::Value {
 }
 
 fn seed_state(root: &Path, sessions: &serde_json::Value) {
-    std::fs::create_dir_all(root.join("run/klaudo")).expect("runtime directory");
-    std::fs::write(root.join("run/klaudo/state.json"), sessions.to_string()).expect("the state");
+    std::fs::create_dir_all(root.join("state/klaudo")).expect("state directory");
+    std::fs::write(root.join("state/klaudo/state.json"), sessions.to_string()).expect("the state");
+}
+
+/// When process `pid` started, which the daemon tells it from a later one by.
+fn started(pid: u32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("a running process");
+    let (_, fields) = stat.rsplit_once(") ").expect("the stat of a process");
+    fields
+        .split(' ')
+        .nth(19)
+        .expect("field 22")
+        .parse()
+        .expect("a number")
 }
 
 fn now() -> u64 {

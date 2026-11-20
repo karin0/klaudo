@@ -31,6 +31,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::hook::{self, Event};
+use crate::process::Process;
 use crate::telegram::{Place, Sound, Telegram};
 use crate::tmux::{self, Pane, Start};
 use crate::web::{self, Links};
@@ -86,7 +87,8 @@ pub fn socket_path() -> Option<PathBuf> {
 /// and the pane belong together, so a session outside tmux carries neither.
 #[derive(Deserialize)]
 struct Handoff {
-    pid: u32,
+    #[serde(flatten)]
+    process: Process,
     #[serde(default)]
     tmux: Option<String>,
     #[serde(default)]
@@ -173,17 +175,10 @@ pub fn run() {
     let app = page.map(|_| main_app(&bot, lists));
     let topical = answered(|| telegram.topical(&bot));
 
-    let running_file = directory.join("state.json");
-    // A list a different version wrote may not parse, and it only saves the sessions
-    // from waiting for their next event, so that costs a warning.
-    let running: Vec<Running> = load(&running_file).unwrap_or_else(|error| {
-        log::warn!("{}: {error}", running_file.display());
-        Vec::new()
-    });
-    // The next save would overwrite a record that does not parse.
+    let running_file = kept.join("state.json");
+    let running: Vec<Running> = load(&running_file);
     let ended_file = kept.join("ended.json");
-    let ended =
-        load(&ended_file).unwrap_or_else(|error| panic!("{}: {error}", ended_file.display()));
+    let ended = load(&ended_file);
     let files = kept.join("files");
     fs::create_dir_all(&files).expect("files directory");
     let mut machine = Machine {
@@ -193,11 +188,11 @@ pub fn run() {
             .map(|running| {
                 let Running {
                     known,
-                    pid,
+                    process,
                     pane,
                     idle_since,
                 } = running;
-                let mut session = Session::new(known.dir, pid, pane, idle_since);
+                let mut session = Session::new(known.dir, process, pane, idle_since);
                 session.trail = known.trail;
                 session.transcript = known.transcript.map(Transcript::new);
                 (known.id, session)
@@ -362,7 +357,7 @@ struct Session {
     /// Where the session belongs, which is where it was opened rather than wherever a
     /// turn has since moved.
     dir: PathBuf,
-    pid: u32,
+    process: Process,
     pane: Option<Pane>,
     /// The messages of prompts that were submitted while a turn was running. Claude
     /// Code reports such a prompt under the running turn's id and only reveals its own
@@ -471,10 +466,10 @@ impl Trail {
 }
 
 impl Session {
-    fn new(dir: PathBuf, pid: u32, pane: Option<Pane>, idle_since: u64) -> Self {
+    fn new(dir: PathBuf, process: Process, pane: Option<Pane>, idle_since: u64) -> Self {
         Self {
             dir,
-            pid,
+            process,
             pane,
             queued: VecDeque::new(),
             asked: VecDeque::new(),
@@ -525,10 +520,9 @@ struct Machine {
     swept: Instant,
     /// How long a session idles before its window is closed, in milliseconds.
     idle: u64,
-    /// Where the running sessions are written. A reboot clears it, along with the
-    /// processes and panes it names.
+    /// Where the running sessions are written.
     running_file: PathBuf,
-    /// Where `ended` is written, which outlives a reboot.
+    /// Where `ended` is written.
     ended_file: PathBuf,
     /// Where the files sent in the chat are saved. A prompt names them, so they are kept
     /// as long as the transcripts that hold it.
@@ -563,26 +557,29 @@ struct Known {
 }
 
 /// A running session, with the process and the pane a message from the chat is typed
-/// into. What the daemon saves of it outlives a restart, so a session idle through one
-/// is still reachable, while a turn in flight and what the chat asked of a window are
-/// left behind.
+/// into. What the daemon saves of it outlives a restart of the daemon or the machine, so
+/// a session idle through one is still reachable, or resumed once its process is gone,
+/// while a turn in flight and what the chat asked of a window are left behind.
 #[derive(Serialize, Deserialize)]
 struct Running {
     #[serde(flatten)]
     known: Known,
-    pid: u32,
+    #[serde(flatten)]
+    process: Process,
     pane: Option<Pane>,
     /// Unix milliseconds.
     idle_since: u64,
 }
 
-/// A file not written yet holds nothing.
-fn load<T: DeserializeOwned + Default>(path: &Path) -> serde_json::Result<T> {
-    match fs::read(path) {
+/// A file not written yet holds nothing. One that does not parse stops the daemon, since
+/// its next save would overwrite the record.
+fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
+    let parsed = match fs::read(path) {
         Ok(raw) => serde_json::from_slice(&raw),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
-        Err(error) => panic!("{}: {error}", path.display()),
-    }
+        Err(error) => Err(serde_json::Error::io(error)),
+    };
+    parsed.unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
 /// Renamed into place, so a daemon killed mid-write leaves the last version whole.
@@ -656,7 +653,11 @@ impl Machine {
     fn arrival(&mut self, arrival: Arrival) {
         match arrival {
             Arrival::Hook(handoff) => {
-                self.hook(handoff.pid, handoff.tmux.zip(handoff.pane), &handoff.event);
+                self.hook(
+                    handoff.process,
+                    handoff.tmux.zip(handoff.pane),
+                    &handoff.event,
+                );
             }
             Arrival::Status(status) => self.status(status),
             Arrival::Locate(question, mut asker) => {
@@ -692,7 +693,7 @@ impl Machine {
         }
     }
 
-    fn hook(&mut self, pid: u32, tmux: Option<(String, String)>, event: &Event) {
+    fn hook(&mut self, process: Process, tmux: Option<(String, String)>, event: &Event) {
         let id = event.session_id.clone();
         // An ending changes nothing the session is remembered by, and a session the
         // daemon never heard from before its end has nothing to remember.
@@ -712,7 +713,7 @@ impl Machine {
             let dir = directory
                 .clone()
                 .unwrap_or_else(|| PathBuf::from(&event.cwd));
-            let mut session = Session::new(dir, pid, pane.clone(), now_millis());
+            let mut session = Session::new(dir, process, pane.clone(), now_millis());
             // A resumed session keeps its id, and with its trail its topic. One that stood
             // outside every topic of a chat split into topics moves as a new session would,
             // unless the chat resumed it, which placed it where it was asked.
@@ -759,7 +760,7 @@ impl Machine {
             self.sessions.insert(id.clone(), session);
         }
         let session = self.sessions.get_mut(&id).expect("a session just listed");
-        session.pid = pid;
+        session.process = process;
         session.pane = pane;
         session.idle_since = now_millis();
         if let Some(directory) = directory {
@@ -770,7 +771,7 @@ impl Machine {
                 .transcript
                 .as_ref()
                 .is_none_or(|transcript| transcript.path != Path::new(path))
-            && transcript::kept(pid)
+            && transcript::kept(process.pid)
         {
             session.transcript = Some(Transcript::new(PathBuf::from(path)));
         }
@@ -819,7 +820,7 @@ impl Machine {
                     trail: session.trail.clone(),
                     transcript: session.transcript_path(),
                 },
-                pid: session.pid,
+                process: session.process,
                 pane: session.pane.clone(),
                 idle_since: session.idle_since,
             })
@@ -954,7 +955,7 @@ impl Machine {
             session.idle_since = now;
             let pane = session.pane.as_ref().expect("a session with a window");
             if pane.owned()
-                && !tmux::has_children(session.pid)
+                && !tmux::has_children(session.process.pid)
                 && let Err(error) = pane.close()
             {
                 log::warn!("close {id}: {error}");
@@ -1004,7 +1005,7 @@ impl Machine {
         let gone: Vec<String> = self
             .sessions
             .iter()
-            .filter(|(_, session)| !Path::new(&format!("/proc/{}", session.pid)).exists())
+            .filter(|(_, session)| !session.process.running())
             .map(|(id, _)| id.clone())
             .collect();
         if gone.is_empty() {

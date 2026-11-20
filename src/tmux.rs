@@ -7,6 +7,8 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
+use crate::process::stat;
+
 /// The tmux session that holds the windows the daemon opens for conversations started
 /// from the chat, so one `tmux attach -t klaudo` reaches all of them.
 const OWNED_SESSION: &str = "klaudo";
@@ -236,19 +238,6 @@ fn run(command: &mut Command) -> Result<(), String> {
         return Ok(());
     }
     Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
-}
-
-/// The fields of `/proc/<pid>/stat` from the third on, past the command name, which may
-/// itself contain spaces and parentheses.
-fn stat(pid: &str) -> Option<Vec<String>> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    Some(
-        stat.rsplit_once(") ")?
-            .1
-            .split(' ')
-            .map(str::to_owned)
-            .collect(),
-    )
 }
 
 /// Field 7 of `/proc/<pid>/stat` is the controlling terminal, encoded as a device

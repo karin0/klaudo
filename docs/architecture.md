@@ -15,11 +15,14 @@ answer must not race a rewrite still in flight, and Telegram hands updates to on
 per bot, who has to answer when no turn is running. Routing a reply needs
 to know which session a message belongs to, so the reader is the process that posts.
 
-The daemon writes the pane of each session to `$XDG_RUNTIME_DIR/klaudo/state.json` as it changes, so an
-idle session stays reachable across a restart, and the directory of each exited one to
-`$XDG_STATE_HOME/klaudo/ended.json`, so a reply resumes it after a reboot too. The
-daemon keeps that record itself, since the transcripts under `~/.claude/projects` are in
-a format Claude Code has not published. A turn in flight is lost.
+The daemon writes each running session, with its pane and its process, to
+`$XDG_STATE_HOME/klaudo/state.json` as it changes, and each exited one to `ended.json`
+beside it, so a reply reaches an idle session across a restart of the daemon and
+resumes one that a reboot ended. A process is known by its id and the time it started,
+since a reboot or an exit while the daemon is down can give its id to another process,
+whose terminal a reply must not be typed into. The daemon keeps that record itself,
+since the transcripts under `~/.claude/projects` are in a format Claude Code has not
+published. A turn in flight is lost.
 
 ## Status line
 

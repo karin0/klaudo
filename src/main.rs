@@ -184,10 +184,12 @@ fn deliver(event: &Event, raw: &[u8]) {
 
 /// Hands the event over with where its session lives. `$TMUX` and `$TMUX_PANE` are
 /// inherited from that session, and `exec` in the hook command is what makes this
-/// process a child of it, so the parent id is the session to type into.
+/// process a child of it, so the parent is the session to type into.
 fn forward(raw: &[u8]) -> bool {
+    let session = process::Process::of(parent_id()).expect("the session waits on its hook");
     let context = serde_json::json!({
-        "pid": parent_id(),
+        "pid": session.pid,
+        "started": session.started,
         "tmux": std::env::var("TMUX").ok(),
         "pane": std::env::var("TMUX_PANE").ok(),
     })

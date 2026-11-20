@@ -1080,12 +1080,12 @@ impl Machine {
             // Naming the terminal is what tells a session started as a background job,
             // which runs on a pty of its own, from one whose pane went away.
             let short = &id[..8.min(id.len())];
-            return Err(match tmux::controlling_tty(session.pid) {
+            return Err(match tmux::controlling_tty(session.process.pid) {
                 Some(tty) => format!("`{short}` is on `{tty}`, which no tmux pane holds"),
                 None => format!("`{short}` has no terminal to type into"),
             });
         };
-        if !pane.holds(session.pid) {
+        if !pane.holds(session.process.pid) {
             return Err(format!(
                 "that terminal no longer holds the session{}",
                 fenced(&pane)
