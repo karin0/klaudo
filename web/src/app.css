@@ -337,8 +337,11 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* A hint of many lines wraps in its half of the row, so the path keeps the other. */
 .file .hint {
-  white-space: nowrap;
+  flex: none;
+  max-width: 50%;
+  text-align: right;
 }
 
 /* The margins give the padding back, so a finger can miss the arrow by 8px. */

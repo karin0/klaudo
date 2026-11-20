@@ -321,8 +321,15 @@ function counts(fileDiff: FileDiffMetadata): string {
     added > 0 && `+${String(added)}`,
   ]
     .filter(Boolean)
-    .join(' ');
+    .join('\u00a0');
 }
+
+/**
+ * `lines` as short as a link's fragment writes them, since a file may list many. The
+ * word joiner keeps a line from breaking after the dash.
+ */
+const brief = ({ from, to }: Range): string =>
+  from === to ? `L${String(from)}` : `L${String(from)}–\u2060${String(to)}`;
 
 /**
  * The files the page shows: those a message links to, with the lines its links name or
@@ -409,10 +416,10 @@ function listed(opened: Opened): Listed[] {
       file.lines.length > 0 ? file.lines : whole,
       opened.context,
     );
-    const hint = [file.lines.map(span).join(', '), counts(diff)];
+    const hint = [file.lines.map(brief).join(', '), counts(diff)];
     return {
       path: file.path,
-      hint: hint.filter(Boolean).join(' · '),
+      hint: hint.filter(Boolean).join(' ·\u00a0'),
       shown: {
         id: file.path,
         diff,
